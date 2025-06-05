@@ -1,0 +1,15 @@
+*.egg-info
+**/.ipynb_checkpoints
+**/sbatch_logs
+**/__pycache__/
+
+**/*.sh
+**/*.pdf
+**/MUJOCO_LOG.TXT
+
+logs/
+ckpts/
+data/
+scene_data/
+mobipi/macros_private.py
+!install.sh
