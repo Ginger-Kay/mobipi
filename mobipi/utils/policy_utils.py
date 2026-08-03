@@ -3,19 +3,18 @@ Utilities related to loading policy checkpoints.
 
 @yjy0625
 """
-import os
+import copy
 import json
+import os
 import numpy as np
 from glob import glob
 
 import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.lang_utils as LangUtils
-import robomimic.utils.train_utils as TrainUtils
+import robomimic.utils.file_utils as FileUtils
+import robomimic.utils.obs_utils as ObsUtils
 from robomimic.algo import algo_factory, RolloutPolicy
 from robomimic.config import config_factory
-
-from mobipi.utils.env_utils import get_metadata
-
 
 def replace_dataset_path(path, data_root_dir):
     d1 = data_root_dir
@@ -41,44 +40,41 @@ def get_config_for_policy(ckpt_root_dir, data_root_dir, env_name, method_name, s
     config = config_factory(ext_cfg["algo_name"])
     with config.values_unlocked():
         config.update(ext_cfg)
-    config["train"]["data"][0]["path"] = replace_dataset_path(config["train"]["data"][0]["path"],
-                                                              data_root_dir)
+        config["runtime_checkpoint_path"] = ckpt_path
+        config["train"]["data"][0]["path"] = replace_dataset_path(
+            config["train"]["data"][0]["path"], data_root_dir
+        )
     return config, ckpt_path
 
 
 def load_policy(config, ckpt_path):
-    env_meta_list, shape_meta_list = get_metadata(config)
-    env_meta, shape_meta = env_meta_list[0], shape_meta_list[0]
-
+    ObsUtils.initialize_obs_utils_with_config(config)
     device = TorchUtils.get_torch_device(try_to_use_cuda=True)
+    checkpoint = FileUtils.maybe_dict_from_checkpoint(ckpt_path=ckpt_path)
+    shape_meta = checkpoint["shape_metadata"]
 
-    # load training data
     lang_encoder = LangUtils.LangEncoder(
         device=device,
     )
-    trainset, validset = TrainUtils.load_data_for_training(
-        config, obs_keys=shape_meta["all_obs_keys"], lang_encoder=lang_encoder)
-
-    # maybe retreve statistics for normalizing observations
-    obs_normalization_stats = None
-    if config.train.hdf5_normalize_obs:
-        obs_normalization_stats = trainset.get_obs_normalization_stats()
-
-    # maybe retreve statistics for normalizing actions
-    action_normalization_stats = trainset.get_action_normalization_stats()
+    obs_normalization_stats = copy.deepcopy(checkpoint.get("obs_normalization_stats", None))
+    action_normalization_stats = copy.deepcopy(checkpoint.get("action_normalization_stats", None))
+    for stats in (obs_normalization_stats, action_normalization_stats):
+        if stats is not None:
+            for modality in stats.values():
+                for key, value in modality.items():
+                    modality[key] = np.array(value)
 
     model = algo_factory(
         algo_name=config.algo_name,
         config=config,
-        obs_key_shapes=shape_meta_list[0]["all_shapes"],
-        ac_dim=shape_meta_list[0]["ac_dim"],
+        obs_key_shapes=shape_meta["all_shapes"],
+        ac_dim=shape_meta["ac_dim"],
         device=device,
     )
 
     print("LOADING MODEL WEIGHTS FROM " + ckpt_path)
-    from robomimic.utils.file_utils import maybe_dict_from_checkpoint
-    ckpt_dict = maybe_dict_from_checkpoint(ckpt_path=ckpt_path)
-    model.deserialize(ckpt_dict["model"])
+    model.deserialize(checkpoint["model"])
+    model.set_eval()
 
     rollout_model = RolloutPolicy(
         model,

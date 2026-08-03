@@ -3,6 +3,7 @@ Utilities related to sim environments.
 
 @yjy0625
 """
+import copy
 import os
 import torch
 import numpy as np
@@ -18,6 +19,23 @@ import robomimic.utils.file_utils as FileUtils
 def get_metadata(config):
     # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
     ObsUtils.initialize_obs_utils_with_config(config)
+
+    checkpoint_path = config.get("runtime_checkpoint_path", None)
+    if checkpoint_path is not None:
+        checkpoint = FileUtils.maybe_dict_from_checkpoint(ckpt_path=checkpoint_path)
+        env_meta = copy.deepcopy(checkpoint["env_metadata"])
+        shape_meta = copy.deepcopy(checkpoint["shape_metadata"])
+        dataset_cfg = config.train.data[0]
+        env_meta["env_lang"] = dataset_cfg.get("lang", env_meta.get("env_lang", None))
+
+        from robomimic.utils.script_utils import deep_update
+        deep_update(env_meta, dataset_cfg.get("env_meta_update_dict", {}))
+        deep_update(env_meta, config.experiment.env_meta_update_dict)
+
+        print("\n============= Loaded Environment Metadata From Checkpoint =============")
+        for key, shape in shape_meta["all_shapes"].items():
+            print(f"obs key {key} with processed shape {tuple(shape)}")
+        return [env_meta], [shape_meta]
 
     env_meta_list = []
     shape_meta_list = []
