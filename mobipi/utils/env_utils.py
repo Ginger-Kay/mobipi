@@ -70,7 +70,12 @@ def get_metadata(config):
     return env_meta_list, shape_meta_list
 
 
-def load_env(config, override_args):
+def load_env(
+    config,
+    override_args,
+    use_image_obs_override=None,
+    render_offscreen_override=None,
+):
     # NOTE: in our experiments, we perform seeding via policy only
     #       since we already have 10 different scenes/layouts for eval
     #       we do not perform various seeding for env and scene model.
@@ -95,12 +100,22 @@ def load_env(config, override_args):
     env_meta["env_kwargs"].update(override_args)
 
     print(f"Initializing environment {env_name} with seed {env_meta['env_kwargs']['seed']}.")
+    use_image_obs = (
+        shape_meta["use_images"]
+        if use_image_obs_override is None
+        else bool(use_image_obs_override)
+    )
+    render_offscreen = (
+        config.experiment.render_video
+        if render_offscreen_override is None
+        else bool(render_offscreen_override)
+    )
     env_kwargs = dict(
         env_meta=env_meta,
         env_name=env_name,
         render=False,
-        render_offscreen=config.experiment.render_video,
-        use_image_obs=shape_meta["use_images"],
+        render_offscreen=render_offscreen,
+        use_image_obs=use_image_obs,
     )
     env = EnvUtils.create_env_from_metadata(**env_kwargs)
     env = EnvUtils.wrap_env_from_config(env, config=config)
