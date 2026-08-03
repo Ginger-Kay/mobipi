@@ -8,6 +8,7 @@
 **/MUJOCO_LOG.TXT
 
 logs/
+outputs/
 ckpts/
 data/
 scene_data/
