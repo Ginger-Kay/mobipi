@@ -14,6 +14,11 @@ import numpy as np
 import torch
 
 from mobipi.utils.env_utils import get_metadata, load_env
+from mobipi.utils.door_diagnostics import (
+    DoorDiagnosticRecorder,
+    load_case_list,
+    validate_case_list,
+)
 from mobipi.utils.paired_rollout_utils import (
     artifact_record,
     base_manifest,
@@ -97,7 +102,16 @@ def _latest_observation(observation):
     return result
 
 
-def _run_policy_episode(policy, env, initial_observation, horizon, terminate_on_success, video_path, video_skip):
+def _run_policy_episode(
+    policy,
+    env,
+    initial_observation,
+    horizon,
+    terminate_on_success,
+    video_path,
+    video_skip,
+    diagnostic_recorder=None,
+):
     observation = initial_observation
     policy.start_episode(lang=env._ep_lang_str)
     actions = []
@@ -110,6 +124,10 @@ def _run_policy_episode(policy, env, initial_observation, horizon, terminate_on_
             action = policy(ob=observation)
             actions.append(np.asarray(action).copy())
             observation, _, _, info = env.step(action)
+            if diagnostic_recorder is not None:
+                # Read-only instrumentation after the existing step.  It does
+                # not issue another step or alter the policy/action path.
+                diagnostic_recorder.record_state(action=action)
             observations.append(_latest_observation(observation))
             success = bool(info["is_success"]["task"])
             if writer is not None and step % video_skip == 0:
@@ -123,7 +141,17 @@ def _run_policy_episode(policy, env, initial_observation, horizon, terminate_on_
     trajectory = {"actions": np.stack(actions) if actions else np.empty((0,))}
     for key in observations[0]:
         trajectory[f"obs_latest__{key}"] = np.stack([item[key] for item in observations])
-    return trajectory, success, len(actions), termination_reason
+    if diagnostic_recorder is None:
+        return trajectory, success, len(actions), termination_reason, None
+    diagnostic_trajectory, diagnostic_summary, diagnostic_contacts = diagnostic_recorder.finalize()
+    trajectory.update(diagnostic_trajectory)
+    return (
+        trajectory,
+        success,
+        len(actions),
+        termination_reason,
+        (diagnostic_summary, diagnostic_contacts),
+    )
 
 
 @click.command()
@@ -144,6 +172,13 @@ def _run_policy_episode(policy, env, initial_observation, horizon, terminate_on_
 @click.option("--candidate_config", required=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--candidate_config_sha256", required=True)
 @click.option("--candidate_ids", default=None, help="Optional comma-separated candidate subset")
+@click.option(
+    "--diagnostic_case_list",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Explicit diagnostic cases; prevents environment x candidate Cartesian expansion",
+)
+@click.option("--diagnostic_case_list_sha256", default=None)
 @click.option("--shuffle_candidates/--no_shuffle_candidates", default=False)
 @click.option("--ckpt_root_dir", required=True, type=click.Path(exists=True, file_okay=False))
 @click.option("--data_root_dir", required=True, type=click.Path(exists=True, file_okay=False))
@@ -171,6 +206,8 @@ def main(
     candidate_config,
     candidate_config_sha256,
     candidate_ids,
+    diagnostic_case_list,
+    diagnostic_case_list_sha256,
     shuffle_candidates,
     ckpt_root_dir,
     data_root_dir,
@@ -200,7 +237,41 @@ def main(
     candidates = list(candidate_config_data["candidates"])
     for candidate in candidates:
         validate_candidate(candidate, candidate_config_data)
-    if candidate_ids:
+    diagnostic_cases = None
+    diagnostic_cases_by_key = {}
+    diagnostic_cases_by_environment = {}
+    diagnostic_case_list_checksum = None
+    if diagnostic_case_list:
+        if candidate_ids:
+            raise click.ClickException("--candidate_ids cannot be combined with --diagnostic_case_list")
+        if shuffle_candidates:
+            raise click.ClickException("diagnostic case order is frozen; do not shuffle candidates")
+        if not diagnostic_case_list_sha256:
+            raise click.ClickException("--diagnostic_case_list_sha256 is required with --diagnostic_case_list")
+        diagnostic_case_list_checksum = sha256_file(diagnostic_case_list)
+        if diagnostic_case_list_checksum.lower() != diagnostic_case_list_sha256.lower():
+            raise click.ClickException(
+                "diagnostic case-list SHA-256 mismatch: "
+                f"expected {diagnostic_case_list_sha256}, got {diagnostic_case_list_checksum}"
+            )
+        diagnostic_cases = validate_case_list(
+            load_case_list(diagnostic_case_list),
+            candidate_ids=[candidate["candidate_id"] for candidate in candidates],
+            candidate_config_sha256=config_sha256,
+        )
+        for case in diagnostic_cases["cases"]:
+            key = (int(case["environment_seed"]), str(case["candidate_id"]))
+            if key in diagnostic_cases_by_key:
+                raise click.ClickException(f"duplicate diagnostic environment/candidate case: {key}")
+            diagnostic_cases_by_key[key] = case
+            diagnostic_cases_by_environment.setdefault(int(case["environment_seed"]), []).append(
+                str(case["candidate_id"])
+            )
+        if set(parsed_environment_seeds) != set(diagnostic_cases_by_environment):
+            raise click.ClickException(
+                "--environment_seeds must exactly match environments in --diagnostic_case_list"
+            )
+    elif candidate_ids:
         selected = set(item.strip() for item in candidate_ids.split(",") if item.strip())
         candidates = [candidate for candidate in candidates if candidate["candidate_id"] in selected]
         if {candidate["candidate_id"] for candidate in candidates} != selected:
@@ -255,8 +326,25 @@ def main(
             run_id, env_name, layout_id, style_id, seeds["checkpoint_seed"], environment_seed
         )
         expected_invariant_hash = probe_fingerprint["scene_invariant_hash"]
-        for candidate in candidates:
+        environment_candidates = candidates
+        if diagnostic_cases is not None:
+            selected_ids = set(diagnostic_cases_by_environment.get(environment_seed, []))
+            environment_candidates = [
+                candidate for candidate in candidates if candidate["candidate_id"] in selected_ids
+            ]
+            if {candidate["candidate_id"] for candidate in environment_candidates} != selected_ids:
+                raise click.ClickException(
+                    f"diagnostic case list has unknown candidate for environment {environment_seed}"
+                )
+        for candidate in environment_candidates:
             candidate_id = candidate["candidate_id"]
+            case = (
+                diagnostic_cases_by_key.get((environment_seed, candidate_id))
+                if diagnostic_cases is not None
+                else None
+            )
+            episode_evaluation_seed = int(case["evaluation_seed"]) if case is not None else int(evaluation_seed)
+            episode_seeds = {**seeds, "environment_seed": int(environment_seed), "evaluation_seed": episode_evaluation_seed}
             candidate_output = parent_output / group_id / candidate_id
             candidate_output.mkdir(parents=True, exist_ok=False)
             frame = candidate.get("coordinate_frame", candidate_config_data["coordinate_frame"])
@@ -298,10 +386,28 @@ def main(
                     "config_uri": str(Path(candidate_config).resolve()),
                     "config_sha256": config_sha256,
                 },
-                seeds={"training_seed": int(config.train.seed), **seeds},
+                seeds={"training_seed": int(config.train.seed), **episode_seeds},
                 command=command,
                 output_root=str(candidate_output.resolve()),
             )
+            if diagnostic_cases is not None:
+                manifest["diagnostic_case"] = {
+                    "schema_version": diagnostic_cases["schema_version"],
+                    "case_id": case["case_id"],
+                    "expected_historical_outcome": case["expected_historical_outcome"],
+                    "matched_pair_id": case["matched_pair_id"],
+                    "source_run_id": case.get("source_run_id", "TBD"),
+                    "case_list_uri": str(Path(diagnostic_case_list).resolve()),
+                    "case_list_sha256": diagnostic_case_list_checksum,
+                }
+                manifest["protocol"]["diagnostic_case_list_uri"] = str(Path(diagnostic_case_list).resolve())
+                manifest["protocol"]["diagnostic_case_list_sha256"] = diagnostic_case_list_checksum
+                manifest["protocol"]["diagnostic_schema_version"] = "1.0"
+                manifest["protocol"]["diagnostic_config"] = {
+                    "schema_version": diagnostic_cases.get("schema_version", "1.0"),
+                    "stall_config": diagnostic_cases.get("stall_config", {}),
+                    "door_geometry": diagnostic_cases.get("door_geometry", {}),
+                }
             manifest["execution"]["log_uri"] = str(execution_log_path.resolve())
             manifest["started_at"] = utc_now()
             manifest["status"] = "running"
@@ -364,12 +470,17 @@ def main(
                     episode_length = 0
                     termination_reason = "smoke_only"
                 else:
-                    random.seed(evaluation_seed)
-                    np.random.seed(evaluation_seed)
-                    torch.manual_seed(evaluation_seed)
+                    random.seed(episode_evaluation_seed)
+                    np.random.seed(episode_evaluation_seed)
+                    torch.manual_seed(episode_evaluation_seed)
+                    diagnostic_recorder = (
+                        DoorDiagnosticRecorder(env, stall_config=diagnostic_cases.get("stall_config"))
+                        if diagnostic_cases is not None
+                        else None
+                    )
                     trajectory_path = candidate_output / "trajectory.npz"
                     video_path = candidate_output / "rollout.mp4"
-                    trajectory, success, episode_length, termination_reason = _run_policy_episode(
+                    trajectory, success, episode_length, termination_reason, diagnostic_result = _run_policy_episode(
                         policy,
                         env,
                         observation,
@@ -377,6 +488,7 @@ def main(
                         terminate_on_success,
                         str(video_path),
                         video_skip,
+                        diagnostic_recorder=diagnostic_recorder,
                     )
                     np.savez_compressed(trajectory_path, **trajectory)
                     with np.load(trajectory_path) as archive:
@@ -384,6 +496,20 @@ def main(
                             raise RuntimeError("trajectory validation failed: actions missing")
                     manifest["artifacts"].append(artifact_record(trajectory_path, "npz", "readable"))
                     manifest["artifacts"].append(artifact_record(video_path, "mp4", "written"))
+                    if diagnostic_result is not None:
+                        diagnostic_summary, diagnostic_contacts = diagnostic_result
+                        diagnostic_summary_path = candidate_output / "diagnostic_summary.json"
+                        diagnostic_contacts_path = candidate_output / "diagnostic_contacts.json"
+                        write_json(diagnostic_summary_path, diagnostic_summary)
+                        write_json(diagnostic_contacts_path, diagnostic_contacts)
+                        manifest["diagnostic"] = diagnostic_summary
+                        manifest["artifacts"].append(
+                            artifact_record(diagnostic_summary_path, "json", "readable")
+                        )
+                        manifest["artifacts"].append(
+                            artifact_record(diagnostic_contacts_path, "json", "readable")
+                        )
+                        manifest["notes"]["diagnostic_fields"] = diagnostic_summary["field_schema"]
                 result_path = candidate_output / "result.json"
                 write_json(
                     result_path,
@@ -396,6 +522,8 @@ def main(
                         "pose_error": error,
                         "scene_invariant_hash": fingerprint["scene_invariant_hash"],
                         "scene_invariant_comparison": invariant_comparison,
+                        "diagnostic_case": manifest.get("diagnostic_case"),
+                        "diagnostic": manifest.get("diagnostic"),
                     },
                 )
                 manifest["artifacts"].append(artifact_record(result_path, "json", "readable"))
@@ -466,6 +594,9 @@ def main(
             "created_at": utc_now(),
             "config_uri": str(Path(candidate_config).resolve()),
             "config_sha256": config_sha256,
+            "diagnostic_case_list_uri": str(Path(diagnostic_case_list).resolve()) if diagnostic_case_list else None,
+            "diagnostic_case_list_sha256": diagnostic_case_list_checksum,
+            "diagnostic_schema_version": "1.0" if diagnostic_cases is not None else None,
             "results": batch_results,
         },
     )

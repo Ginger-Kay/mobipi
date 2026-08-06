@@ -1,0 +1,134 @@
+{
+  "schema_version": "1.0",
+  "experiment_id": "mobipi-door-crossing-diagnostic-20260806",
+  "status": "frozen",
+  "review_status": "prepared_for_manual_launch",
+  "task": "CloseSingleDoor",
+  "layout_id": 1,
+  "style_id": 1,
+  "checkpoint_seed": 1,
+  "evaluation_seed": 23,
+  "candidate_config_uri": "/data/worldmodel_jhk_2/mobipi/mobipi/configs/paired_candidates/close_single_door_layout1_style1_frozen.json",
+  "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0",
+  "checkpoint_uri": "/data/worldmodel_jhk_2/mobipi/ckpts/robocasa/bc_xfmr/04-12-CloseSingleDoor/seed_1_CloseSingleDoor_mg-300/20250413055045/models/model_epoch_1000.pth",
+  "checkpoint_sha256": "6cafee55eaf087a93b6e604d072da459c6200b15616f14c32120e29f32be9852",
+  "case_count": 8,
+  "stall_config": {
+    "window_steps": 25,
+    "door_progress_range_threshold": 0.005,
+    "eef_displacement_threshold_m": 0.02,
+    "action_norm_min": 1.0,
+    "action_delta_norm_max": 0.05,
+    "contact_fraction_threshold": 0.5,
+    "plane_tolerance_m": 0.002,
+    "plane_hysteresis_m": 0.005,
+    "control_frequency_hz": 20.0
+  },
+  "door_geometry": {
+    "fixture_name": "microwave_main_group",
+    "fixture_class": "Microwave",
+    "joint_name": "microwave_main_group_microjoint",
+    "joint_raw_units": "rad",
+    "joint_direction": "raw qpos is negative; Microwave.get_door_state negates it",
+    "success_threshold_normalized_open_fraction": 0.05,
+    "success_threshold_raw_formula": "-0.05 * (pi / 2) = -0.07853981633974483 rad",
+    "door_body_name": "microwave_main_group_door",
+    "plane_sites": [
+      "microwave_main_group_door_p1",
+      "microwave_main_group_door_p2",
+      "microwave_main_group_door_p3"
+    ],
+    "plane_semantics": "dynamic infinite plane through door_p1/p2/p3; normal is oriented so reset EEF is on positive exterior side; crossing is positive to negative",
+    "edge_semantics": "plane crossing is an approximation to crossing the finite door edge; UV projection and site span are logged"
+  },
+  "cases": [
+    {
+      "case_id": "env0-C3-failure",
+      "environment_seed": 0,
+      "evaluation_seed": 23,
+      "candidate_id": "C3_world_x_pos_high",
+      "requested_transform": [0.1, 0.0, 0.0],
+      "expected_historical_outcome": "failure",
+      "matched_pair_id": "env0-C3-vs-C1",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env0-C3-control",
+      "environment_seed": 0,
+      "evaluation_seed": 23,
+      "candidate_id": "C1_world_x_pos_low",
+      "requested_transform": [0.05, 0.0, 0.0],
+      "expected_historical_outcome": "control_success",
+      "matched_pair_id": "env0-C3-vs-C1",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env0-C6-failure",
+      "environment_seed": 0,
+      "evaluation_seed": 23,
+      "candidate_id": "C6_world_x_neg_high",
+      "requested_transform": [-0.1, 0.0, 0.0],
+      "expected_historical_outcome": "failure",
+      "matched_pair_id": "env0-C6-vs-C2",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env0-C6-control",
+      "environment_seed": 0,
+      "evaluation_seed": 23,
+      "candidate_id": "C2_world_x_neg_low",
+      "requested_transform": [-0.05, 0.0, 0.0],
+      "expected_historical_outcome": "control_success",
+      "matched_pair_id": "env0-C6-vs-C2",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env1-C6-failure",
+      "environment_seed": 1,
+      "evaluation_seed": 23,
+      "candidate_id": "C6_world_x_neg_high",
+      "requested_transform": [-0.1, 0.0, 0.0],
+      "expected_historical_outcome": "failure",
+      "matched_pair_id": "env1-C6-vs-C2",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env1-C6-control",
+      "environment_seed": 1,
+      "evaluation_seed": 23,
+      "candidate_id": "C2_world_x_neg_low",
+      "requested_transform": [-0.05, 0.0, 0.0],
+      "expected_historical_outcome": "control_success",
+      "matched_pair_id": "env1-C6-vs-C2",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env4-C3-failure",
+      "environment_seed": 4,
+      "evaluation_seed": 23,
+      "candidate_id": "C3_world_x_pos_high",
+      "requested_transform": [0.1, 0.0, 0.0],
+      "expected_historical_outcome": "failure",
+      "matched_pair_id": "env4-C3-vs-C1",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    },
+    {
+      "case_id": "env4-C3-control",
+      "environment_seed": 4,
+      "evaluation_seed": 23,
+      "candidate_id": "C1_world_x_pos_low",
+      "requested_transform": [0.05, 0.0, 0.0],
+      "expected_historical_outcome": "control_success",
+      "matched_pair_id": "env4-C3-vs-C1",
+      "source_run_id": "20260803T151542Z-CloseSingleDoor-paired35",
+      "candidate_config_sha256": "979a2dd53931e8d54d6d638c88f0bcbb0e0787428250ed472d581681192462a0"
+    }
+  ]
+}
