@@ -14,6 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import imageio
 import mimicgen.utils.pose_utils as PoseUtils
 import numpy as np
 import torch
@@ -292,6 +293,8 @@ def _current_preserved(observation, physical_snapshot):
 
 def _run_cells(env, rollout_model, snapshots, hybrids, controller_set_state, args):
     records = {f"x_{x}_h_{h}": [] for x, h in CELL_ORDER}
+    if args.video_dir is not None:
+        args.video_dir.mkdir(parents=True, exist_ok=True)
     for replicate in range(args.replicates):
         for physical_source, history_source in CELL_ORDER:
             cell = f"x_{physical_source}_h_{history_source}"
@@ -306,17 +309,40 @@ def _run_cells(env, rollout_model, snapshots, hybrids, controller_set_state, arg
             rollout_model.start_episode(lang=getattr(env, "_ep_lang_str", "dummy"))
             actions = []
             states = []
-            for _step in range(args.probe_steps):
-                action = np.asarray(rollout_model(ob=observation))
-                actions.append(action.copy())
-                observation, _, _, _ = env.step(action)
-                states.append(_state_probe(env))
+            video_path = (
+                args.video_dir / f"{cell}__replicate_0.mp4"
+                if args.video_dir is not None and replicate == 0
+                else None
+            )
+            writer = (
+                imageio.get_writer(str(video_path), fps=args.video_fps)
+                if video_path is not None
+                else None
+            )
+            try:
+                if writer is not None:
+                    writer.append_data(
+                        env.render(mode="rgb_array", height=512, width=512)
+                    )
+                for _step in range(args.probe_steps):
+                    action = np.asarray(rollout_model(ob=observation))
+                    actions.append(action.copy())
+                    observation, _, _, _ = env.step(action)
+                    states.append(_state_probe(env))
+                    if writer is not None:
+                        writer.append_data(
+                            env.render(mode="rgb_array", height=512, width=512)
+                        )
+            finally:
+                if writer is not None:
+                    writer.close()
             records[cell].append(
                 {
                     "replicate": replicate,
                     "physical_source": physical_source,
                     "history_source": history_source,
                     "current_source": physical_source,
+                    "video_uri": str(video_path) if video_path is not None else None,
                     "actions": actions,
                     "states": states,
                 }
@@ -563,6 +589,11 @@ def _run(args):
         f"x_{physical}_h_{history}" for physical, history in CELL_ORDER
     ]
     report["cells"] = records
+    report["videos"] = [
+        records[cell][0]["video_uri"]
+        for cell in records
+        if records[cell][0]["video_uri"] is not None
+    ]
     report["classification"] = classification
     report["decision"] = classification["decision"]
     report["decision_reason"] = classification["reason"]
@@ -609,6 +640,8 @@ def main():
     parser.add_argument("--research-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--npz-output", type=Path, required=True)
+    parser.add_argument("--video-dir", type=Path, default=None)
+    parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
 
