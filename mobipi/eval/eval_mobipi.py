@@ -40,6 +40,11 @@ from mobipi.utils.env_utils import (
 )
 from mobipi.utils.media_utils import save_video
 from mobipi.utils.policy_utils import get_config_for_policy, load_policy
+from mobipi.utils.handoff_state import (
+    capture_handoff_snapshot,
+    write_handoff_snapshot,
+)
+from mobipi.utils.controller_state import env_controller_adapters
 from mobipi.scene_model.scene_model import BatchSceneModel
 from mobipi.utils.encoder_utils import DinoDenseDescriptorEncoder, DinoEncoder, PolicyEncoder
 from mobipi.utils.score_utils import HybridDistribution
@@ -96,6 +101,16 @@ warnings.filterwarnings(
 @click.option("--detector_view_robot", is_flag=True)
 @click.option("--base_estimator", default="ET")
 @click.option("--num_init_samples", default=2500)
+@click.option(
+    "--ec1-handoff-dir",
+    default=None,
+    type=str,
+    help=(
+        "Write a scoped post-navigation EC-1 handoff snapshot here; "
+        "this schema does not claim exhaustive state coverage. "
+        "The option is fail-closed and requires explicit controller state support."
+    ),
+)
 def main(
     env_name,
     policy_name,
@@ -120,7 +135,8 @@ def main(
     detector_name,
     detector_view_robot,
     base_estimator,
-    num_init_samples
+    num_init_samples,
+    ec1_handoff_dir,
 ):
     # Configure run name
     method_name = "mobipi_debug" if debug else f"mobipi"
@@ -493,6 +509,37 @@ def main(
                 use_rrt=True,
                 k_col=dist.k_col,
             )
+            if ec1_handoff_dir is not None:
+                controller_get_state, controller_set_state = env_controller_adapters(env)
+                handoff_path = os.path.join(
+                    ec1_handoff_dir,
+                    env_name,
+                    f"layout{layout_id}_style{style_id}_seed{seed}_ep{i}.pkl",
+                )
+                handoff_snapshot = capture_handoff_snapshot(
+                    env,
+                    controller_get_state=controller_get_state,
+                    controller_set_state=controller_set_state,
+                    torch_module=torch,
+                    numpy_generators={
+                        "place_robot_for_nav_rng": env.unwrapped.env.place_robot_for_nav_rng
+                    },
+                    required_numpy_generators=("place_robot_for_nav_rng",),
+                    require_controller=True,
+                    require_torch=True,
+                    require_cuda=True,
+                    metadata={
+                        "evaluator": "mobipi/eval/eval_mobipi.py",
+                        "handoff": "post_navigation_pre_policy_rollout",
+                        "env_name": env_name,
+                        "layout_id": layout_id,
+                        "style_id": style_id,
+                        "seed": seed,
+                        "episode_index": i,
+                    },
+                )
+                write_handoff_snapshot(handoff_path, handoff_snapshot)
+                print(f"Wrote EC-1 handoff snapshot to {handoff_path}")
             save_video(nav_info["images"], os.path.join(log_dir, f"ep{i}_nav.mp4"))
 
             del nav_info["images"]
