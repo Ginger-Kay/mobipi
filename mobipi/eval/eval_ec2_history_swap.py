@@ -50,6 +50,8 @@ def _max_abs(left, right):
     right = np.asarray(right)
     if left.shape != right.shape:
         return None
+    if np.issubdtype(left.dtype, np.bool_) or np.issubdtype(right.dtype, np.bool_):
+        return 0.0 if np.array_equal(left, right) else 1.0
     return 0.0 if left.size == 0 else float(np.max(np.abs(left - right)))
 
 

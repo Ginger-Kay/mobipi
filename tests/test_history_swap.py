@@ -4,6 +4,7 @@ from collections import deque
 import numpy as np
 import pytest
 
+from mobipi.eval.eval_ec2_history_swap import _max_abs
 from mobipi.utils.handoff_state import capture_handoff_snapshot
 from mobipi.utils.history_swap import (
     HistorySwapError,
@@ -106,3 +107,8 @@ def test_validator_rejects_current_frame_from_history_source():
     )
     with pytest.raises(HistorySwapError, match="current frame"):
         validate_history_intervention(hybrid, physical, history)
+
+
+def test_numeric_comparison_handles_boolean_controller_fields():
+    assert _max_abs(np.array([True, False]), np.array([True, False])) == 0.0
+    assert _max_abs(np.array([True, False]), np.array([False, False])) == 1.0
