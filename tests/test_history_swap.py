@@ -4,7 +4,9 @@ from collections import deque
 import numpy as np
 import pytest
 
-from mobipi.eval.eval_ec2_history_swap import _max_abs
+from types import SimpleNamespace
+
+from mobipi.eval.eval_ec2_history_swap import _approach_definition, _max_abs
 from mobipi.utils.handoff_state import capture_handoff_snapshot
 from mobipi.utils.history_swap import (
     HistorySwapError,
@@ -112,3 +114,19 @@ def test_validator_rejects_current_frame_from_history_source():
 def test_numeric_comparison_handles_boolean_controller_fields():
     assert _max_abs(np.array([True, False]), np.array([True, False])) == 0.0
     assert _max_abs(np.array([True, False]), np.array([False, False])) == 1.0
+
+
+def test_approach_definition_freezes_common_terminal_alignment():
+    definition, _digest = _approach_definition(
+        SimpleNamespace(
+            target_x=0.1,
+            target_y=0.0,
+            detour_x=0.0,
+            detour_y=0.08,
+            settle_steps=5,
+        )
+    )
+    assert definition["terminal_alignment"] == {
+        "normalize_simulator_time_before_settle": True,
+        "neutral_action_steps": 5,
+    }

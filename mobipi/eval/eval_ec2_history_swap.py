@@ -221,7 +221,7 @@ def _pose(initial_pos, initial_rot, delta_x, delta_y):
     return PoseUtils.make_pose(position, initial_rot)
 
 
-def _execute_approach(env, poses, label):
+def _execute_approach(env, poses, label, settle_steps):
     segments = []
     for pose in poses:
         segments.append(
@@ -235,11 +235,27 @@ def _execute_approach(env, poses, label):
                 legacy=True,
             )
         )
+    # Different path lengths necessarily leave different MuJoCo clock values
+    # and last-command controller transients. Align the hidden simulator clock,
+    # then apply the same short neutral tail to both approaches. Five frames
+    # leave four approach-dependent past frames in the 9-frame payload.
+    env.unwrapped.env.sim.data.time = 0.0
+    neutral_action = np.zeros(env.action_dimension, dtype=np.float64)
+    for _ in range(settle_steps):
+        env.step(neutral_action)
     return {
         "label": label,
         "segments": segments,
+        "navigation_env_step_count": int(
+            sum(len(segment["base_cmd_history"]) for segment in segments)
+        ),
+        "settle_steps": settle_steps,
+        "settle_action": neutral_action,
+        "simulator_time_normalized_before_settle": True,
+        "terminal_simulator_time": float(env.unwrapped.env.sim.data.time),
         "env_step_count": int(
             sum(len(segment["base_cmd_history"]) for segment in segments)
+            + settle_steps
         ),
         "terminal_probe": _state_probe(env),
     }
@@ -469,6 +485,10 @@ def _approach_definition(args):
         },
         "rotation": "initial base rotation for every waypoint",
         "move_to_pose": {"use_rrt": False, "legacy": True, "collision": "open"},
+        "terminal_alignment": {
+            "normalize_simulator_time_before_settle": True,
+            "neutral_action_steps": args.settle_steps,
+        },
     }
     encoded = json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()
     return definition, hashlib.sha256(encoded).hexdigest()
@@ -517,10 +537,12 @@ def _run(args):
     detour = _pose(initial_pos, initial_rot, args.detour_x, args.detour_y)
 
     _restore(env, initial, controller_set_state)
-    nav_a = _execute_approach(env, [target], "A_direct")
+    nav_a = _execute_approach(env, [target], "A_direct", args.settle_steps)
     snapshot_a = _capture(env, controller_get_state, "A")
     _restore(env, initial, controller_set_state)
-    nav_b = _execute_approach(env, [detour, target], "B_detour")
+    nav_b = _execute_approach(
+        env, [detour, target], "B_detour", args.settle_steps
+    )
     snapshot_b = _capture(env, controller_get_state, "B")
     snapshots = {"A": snapshot_a, "B": snapshot_b}
 
@@ -622,6 +644,7 @@ def main():
     parser.add_argument("--target-y", type=float, default=0.0)
     parser.add_argument("--detour-x", type=float, default=0.0)
     parser.add_argument("--detour-y", type=float, default=0.08)
+    parser.add_argument("--settle-steps", type=int, default=5)
     parser.add_argument("--replicates", type=int, default=5)
     parser.add_argument("--probe-steps", type=int, default=5)
     parser.add_argument("--base-xy-tolerance", type=float, default=0.005)
