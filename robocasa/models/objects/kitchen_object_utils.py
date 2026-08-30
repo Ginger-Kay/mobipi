@@ -221,23 +221,29 @@ def sample_kitchen_object(
 
         # check if object size is within bounds
         mjcf_path = info["mjcf_path"]
-        tree = ET.parse(mjcf_path)
-        root = tree.getroot()
-        bottom = string_to_array(
-            find_elements(root=root, tags="site", attribs={"name": "bottom_site"}).get(
-                "pos"
-            )
-        )
-        top = string_to_array(
-            find_elements(root=root, tags="site", attribs={"name": "top_site"}).get(
-                "pos"
-            )
-        )
-        horizontal_radius = string_to_array(
-            find_elements(
-                root=root, tags="site", attribs={"name": "horizontal_radius_site"}
-            ).get("pos")
-        )
+        try:
+            tree = ET.parse(mjcf_path)
+            root = tree.getroot()
+            bottom_site = find_elements(root=root, tags="site", attribs={"name": "bottom_site"})
+            top_site = find_elements(root=root, tags="site", attribs={"name": "top_site"})
+            radius_site = find_elements(root=root, tags="site", attribs={"name": "horizontal_radius_site"})
+            if bottom_site is None or top_site is None or radius_site is None:
+                region = find_elements(root=root, tags="geom", attribs={"class": "region"})
+                if region is None or region.get("type") != "box":
+                    continue
+                center = string_to_array(region.get("pos", "0 0 0"))
+                half_size = string_to_array(region.get("size"))
+                bottom = center.copy()
+                top = center.copy()
+                bottom[2] -= half_size[2]
+                top[2] += half_size[2]
+                horizontal_radius = np.array([half_size[0], half_size[1], 0.0])
+            else:
+                bottom = string_to_array(bottom_site.get("pos"))
+                top = string_to_array(top_site.get("pos"))
+                horizontal_radius = string_to_array(radius_site.get("pos"))
+        except (ET.ParseError, OSError, AttributeError, TypeError, KeyError):
+            continue
         scale = mjcf_kwargs["scale"]
         obj_size = (
             np.array(
@@ -350,11 +356,24 @@ def sample_kitchen_object_helper(
                 if cat in invalid_categories:
                     continue
 
-                # don't include if category not represented in any registry
-                cat_in_any_reg = np.any(
-                    [reg in OBJ_CATEGORIES[cat] for reg in obj_registries]
-                )
-                if not cat_in_any_reg:
+                # Exclude categories with no usable MJCFs in the selected split.
+                # Partial RoboCasa asset mirrors can register a category while
+                # exposing zero files; sampling those categories creates 0/0 NaNs.
+                available_paths = []
+                for reg in obj_registries:
+                    if reg not in OBJ_CATEGORIES[cat]:
+                        continue
+                    reg_paths = OBJ_CATEGORIES[cat][reg].mjcf_paths
+                    if split is not None:
+                        split_th = max(len(obj_registries) - 3, int(math.ceil(len(reg_paths) / 2)))
+                        if split == "A":
+                            reg_paths = reg_paths[:split_th]
+                        elif split == "B":
+                            reg_paths = reg_paths[split_th:]
+                        else:
+                            raise ValueError
+                    available_paths.extend(reg_paths)
+                if not available_paths:
                     continue
 
                 invalid = False

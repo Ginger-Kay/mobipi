@@ -88,6 +88,19 @@ class MJCFObject(MujocoXMLObject):
         # replace mesh and texture file paths
         tree = ET.fromstring(xml_str)
         root = tree
+        body = root.find("./worldbody/body")
+        if body is not None and body.find("./site[@name='bottom_site']") is None:
+            region = body.find(".//geom[@class='region']")
+            if region is not None and region.get("type") == "box":
+                center = string_to_array(region.get("pos", "0 0 0"))
+                half_size = string_to_array(region.get("size"))
+                site_positions = {
+                    "bottom_site": center + np.array([0.0, 0.0, -half_size[2]]),
+                    "top_site": center + np.array([0.0, 0.0, half_size[2]]),
+                    "horizontal_radius_site": np.array([half_size[0], half_size[1], 0.0]),
+                }
+                for site_name, site_pos in site_positions.items():
+                    ET.SubElement(body, "site", attrib={"name": site_name, "pos": array_to_string(site_pos), "size": "0.005", "rgba": "0 0 0 0"})
         asset = root.find("asset")
         meshes = asset.findall("mesh")
         textures = asset.findall("texture")
