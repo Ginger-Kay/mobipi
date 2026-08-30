@@ -1,0 +1,146 @@
+contract_version: "1.0"
+project: frozen-policy-mobile-manipulation
+created_at: "2026-08-26"
+status: draft
+
+versioning:
+  repo_root: /share/chensiyu/MobiWAM/repos/mobipi
+  git_commit: 19b130b8ada3f7e029918449c12d433e9e629ca1
+  simulator_name_version: robocasa==0.2.0
+  simulator_commit: 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  robot_asset_version: UNKNOWN
+  robot_mapping: PandaMobile -> PandaOmron
+  task_config: CloseSingleDoor layout=1 style=1 seed=1 horizon=500
+  vanilla_rollout_command: MOBIWAM_GPU_INDEX=0 bash scripts/gpu_with_lease.sh -- bash scripts/run_mobipi_vanilla_once.sh
+  policy_name: bc_xfmr / vanilla_policy
+  policy_checkpoint_path: /share/chensiyu/MobiWAM/checkpoints/robocasa/bc_xfmr/04-12-CloseSingleDoor/seed_1_CloseSingleDoor_mg-300/20250413055045/models/model_epoch_1000.pth
+  policy_checkpoint_hash: 6cafee55eaf087a93b6e604d072da459c6200b15616f14c32120e29f32be9852
+
+observation:
+  cameras: UNKNOWN
+  resolution: UNKNOWN
+  frame_rate_hz: UNKNOWN
+  intrinsics_path: UNKNOWN
+  extrinsics_path: UNKNOWN
+  history_frame_count: 10
+  history_sampling_stride: 1
+  includes_previous_action: true
+  evidence: checkpoint frame_stack=10 and pinned robomimic FrameStackWrapper
+
+policy_state:
+  type: robomimic RolloutPolicy wrapping BC_Transformer
+  seed_api: UNKNOWN
+  reset_api: RolloutPolicy.start_episode(lang) calls policy.reset()
+  reset_after_dock_protocol: zero-action settle until the 10-frame stack contains only stable post-dock frames, then start_episode; never env.reset
+  moving_camera_history_protocol: navigation frames and nonzero base actions must be flushed before policy re-query
+  checkpoint_transformer_context_length: 10
+  checkpoint_pred_future_actions: true
+  public_wrapper_output: first action only
+  required_chunk_exposure_check: unnormalized future chunk[0] must equal RolloutPolicy output
+
+arm_action:
+  action_semantics_id: pandaomron-hybrid-mobile-v1
+  representation: normalized right-arm OSC_POSE delta in action[0:6]
+  position_slice: action[0:3]
+  rotation_slice: action[3:6]
+  reference_frame: moving right-arm controller origin / robot base frame
+  input_range: [-1, 1]
+  position_output_range_m: [-0.05, 0.05]
+  rotation_output_range_rad: [-0.5, 0.5]
+  rotation_parameterization: axis-angle left-multiplied onto achieved EE orientation
+  torso_slice: action[6]
+  gripper_slice: action[10]
+  control_mode_slice: action[11]
+  control_mode_semantics: value > 0 uses desired-goal update; value <= 0 uses achieved-pose update
+  total_action_dimension: 12
+  policy_action_key: actions
+  chunk_length: 10
+  future_chunk_source: BC_Transformer raw output with pred_future_acs=true
+  policy_frequency_hz: UNKNOWN
+  controller_frequency_hz: UNKNOWN
+  interpolation: null in default_pandaomron controller config
+  velocity_limits: UNKNOWN
+  acceleration_limits: UNKNOWN
+  gripper_semantics: UNKNOWN
+
+base_action:
+  kinematics: planar SE(2)
+  controller_type: JOINT_VELOCITY
+  command_type: normalized body-frame velocity-like command in action[7:10]
+  external_axis_order: [forward_x, lateral_y, yaw]
+  internal_axis_order: controller swaps x/y to [lateral_y, forward_x, yaw]
+  command_frame: Mobi-pi converts world target error into the current robot base frame before env.step
+  command_frequency_hz: UNKNOWN
+  velocity_limits: UNKNOWN
+  acceleration_limits: UNKNOWN
+  controller_latency_ms: UNKNOWN
+
+whole_body_execution:
+  simultaneous_command_supported: true in PandaOmron HYBRID_MOBILE_BASE simulation controller
+  scheduler_api: one env.step receives the full 12-D arm/torso/base/gripper/mode vector
+  timestamp_source: UNKNOWN
+  maximum_allowed_skew_ms: UNKNOWN
+  stale_waypoint_policy: UNKNOWN
+  emergency_stop_api: UNKNOWN
+
+dock_option:
+  proposal_api: UNKNOWN
+  navigation_api: mobipi.utils.nav_utils.move_to_pose
+  settle_linear_velocity_threshold: UNKNOWN
+  settle_angular_velocity_threshold: UNKNOWN
+  settle_duration_s: UNKNOWN
+  history_reset_protocol: postdock-zero-settle-flush10-policy-reset-v1
+  post_dock_requery_seed_policy: UNKNOWN
+  eligible_stages: [precontact]
+
+assist_option:
+  replanning_horizon_steps: 10
+  candidate_parameterization: 25 percent prefix toward registered D pose, capped at 0.05 m and 3 deg over 10 steps
+  controller: existing OSC_POSE with anticipated-next-origin SE(3) compensation
+  ik_solver: not required for PandaOmron v0; use embodiment-specific IK only for later dual-arm ports
+  collision_checker: UNKNOWN
+  position_intent_tolerance_m: UNKNOWN
+  rotation_intent_tolerance_rad: UNKNOWN
+  contact_constraints: UNKNOWN
+  eligible_stages: [precontact, contact]
+
+snapshot:
+  save_api: EnvRobosuite.get_state plus adapter-owned wrapper and RNG state
+  restore_api: FrameStackWrapper.reset_to for simulator state, followed by observation and hash verification
+  serialized_fields: model XML, flattened MuJoCo state, episode metadata, frame history, wrapper timestep, Python/NumPy/Torch RNG states
+  state_hash_function: UNKNOWN
+  observation_hash_function: UNKNOWN
+  saves_controller_state: false
+  controller_state_rule: paired_collection_v0 captures only reset-boundary precontact states where controller state is canonical
+  saves_policy_history: false
+  policy_history_rule: every executable route begins with RolloutPolicy.start_episode
+  saves_contact_state: UNKNOWN
+  saves_rng_state: true
+
+stage:
+  precontact_definition: UNKNOWN
+  contact_definition: UNKNOWN
+  online_estimator_inputs: UNKNOWN
+  simulator_label_only_fields: UNKNOWN
+
+safety:
+  collision_threshold: UNKNOWN
+  irreversible_failure_predicate: UNKNOWN
+  contact_loss_predicate: UNKNOWN
+  abstain_safe_state: UNKNOWN
+
+route_oracle:
+  k_execute: 1
+  k_dock: 3
+  k_assist: 3
+  paired_collection_source_states: 100
+  paired_collection_candidates_per_route: 1
+  paired_collection_repeats_per_route: 1
+  paired_collection_total_rollouts: 300
+  abstain_is_derived_not_executed: true
+  smoke_source_states: 25
+  oracle_source_states: 200
+  initial_seeds: [0, 1, 2]
+  route_oracle_min_success_gain_pp: 10
+  learned_selector_min_success_gain_pp: 5
+  paired_ci_level: 0.95

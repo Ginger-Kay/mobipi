@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "seeds_per_candidate": 3,
+  "dock_candidates": [
+    {
+      "candidate_id": "d0",
+      "candidate_params": {
+        "approach_variant": "center_direct",
+        "target_offset_local_xy_m": [0.0, 0.0],
+        "dock_max_steps": 240,
+        "position_tolerance_m": 0.005,
+        "yaw_tolerance_rad": 0.017453292519943295,
+        "command_gain": 1.0
+      }
+    },
+    {
+      "candidate_id": "d1",
+      "candidate_params": {
+        "approach_variant": "left_detour_then_standoff",
+        "target_offset_local_xy_m": [0.08, 0.12],
+        "waypoint_delta_from_start_dock_xy_m": [0.10, 0.12],
+        "waypoint_preserve_start_yaw": true,
+        "waypoint_max_steps": 180,
+        "dock_max_steps": 240,
+        "position_tolerance_m": 0.005,
+        "yaw_tolerance_rad": 0.017453292519943295,
+        "command_gain": 1.0
+      }
+    },
+    {
+      "candidate_id": "d2",
+      "candidate_params": {
+        "approach_variant": "right_detour_then_standoff",
+        "target_offset_local_xy_m": [0.08, -0.12],
+        "waypoint_delta_from_start_dock_xy_m": [0.10, -0.12],
+        "waypoint_preserve_start_yaw": true,
+        "waypoint_max_steps": 180,
+        "dock_max_steps": 240,
+        "position_tolerance_m": 0.005,
+        "yaw_tolerance_rad": 0.017453292519943295,
+        "command_gain": 1.0
+      }
+    }
+  ],
+  "assist_candidates": [
+    {
+      "candidate_id": "a0",
+      "candidate_params": {
+        "approach_variant": "center_short",
+        "target_offset_local_xy_m": [0.0, 0.0],
+        "fraction_toward_dock": 0.1,
+        "max_translation_m": 0.02,
+        "max_yaw_rad": 0.017453292519943295
+      }
+    },
+    {
+      "candidate_id": "a1",
+      "candidate_params": {
+        "approach_variant": "left_detour_prefix",
+        "target_delta_from_start_dock_xy_m": [0.06, 0.06],
+        "target_preserve_start_yaw": true,
+        "fraction_toward_dock": 1.0,
+        "max_translation_m": 0.08,
+        "max_yaw_rad": 0.0
+      }
+    },
+    {
+      "candidate_id": "a2",
+      "candidate_params": {
+        "approach_variant": "right_detour_prefix",
+        "target_delta_from_start_dock_xy_m": [0.06, -0.06],
+        "target_preserve_start_yaw": true,
+        "fraction_toward_dock": 1.0,
+        "max_translation_m": 0.08,
+        "max_yaw_rad": 0.0
+      }
+    }
+  ]
+}

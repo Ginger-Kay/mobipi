@@ -1,0 +1,85 @@
+strategy_version: "1.0"
+updated_at: "2026-08-27T00:00:00+08:00"
+
+primary_gate0_stack:
+  name: Mobi-pi bundled RoboCasa
+  purpose: frozen-policy reproduction and paired E/D/A source-state branching
+  repo: /share/chensiyu/MobiWAM/repos/mobipi
+  mobipi_commit: 19b130b8ada3f7e029918449c12d433e9e629ca1
+  robocasa_commit: 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  python: "3.10.20"
+  robocasa: "0.2.0"
+  robosuite: "1.5.0"
+  mujoco: "3.2.6"
+  robot_mapping: PandaMobile -> PandaOmron
+  action_evidence: 12-D action; nav_utils.py assigns base command to action[7:10]
+  policy_compatibility: official checkpoints and evaluator are native to this stack
+
+secondary_transfer_stack:
+  name: RoboCasa365
+  version: "1.0.1"
+  robocasa_commit: a07e365c958c4216cd6bbd5f30b47f09a65c6f00
+  robosuite_commit: 5ce6643f3092639d08f7b0f90ed1c6a84f50552c
+  purpose: held-out task/scene transfer and embodiment-port audit after Gate 0
+  repo: /share/chensiyu/MobiWAM/repos/robocasa365
+  environment: /share/chensiyu/MobiWAM/envs/robocasa365
+  python: "3.11"
+  robosuite: master
+  api: Gymnasium
+  asset_download_estimate: approximately 10 GB
+  available_robot_evidence:
+    - PandaMobile
+    - GR1
+    - GR1FixedLowerBody
+    - G1
+  compatibility_status: not checkpoint-compatible with the pinned Mobi-pi stack
+  isolation_rule: never install into envs/mobipi and never overwrite bundled assets
+  stage_annotation_use: July 2026 composite datasets provide per-frame subtask, atomic-skill, and pick/place/navigate stage labels; use only as auxiliary stage supervision, never as E/D/A route labels
+
+paired_collection_v0:
+  source_states: 100
+  required_stage: precontact
+  executable_routes: [E, D, A]
+  rollouts_per_route_per_state: 1
+  total_rollouts: 300
+  candidate_budget:
+    E: 1
+    D: 1
+    A: 1
+  x_semantics: derived abstain target when no safe successful executable route exists
+  statistical_unit: source_state_id
+  split_unit: source_state_id
+  split_seed: 0
+  source_state_scope: reset-boundary precontact states with canonical controller state
+  nominal_macro_horizon: 10
+  nominal_macro_evidence: checkpoint context_length=10 and pred_future_acs=true
+  source_state_sampling:
+    evaluation_layouts: [1, 4, 7, 8, 9]
+    states_per_layout: 20
+    base_noise_sigma_m_and_rad: [0.0, 0.03, 0.05, 0.10]
+    states_per_noise_per_layout: 5
+    selection_rule: deterministic environment seeds; filter only invalid/colliding resets, never filter by E/D/A outcome
+  canonical_d: registered collision-free route to the task default/Mobi-pi docking pose
+  canonical_a: 25 percent of the D displacement, capped at 0.05 m and 3 deg across the shared 10-step macro
+  dock_history_protocol: zero-action settle and flush the 10-frame stack before policy reset/re-query
+  claim_scope: engineering and labeling pilot, not final route-oracle evidence
+
+publication_expansion:
+  route_smoke:
+    source_states: 25
+    candidates_per_state: {E: 1, D: 3, A: 3}
+    repeats_per_candidate: 3
+  route_oracle:
+    source_states: 200
+    candidates_per_state: {E: 1, D: 3, A: 3}
+    repeats_per_candidate: 3
+  minimum_task_families: 2
+
+module_roles:
+  E: execute one frozen-policy nominal chunk with fixed base
+  D: dock, settle, acquire observation history, reset, re-query the frozen policy
+  A: preserve the shared nominal world-frame end-effector intent using base motion and arm compensation
+  X: abstain or enter a verified safe state; not an executable training rollout
+  dreamtrajectory: trajectory-only evaluator baseline; does not implement A
+  mobiwam: typed option-boundary consequence evaluator and route selector
+  video_or_4d_wam: optional auxiliary representation retained only after matched value-only and trajectory-only controls

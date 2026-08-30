@@ -1,0 +1,35 @@
+project_root: /share/chensiyu/MobiWAM
+python_env: /share/chensiyu/MobiWAM/envs/mobiwam
+research_repo: /share/chensiyu/MobiWAM/repos/MM-WAM-Research
+engineering_repo: /share/chensiyu/MobiWAM
+vanilla_rollout_command: MOBIWAM_GPU_INDEX=0 bash scripts/gpu_with_lease.sh -- bash scripts/run_mobipi_vanilla_once.sh
+
+gpu_occupant:
+  script: /share/chensiyu/CoTTA/streamingqa/scripts/pi0.5_test.py
+  historical_pid_observed_2026_08_26: 1983488
+  parent_pid_observed_2026_08_26: 2402369
+  resource_tracker_pid_observed_2026_08_26: 2402460
+  worker_pids_observed_2026_08_26: [2402461, 2402462, 2402463, 2402464]
+  parent_argv_observed_2026_08_26: [python, pi0.5_test.py]
+  process_model: multiprocessing_parent_with_resource_tracker_and_four_workers
+  lease_support: tree_control_tested_runtime_env_hardening_requires_server_retest
+  production_gpu_run: blocked_until_artifacts_assets_cpu_preflight_and_server_wrapper_retest_pass
+  log: /share/chensiyu/pi0.5_test.log
+  pid_file: /share/chensiyu/pi0.5_test.pid
+
+dependency_roles:
+  primary_rollout_stack: Mobi-pi / existing RoboCasa integration
+  primary_rollout_version: robocasa==0.2.0 at bundled commit 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  held_out_transfer_stack: RoboCasa365 v1.0.1 in a separate Python 3.11 environment
+  trajectory_baseline: DreamTrajectory-style evaluator; it does not implement route A
+  online_assistance_reference: kinematic feasibility / reactive whole-body control
+  learned_route_evaluator: MobiWAM structured option-boundary consequences
+  optional_auxiliary_representations:
+    - video future
+    - 4D-WAM
+    - DECOWAM-style base-arm factorization
+
+storage_policy:
+  share_usage_observed_percent: 97
+  allow_duplicate_checkpoints: false
+  allow_duplicate_datasets: false
