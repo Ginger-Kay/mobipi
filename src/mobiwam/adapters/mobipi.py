@@ -404,6 +404,13 @@ def _controller_state_hash(state: Mapping[str, Mapping[str, Any]]) -> str:
     return digest.hexdigest()
 
 
+def _future_chunk_query_metadata(evidence: FutureChunkEvidence) -> dict[str, float]:
+    """Serialize post-query evidence without assuming a NominalMacro wrapper."""
+    return {
+        "policy_query_first_action_max_abs_error": float(evidence.max_abs_error)
+    }
+
+
 def _contact_hash(raw_env: Any) -> str:
     """Hash robot-relevant contacts while ignoring derived fixture self-collisions."""
     digest = hashlib.sha256()
@@ -1419,7 +1426,7 @@ class MobiPiPairedAdapter:
                     "post_dock_observation_hash": _observation_hash(observation),
                     "history_reset_fingerprint": _observation_hash(observation),
                     "policy_query_seed": policy_seed,
-                    "policy_query_first_action_max_abs_error": dock_macro.evidence.max_abs_error,
+                    **_future_chunk_query_metadata(dock_macro),
                 }
             )
             manipulation_steps = 0

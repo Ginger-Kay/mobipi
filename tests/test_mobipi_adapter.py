@@ -11,14 +11,28 @@ from mobiwam.adapters.mobipi import (
     _capture_planar_base_lock,
     _default_task_root_pose,
     _detour_pose_from_start,
+    _future_chunk_query_metadata,
     _is_mobile_base_geom,
     _offset_planar_pose_local,
     _state_hash,
     select_source_stratum,
 )
+from mobiwam.mobipi_policy import FutureChunkEvidence
 
 
 class MobiPiAdapterSamplingTest(unittest.TestCase):
+    def test_post_dock_query_metadata_uses_direct_future_chunk_evidence(self):
+        evidence = FutureChunkEvidence(
+            chunk=np.zeros((2, 12)),
+            official_first_action=np.zeros(12),
+            max_abs_error=2.5e-7,
+        )
+
+        self.assertEqual(
+            _future_chunk_query_metadata(evidence),
+            {"policy_query_first_action_max_abs_error": 2.5e-7},
+        )
+
     def test_capture_rejects_initial_mobile_base_collision(self):
         adapter = object.__new__(MobiPiPairedAdapter)
         adapter.env = object()
