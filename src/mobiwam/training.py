@@ -64,6 +64,38 @@ def _generic_loss(predictions: dict[str, Tensor], data: dict[str, np.ndarray], i
     )
 
 
+def trajectory_supervision_loss(
+    predictions: dict[str, Tensor],
+    data: dict[str, np.ndarray],
+    indices: np.ndarray,
+    device: torch.device,
+) -> Tensor:
+    required = {"induced_ee_trajectory", "trajectory_valid"}
+    missing = sorted(required.difference(data))
+    if missing:
+        raise ValueError(f"trajectory-only feature file is missing: {missing}")
+    predicted = predictions["induced_ee_trajectory"]
+    target = torch.as_tensor(
+        data["induced_ee_trajectory"][indices], device=device
+    )
+    if target.shape != predicted.shape:
+        raise ValueError(
+            f"trajectory target shape {tuple(target.shape)} differs from prediction {tuple(predicted.shape)}"
+        )
+    valid = torch.as_tensor(
+        data["trajectory_valid"][indices], device=device
+    ).reshape(-1)
+    if valid.shape != (predicted.shape[0],):
+        raise ValueError("trajectory_valid must have one value per feature row")
+    per_row = nn.functional.smooth_l1_loss(
+        predicted, target, reduction="none"
+    ).mean(dim=(1, 2))
+    support = valid.sum()
+    if float(support.detach()) == 0.0:
+        return predicted.sum() * 0.0
+    return (per_row * valid).sum() / support
+
+
 def source_group_route_regret(
     source_ids: np.ndarray,
     success_logits: np.ndarray,
@@ -203,7 +235,11 @@ def main() -> None:
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 predictions = model(**inputs)
                 loss = _generic_loss(predictions, data, indices, device)
-                if args.model == "obc-wam":
+                if args.model == "trajectory-only":
+                    loss = loss + trajectory_supervision_loss(
+                        predictions, data, indices, device
+                    )
+                elif args.model == "obc-wam":
                     structured_required = {
                         "typed_internal_states", "common_boundary_latent", "is_a0",
                     }
@@ -253,6 +289,7 @@ def main() -> None:
         "trainable_parameters": parameter_count, "best_epoch": best_epoch,
         "best_validation_source_group_route_regret": best_regret,
         "optimizer": {"name": "AdamW", "lr": 3e-4, "weight_decay": 0.05, "gradient_clip": 1.0, "schedule": "cosine"},
+        "trajectory_loss_weight": 1.0 if args.model == "trajectory-only" else None,
         "bf16": device.type == "cuda", "history": history,
     }
     (args.output_root / "training.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
