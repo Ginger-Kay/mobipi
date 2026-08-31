@@ -11,6 +11,19 @@ from mobiwam.adapters.mobipi import (
 )
 
 
+_EMPTY_OBJECT_CATEGORY_ERROR = "a cannot be empty unless no samples are taken"
+
+
+def _source_generation_error(exc: ValueError, environment_seed: int) -> SourceStateIneligibleError | None:
+    """Classify the known seed-specific RoboCasa empty-category sample failure."""
+    if str(exc) != _EMPTY_OBJECT_CATEGORY_ERROR:
+        return None
+    return SourceStateIneligibleError(
+        "RoboCasa environment generation found no valid object category: "
+        f"environment_seed={environment_seed}"
+    )
+
+
 def probe_source_eligibility(
     adapter: Any,
     source_indices: Sequence[int],
@@ -26,8 +39,8 @@ def probe_source_eligibility(
     rows: list[dict[str, Any]] = []
     for source_index in indices:
         environment_seed = environment_seed_start + source_index
-        adapter.prepare_source_state(source_index, environment_seed)
         try:
+            adapter.prepare_source_state(source_index, environment_seed)
             snapshot = adapter.capture_source_state()
         except SourceStateIneligibleError as exc:
             rows.append(
@@ -36,6 +49,19 @@ def probe_source_eligibility(
                     "environment_seed": environment_seed,
                     "eligible": False,
                     "reason": str(exc),
+                }
+            )
+            continue
+        except ValueError as exc:
+            classified = _source_generation_error(exc, environment_seed)
+            if classified is None:
+                raise
+            rows.append(
+                {
+                    "source_index": source_index,
+                    "environment_seed": environment_seed,
+                    "eligible": False,
+                    "reason": str(classified),
                 }
             )
             continue
