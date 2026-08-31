@@ -405,14 +405,28 @@ def _controller_state_hash(state: Mapping[str, Mapping[str, Any]]) -> str:
 
 
 def _contact_hash(raw_env: Any) -> str:
+    """Hash robot-relevant contacts while ignoring derived fixture self-collisions."""
     digest = hashlib.sha256()
+    contact_records: list[bytes] = []
     contacts = raw_env.sim.data.contact[: raw_env.sim.data.ncon]
-    for index, contact in enumerate(contacts):
-        digest.update(
-            f"{index}:{int(contact.geom1)}:{int(contact.geom2)}".encode("ascii")
+    for contact in contacts:
+        names = (
+            raw_env.sim.model.geom_id2name(contact.geom1) or "",
+            raw_env.sim.model.geom_id2name(contact.geom2) or "",
         )
+        if not any(
+            any(token in name.lower() for token in ("robot", "gripper", "panda", "mobilebase"))
+            for name in names
+        ):
+            continue
+        record = hashlib.sha256()
+        record.update(names[0].encode("utf-8"))
+        record.update(names[1].encode("utf-8"))
         for name in ("dist", "pos", "frame", "friction"):
-            _hash_update_array(digest, name, np.asarray(getattr(contact, name)))
+            _hash_update_array(record, name, np.asarray(getattr(contact, name)))
+        contact_records.append(record.digest())
+    for record in sorted(contact_records):
+        digest.update(record)
     return digest.hexdigest()
 
 
