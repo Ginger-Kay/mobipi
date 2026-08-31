@@ -1,0 +1,47 @@
+schema_version: "1.0"
+experiment_id: MMWAM-OBC-001
+encoder:
+  model_id: openai/clip-vit-large-patch14
+  revision: 32bd64288804d66eefd0ccbe215aa642df71cc41
+  frozen: true
+model:
+  hidden_dim: 512
+  layers: 6
+  heads: 8
+  feedforward_dim: 7168
+  adapter_rank: 64
+  trainable_parameter_range: [50000000, 80000000]
+  typed_internal_states: 3
+  common_outcome_boundary: true
+heads:
+  - policy_compatibility
+  - visibility
+  - reachability
+  - contact_retention
+  - intent_error
+  - progress
+  - success
+  - irreversible_risk
+  - duration_cost
+  - predictive_uncertainty
+loss:
+  terms: [event, terminal, paired_rank, a0_equals_e, boundary]
+  lambda_rank: 1.0
+  lambda_a0e: 1.0
+  lambda_boundary: 1.0
+training:
+  seeds: [17, 23, 41]
+  optimizer: AdamW
+  initial_lr: 0.0003
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  schedule: cosine
+  precision: bf16
+  max_epochs: 50
+  early_stopping_metric: validation_source_group_route_regret
+  patience: 8
+split:
+  train: 0.60
+  validation: 0.15
+  calibration: 0.10
+  locked_test: 0.15

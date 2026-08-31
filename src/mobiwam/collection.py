@@ -244,6 +244,9 @@ def run_candidate_grid_collection(
     seeds_per_candidate = int(candidate_grid.get("seeds_per_candidate", 0))
     if seeds_per_candidate <= 0:
         raise ValueError("seeds_per_candidate must be positive")
+    schedule_seed = int(candidate_grid.get("schedule_seed", -1))
+    if schedule_seed < 0:
+        raise ValueError("candidate grid requires a non-negative schedule_seed")
     dock_candidates = _parse_candidates(
         candidate_grid.get("dock_candidates"),
         route=RouteType.DOCK,
@@ -289,6 +292,7 @@ def run_candidate_grid_collection(
                 seeds_per_candidate=seeds_per_candidate,
                 dock_candidates=dock_candidates,
                 assist_candidates=assist_candidates,
+                schedule_seed=schedule_seed,
             )
         )
         commit_transaction(

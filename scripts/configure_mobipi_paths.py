@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 
-DEFAULT_ROOT = Path("/share/chensiyu/MobiWAM")
+DEFAULT_ROOT = Path("/share/jhk/MobiWAM")
 
 
 def atomic_create(path: Path, content: str) -> str:
@@ -35,20 +35,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    allowed_root = Path("/share/chensiyu").resolve()
-    if allowed_root not in root.parents:
-        raise RuntimeError(f"Project root must stay under {allowed_root}: {root}")
+    allowed_root = DEFAULT_ROOT.resolve()
+    if root != allowed_root:
+        raise RuntimeError(f"Project root must be exactly {allowed_root}: {root}")
 
-    repo = root / "repos" / "mobipi"
+    repo = root / "Mobipi"
     if not (repo / "mobipi" / "macros.py").is_file():
         raise FileNotFoundError(f"Mobi-pi source tree not found: {repo}")
 
     directories = {
-        "scene_models": root / "assets" / "scene_models",
-        "checkpoints": root / "checkpoints",
-        "logs": root / "experiments" / "mobipi",
-        "data": root / "data",
-        "robomimic": root / "experiments" / "robomimic",
+        "scene_models": root / "data" / "scene_models",
+        "checkpoints": root / "checkpoints" / "inherited" / "chensiyu-20260830",
+        "logs": root / "artifacts" / "MMWAM-OBC-001" / "runs",
+        "data": root / "data" / "inherited" / "chensiyu-20260830",
+        "robomimic": root / "artifacts" / "MMWAM-OBC-001" / "robomimic",
     }
     for directory in directories.values():
         directory.mkdir(parents=True, exist_ok=True)

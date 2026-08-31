@@ -157,6 +157,21 @@ class PairedDatasetTest(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertIn("missing_paired_branch", {issue.code for issue in report.issues})
 
+    def test_candidate_support_mismatch_is_rejected(self):
+        source_record = source("s1")
+        rows = [
+            rollout(source_record, route)
+            for route in (RouteType.EXECUTE, RouteType.DOCK, RouteType.ASSIST)
+        ]
+        report = validate_paired_collection(
+            [source_record],
+            rows,
+            expected_source_states=1,
+            expected_candidates_by_route={RouteType.DOCK: ["d0", "d1"]},
+        )
+        self.assertFalse(report.ok)
+        self.assertIn("candidate_support_mismatch", {issue.code for issue in report.issues})
+
     def test_branch_split_mismatch_is_rejected(self):
         source_record = source("s1")
         rows = [
@@ -166,8 +181,8 @@ class PairedDatasetTest(unittest.TestCase):
         ]
         wrong = rows[-1]
         alternative = (
-            DataSplit.TEST
-            if source_record.split is not DataSplit.TEST
+            DataSplit.LOCKED_TEST
+            if source_record.split is not DataSplit.LOCKED_TEST
             else DataSplit.TRAIN
         )
         rows[-1] = RouteRolloutRecord(

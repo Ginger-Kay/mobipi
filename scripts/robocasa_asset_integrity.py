@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ROOT = Path("/share/chensiyu/MobiWAM")
+DEFAULT_ROOT = Path("/share/jhk/MobiWAM")
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,9 +43,11 @@ def resolve_reference(xml_path: Path, raw: str, asset_root: Path) -> Path | None
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    repo = root / "repos" / "mobipi"
+    if root != DEFAULT_ROOT.resolve():
+        raise RuntimeError(f"Project root must be exactly {DEFAULT_ROOT}: {root}")
+    repo = root / "Mobipi"
     asset_root = repo / "external" / "robocasa" / "robocasa" / "models" / "assets"
-    output = args.output or root / "audit" / "robocasa_asset_integrity.json"
+    output = args.output or root / "artifacts" / "MMWAM-OBC-001" / "setup" / "robocasa_asset_integrity.json"
 
     report: dict[str, Any] = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

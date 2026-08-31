@@ -1,19 +1,21 @@
 contract_version: "1.0"
 project: frozen-policy-mobile-manipulation
 created_at: "2026-08-26"
-status: draft
+status: prepared
 
 versioning:
-  repo_root: /share/chensiyu/MobiWAM/repos/mobipi
-  git_commit: 19b130b8ada3f7e029918449c12d433e9e629ca1
+  repo_root: /share/jhk/MobiWAM/Mobipi
+  upstream_git_commit: 19b130b8ada3f7e029918449c12d433e9e629ca1
+  code_commit: BIND_AT_RUN
   simulator_name_version: robocasa==0.2.0
-  simulator_commit: 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  simulator_upstream_commit: 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  simulator_commit: 426bc4dbbadec923d37752b012ba1152d25f8716
   robot_asset_version: UNKNOWN
   robot_mapping: PandaMobile -> PandaOmron
   task_config: CloseSingleDoor layout=1 style=1 seed=1 horizon=500
-  vanilla_rollout_command: MOBIWAM_GPU_INDEX=0 bash scripts/gpu_with_lease.sh -- bash scripts/run_mobipi_vanilla_once.sh
+  vanilla_rollout_command: PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=<selected> /share/jhk/MobiWAM/env/bin/python scripts/run_checkpoint_vanilla.py --config configs/mobipi_close_single_door.json --output-root <run-root>
   policy_name: bc_xfmr / vanilla_policy
-  policy_checkpoint_path: /share/chensiyu/MobiWAM/checkpoints/robocasa/bc_xfmr/04-12-CloseSingleDoor/seed_1_CloseSingleDoor_mg-300/20250413055045/models/model_epoch_1000.pth
+  policy_checkpoint_path: /share/jhk/MobiWAM/checkpoints/inherited/chensiyu-20260830/robocasa/bc_xfmr/04-12-CloseSingleDoor/seed_1_CloseSingleDoor_mg-300/20250413055045/models/model_epoch_1000.pth
   policy_checkpoint_hash: 6cafee55eaf087a93b6e604d072da459c6200b15616f14c32120e29f32be9852
 
 observation:

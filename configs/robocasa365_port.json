@@ -1,8 +1,8 @@
 {
   "release_name": "RoboCasa365 v1.0.1",
-  "robocasa_repo": "/share/chensiyu/MobiWAM/repos/robocasa365",
+  "robocasa_repo": "/share/jhk/MobiWAM/Mobipi/external/robocasa365",
   "robocasa_commit": "a07e365c958c4216cd6bbd5f30b47f09a65c6f00",
-  "robosuite_repo": "/share/chensiyu/MobiWAM/repos/robosuite-robocasa365",
+  "robosuite_repo": "/share/jhk/MobiWAM/Mobipi/external/robosuite-robocasa365",
   "robosuite_commit": "5ce6643f3092639d08f7b0f90ed1c6a84f50552c",
   "environment_id": "robocasa/CloseSingleDoor",
   "split": "pretrain",

@@ -13,7 +13,7 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 
-DEFAULT_ROOT = Path("/share/chensiyu/MobiWAM")
+DEFAULT_ROOT = Path("/share/jhk/MobiWAM")
 MODEL_ID = "openai/clip-vit-large-patch14"
 MODEL_REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
 MODEL_WEIGHT = "pytorch_model.bin"
@@ -43,11 +43,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    allowed_root = Path("/share/chensiyu").resolve()
-    if allowed_root not in root.parents:
-        raise RuntimeError(f"Project root must stay under {allowed_root}: {root}")
+    allowed_root = DEFAULT_ROOT.resolve()
+    if root != allowed_root:
+        raise RuntimeError(f"Project root must be exactly {allowed_root}: {root}")
 
-    hf_home = root / "data" / "cache" / "huggingface" / "hf-home"
+    hf_home = root / "cache" / "huggingface"
     hub_cache = hf_home / "hub"
     hub_cache.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(hf_home)
@@ -103,7 +103,7 @@ def main() -> int:
         "weight_sha256": weight_hash,
         "hf_endpoint": os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
     }
-    audit_path = root / "audit" / "mobipi_clip_cache.json"
+    audit_path = root / "artifacts" / "MMWAM-OBC-001" / "setup" / "mobipi_clip_cache.json"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(f"CLIP cache verified: {snapshot_path}")

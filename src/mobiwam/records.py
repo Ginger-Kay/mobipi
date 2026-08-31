@@ -21,6 +21,10 @@ class Stage(str, Enum):
 class DataSplit(str, Enum):
     TRAIN = "train"
     VALIDATION = "validation"
+    CALIBRATION = "calibration"
+    LOCKED_TEST = "locked_test"
+    # Kept only so inherited donor manifests remain readable. New MMWAM-OBC-001
+    # schedules must use LOCKED_TEST and never write this legacy value.
     TEST = "test"
 
 
@@ -58,6 +62,9 @@ class SourceStateRecord:
     snapshot_hash: str
     observation_hash: str
     snapshot_path: str
+    layout_id: int | None = None
+    collector_batch: int | None = None
+    schedule_checksum: str = ""
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "SourceStateRecord":
@@ -77,6 +84,13 @@ class SourceStateRecord:
             snapshot_hash=str(_required(row, "snapshot_hash")),
             observation_hash=str(_required(row, "observation_hash")),
             snapshot_path=str(_required(row, "snapshot_path")),
+            layout_id=(None if row.get("layout_id") is None else int(row["layout_id"])),
+            collector_batch=(
+                None
+                if row.get("collector_batch") is None
+                else int(row["collector_batch"])
+            ),
+            schedule_checksum=str(row.get("schedule_checksum", "")),
         )
         record.validate()
         return record
@@ -101,6 +115,10 @@ class SourceStateRecord:
             raise ValueError(f"empty source-state fields: {', '.join(empty)}")
         if self.environment_seed < 0:
             raise ValueError("environment_seed must be non-negative")
+        if self.layout_id is not None and self.layout_id < 0:
+            raise ValueError("layout_id must be non-negative")
+        if self.collector_batch is not None and self.collector_batch < 0:
+            raise ValueError("collector_batch must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -155,6 +173,7 @@ class RouteRolloutRecord:
     video_path: str = ""
     state_trace_path: str = ""
     action_trace_path: str = ""
+    event_trace_path: str = ""
     labeler_version: str = ""
 
     @classmethod
@@ -227,6 +246,7 @@ class RouteRolloutRecord:
             video_path=str(row.get("video_path", "")),
             state_trace_path=str(row.get("state_trace_path", "")),
             action_trace_path=str(row.get("action_trace_path", "")),
+            event_trace_path=str(row.get("event_trace_path", "")),
             labeler_version=str(row.get("labeler_version", "")),
             **booleans,
         )

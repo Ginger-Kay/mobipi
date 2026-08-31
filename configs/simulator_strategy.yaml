@@ -4,9 +4,11 @@ updated_at: "2026-08-27T00:00:00+08:00"
 primary_gate0_stack:
   name: Mobi-pi bundled RoboCasa
   purpose: frozen-policy reproduction and paired E/D/A source-state branching
-  repo: /share/chensiyu/MobiWAM/repos/mobipi
-  mobipi_commit: 19b130b8ada3f7e029918449c12d433e9e629ca1
-  robocasa_commit: 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  repo: /share/jhk/MobiWAM/Mobipi
+  mobipi_upstream_commit: 19b130b8ada3f7e029918449c12d433e9e629ca1
+  code_commit: BIND_AT_RUN
+  robocasa_upstream_commit: 3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d
+  robocasa_commit: 426bc4dbbadec923d37752b012ba1152d25f8716
   python: "3.10.20"
   robocasa: "0.2.0"
   robosuite: "1.5.0"
@@ -21,9 +23,9 @@ secondary_transfer_stack:
   robocasa_commit: a07e365c958c4216cd6bbd5f30b47f09a65c6f00
   robosuite_commit: 5ce6643f3092639d08f7b0f90ed1c6a84f50552c
   purpose: held-out task/scene transfer and embodiment-port audit after Gate 0
-  repo: /share/chensiyu/MobiWAM/repos/robocasa365
-  environment: /share/chensiyu/MobiWAM/envs/robocasa365
-  python: "3.11"
+  repo: /share/jhk/MobiWAM/Mobipi/external/robocasa365
+  environment: /share/jhk/MobiWAM/env
+  python: "3.10.20 (provisional)"
   robosuite: master
   api: Gymnasium
   asset_download_estimate: approximately 10 GB
@@ -32,8 +34,8 @@ secondary_transfer_stack:
     - GR1
     - GR1FixedLowerBody
     - G1
-  compatibility_status: not checkpoint-compatible with the pinned Mobi-pi stack
-  isolation_rule: never install into envs/mobipi and never overwrite bundled assets
+  compatibility_status: not checkpoint-compatible and not runtime-prepared; defer until after Gate 0
+  isolation_rule: use the sole sprint environment only after compatibility proof; never overwrite bundled assets
   stage_annotation_use: July 2026 composite datasets provide per-frame subtask, atomic-skill, and pick/place/navigate stage labels; use only as auxiliary stage supervision, never as E/D/A route labels
 
 paired_collection_v0:

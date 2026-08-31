@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "experiment_id": "MMWAM-OBC-001",
+  "source_count": 48,
+  "tasks": [
+    "CloseSingleDoor",
+    "CloseDrawer",
+    "TurnOnFaucet",
+    "TurnOnMicrowave"
+  ],
+  "task_families": {
+    "CloseSingleDoor": "sustained_articulated_contact",
+    "CloseDrawer": "sustained_articulated_contact",
+    "TurnOnFaucet": "precise_local_interaction",
+    "TurnOnMicrowave": "precise_local_interaction"
+  },
+  "layouts": [1, 4, 7, 8, 9],
+  "seeds_per_candidate": 2,
+  "schedule_seed": 1701,
+  "environment_seed_start": 10000,
+  "policy_seed_start": 20000,
+  "route_seed_start": 30000,
+  "save_video": false,
+  "execute_candidates": [
+    {"candidate_id": "e0", "candidate_params": {"base_locked": true}}
+  ],
+  "dock_candidates": [
+    {"candidate_id": "d0", "candidate_params": {"approach_variant": "center_direct", "target_offset_local_xy_m": [0.0, 0.0], "dock_max_steps": 240, "position_tolerance_m": 0.005, "yaw_tolerance_rad": 0.017453292519943295, "command_gain": 1.0}},
+    {"candidate_id": "d1", "candidate_params": {"approach_variant": "left_detour", "target_offset_local_xy_m": [0.08, 0.12], "waypoint_delta_from_start_dock_xy_m": [0.10, 0.12], "waypoint_preserve_start_yaw": true, "waypoint_max_steps": 180, "dock_max_steps": 240, "position_tolerance_m": 0.005, "yaw_tolerance_rad": 0.017453292519943295, "command_gain": 1.0}},
+    {"candidate_id": "d2", "candidate_params": {"approach_variant": "right_detour", "target_offset_local_xy_m": [0.08, -0.12], "waypoint_delta_from_start_dock_xy_m": [0.10, -0.12], "waypoint_preserve_start_yaw": true, "waypoint_max_steps": 180, "dock_max_steps": 240, "position_tolerance_m": 0.005, "yaw_tolerance_rad": 0.017453292519943295, "command_gain": 1.0}},
+    {"candidate_id": "d3", "candidate_params": {"approach_variant": "near_standoff", "target_offset_local_xy_m": [-0.08, 0.0], "dock_max_steps": 240, "position_tolerance_m": 0.005, "yaw_tolerance_rad": 0.017453292519943295, "command_gain": 1.0}},
+    {"candidate_id": "d4", "candidate_params": {"approach_variant": "far_standoff", "target_offset_local_xy_m": [0.12, 0.0], "dock_max_steps": 240, "position_tolerance_m": 0.005, "yaw_tolerance_rad": 0.017453292519943295, "command_gain": 1.0}}
+  ],
+  "assist_candidates": [
+    {"candidate_id": "a0", "candidate_params": {"approach_variant": "center_short", "target_offset_local_xy_m": [0.0, 0.0], "fraction_toward_dock": 0.10, "max_translation_m": 0.02, "max_yaw_rad": 0.017453292519943295}},
+    {"candidate_id": "a1", "candidate_params": {"approach_variant": "left_prefix", "target_delta_from_start_dock_xy_m": [0.06, 0.06], "target_preserve_start_yaw": true, "fraction_toward_dock": 1.0, "max_translation_m": 0.08, "max_yaw_rad": 0.0}},
+    {"candidate_id": "a2", "candidate_params": {"approach_variant": "right_prefix", "target_delta_from_start_dock_xy_m": [0.06, -0.06], "target_preserve_start_yaw": true, "fraction_toward_dock": 1.0, "max_translation_m": 0.08, "max_yaw_rad": 0.0}},
+    {"candidate_id": "a3", "candidate_params": {"approach_variant": "center_medium", "target_offset_local_xy_m": [0.0, 0.0], "fraction_toward_dock": 0.25, "max_translation_m": 0.05, "max_yaw_rad": 0.0}},
+    {"candidate_id": "a4", "candidate_params": {"approach_variant": "center_yaw", "target_offset_local_xy_m": [0.0, 0.0], "fraction_toward_dock": 0.25, "max_translation_m": 0.03, "max_yaw_rad": 0.05235987755982989}}
+  ]
+}

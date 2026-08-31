@@ -4,13 +4,14 @@ from setuptools import setup, find_packages
 setup(
     name="mobipi",
     version="0.1.0",
-    description="A library for mobilizing non-mobile robot policies",
+    description="Mobi-pi plus the MMWAM-OBC-001 typed option evaluator",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Jingyun Yang",
     author_email="jingyuny@stanford.edu",
     url="https://github.com/yjy0625/mobipi",
-    packages=find_packages(),
+    packages=find_packages() + find_packages("src"),
+    package_dir={"mobiwam": "src/mobiwam"},
     install_requires=[
     ],
     classifiers=[

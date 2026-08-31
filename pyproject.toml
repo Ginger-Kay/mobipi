@@ -3,19 +3,23 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mobiwam-gate0"
+name = "mobipi"
 version = "0.1.0"
-description = "Gate 0 contracts and paired route-oracle analysis for MobiWAM"
+description = "Typed paired-route collection, matched evaluators, and OBC-WAM"
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy==1.23.3", "torch==2.2.0", "PyYAML>=6.0"]
 
 [project.scripts]
 mobiwam-collect = "mobiwam.collection:main"
 mobiwam-dataset = "mobiwam.dataset:main"
 mobiwam-oracle = "mobiwam.oracle:main"
+mobiwam-train = "mobiwam.training:main"
+mobiwam-calibrate = "mobiwam.calibration:main"
+mobiwam-evaluate = "mobiwam.evaluate_cli:main"
+mobiwam-latency = "mobiwam.latency:main"
+mobiwam-bind-config = "mobiwam.run_config:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+packages = ["mobipi", "mobiwam", "mobiwam.adapters"]
+package-dir = {mobipi = "mobipi", mobiwam = "src/mobiwam"}

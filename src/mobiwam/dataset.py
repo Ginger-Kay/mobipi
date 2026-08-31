@@ -59,8 +59,9 @@ def assign_group_split(
     source_state_id: str,
     *,
     seed: int = 0,
-    train_fraction: float = 0.70,
+    train_fraction: float = 0.60,
     validation_fraction: float = 0.15,
+    calibration_fraction: float = 0.10,
 ) -> DataSplit:
     if not source_state_id:
         raise ValueError("source_state_id must not be empty")
@@ -70,8 +71,10 @@ def assign_group_split(
         raise ValueError("train_fraction must be in (0, 1)")
     if not 0.0 <= validation_fraction < 1.0:
         raise ValueError("validation_fraction must be in [0, 1)")
-    if train_fraction + validation_fraction >= 1.0:
-        raise ValueError("train and validation fractions must sum to less than 1")
+    if not 0.0 <= calibration_fraction < 1.0:
+        raise ValueError("calibration_fraction must be in [0, 1)")
+    if train_fraction + validation_fraction + calibration_fraction >= 1.0:
+        raise ValueError("train, validation, and calibration fractions must sum to less than 1")
 
     digest = hashlib.sha256(f"{seed}:{source_state_id}".encode("utf-8")).digest()
     unit = int.from_bytes(digest[:8], "big") / float(2**64)
@@ -79,7 +82,9 @@ def assign_group_split(
         return DataSplit.TRAIN
     if unit < train_fraction + validation_fraction:
         return DataSplit.VALIDATION
-    return DataSplit.TEST
+    if unit < train_fraction + validation_fraction + calibration_fraction:
+        return DataSplit.CALIBRATION
+    return DataSplit.LOCKED_TEST
 
 
 def derive_abstain_targets(
@@ -108,6 +113,7 @@ def validate_paired_collection(
     expected_source_states: int = 100,
     repeats_per_route: int = 1,
     expected_repeats_by_route: Mapping[RouteType, int] | None = None,
+    expected_candidates_by_route: Mapping[RouteType, Sequence[str]] | None = None,
     require_precontact: bool = True,
 ) -> PairedCollectionReport:
     if expected_source_states <= 0:
@@ -245,13 +251,15 @@ def validate_paired_collection(
                 )
             )
         if rollout.stage_eligible and rollout.hard_valid:
+            required_artifacts = {
+                "state_trace_path": rollout.state_trace_path,
+                "action_trace_path": rollout.action_trace_path,
+            }
+            if rollout.schema_version != "1.0":
+                required_artifacts["event_trace_path"] = rollout.event_trace_path
             missing_artifacts = sorted(
                 name
-                for name, value in {
-                    "video_path": rollout.video_path,
-                    "state_trace_path": rollout.state_trace_path,
-                    "action_trace_path": rollout.action_trace_path,
-                }.items()
+                for name, value in required_artifacts.items()
                 if not value
             )
             if missing_artifacts:
@@ -336,6 +344,40 @@ def validate_paired_collection(
                     source_state_id,
                 )
             )
+        if expected_candidates_by_route is not None:
+            source_rows = list(grouped.get(source_state_id, {}).values())
+            for route, expected_candidate_ids in expected_candidates_by_route.items():
+                observed_candidate_ids = {
+                    row.candidate_id for row in source_rows if row.route_type is route
+                }
+                expected_ids = set(expected_candidate_ids)
+                if observed_candidate_ids != expected_ids:
+                    issues.append(
+                        ValidationIssue(
+                            "error",
+                            "candidate_support_mismatch",
+                            f"{route.value} expected {sorted(expected_ids)}, observed {sorted(observed_candidate_ids)}",
+                            source_state_id,
+                        )
+                    )
+                elif expected_ids and route_repeats[route] % len(expected_ids) == 0:
+                    expected_count = route_repeats[route] // len(expected_ids)
+                    counts = {
+                        candidate_id: sum(
+                            row.route_type is route and row.candidate_id == candidate_id
+                            for row in source_rows
+                        )
+                        for candidate_id in expected_ids
+                    }
+                    if any(count != expected_count for count in counts.values()):
+                        issues.append(
+                            ValidationIssue(
+                                "error",
+                                "candidate_repeat_mismatch",
+                                f"{route.value} expected {expected_count} repeats each, observed {counts}",
+                                source_state_id,
+                            )
+                        )
 
     abstain = derive_abstain_targets(rollouts)
     return PairedCollectionReport(

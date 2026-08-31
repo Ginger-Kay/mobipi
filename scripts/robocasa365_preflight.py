@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ROOT = Path("/share/chensiyu/MobiWAM")
+DEFAULT_ROOT = Path("/share/jhk/MobiWAM")
 ROBOCASA_COMMIT = "a07e365c958c4216cd6bbd5f30b47f09a65c6f00"
 ROBOSUITE_COMMIT = "5ce6643f3092639d08f7b0f90ed1c6a84f50552c"
 

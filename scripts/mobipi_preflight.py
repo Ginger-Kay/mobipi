@@ -16,13 +16,13 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ROOT = Path("/share/chensiyu/MobiWAM")
-ROOT_COMMIT = "19b130b8ada3f7e029918449c12d433e9e629ca1"
+DEFAULT_ROOT = Path("/share/jhk/MobiWAM")
+ROOT_BASE_COMMIT = "19b130b8ada3f7e029918449c12d433e9e629ca1"
 SUBMODULE_COMMITS = {
     "external/diffusion_policy": "5ba07ac6661db573af695b419a7947ecb704690f",
     "external/lelan": "8a84208be913b3838f2e550929d39cd0d674b252",
     "external/mimicgen": "05c723bdf9b4e1ddb77fea63bdde21920408b5fd",
-    "external/robocasa": "3683fb01d6fc87d7849e7b5a886d01f4b1d7a55d",
+    "external/robocasa": "426bc4dbbadec923d37752b012ba1152d25f8716",
     "external/robomimic": "ff9f7f4157a5c8257f17c5910067030e2291378f",
     "external/robomimic/act": "742c753c0d4a5d87076c8f69e5628c79a8cc5488",
 }
@@ -45,13 +45,13 @@ EXPECTED_DISTRIBUTIONS = {
     "timm": "1.0.12",
 }
 MODEL_RELATIVE_PATH = Path(
-    "checkpoints/robocasa/bc_xfmr/04-12-CloseSingleDoor/"
+    "checkpoints/inherited/chensiyu-20260830/robocasa/bc_xfmr/04-12-CloseSingleDoor/"
     "seed_1_CloseSingleDoor_mg-300/20250413055045/models/model_epoch_1000.pth"
 )
 MODEL_SIZE = 246_511_905
 MODEL_SHA256 = "6cafee55eaf087a93b6e604d072da459c6200b15616f14c32120e29f32be9852"
 DATASET_RELATIVE_PATH = Path(
-    "data/v0.1/single_stage/kitchen_doors/CloseSingleDoor/mg/"
+    "data/inherited/chensiyu-20260830/v0.1/single_stage/kitchen_doors/CloseSingleDoor/mg/"
     "2024-05-04-22-34-56/demo_im128_fixview.hdf5"
 )
 DATASET_SIZE = 9_601_187_887
@@ -71,6 +71,13 @@ def git_head(path: Path) -> str:
     return subprocess.check_output(
         ["git", "-C", str(path), "rev-parse", "HEAD"], text=True
     ).strip()
+
+
+def git_is_ancestor(path: Path, ancestor: str, descendant: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(path), "merge-base", "--is-ancestor", ancestor, descendant],
+        check=False,
+    ).returncode == 0
 
 
 def path_is_within(path: Path, parents: tuple[Path, ...]) -> bool:
@@ -102,13 +109,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = args.root.resolve()
-    allowed_root = Path("/share/chensiyu").resolve()
-    if allowed_root not in root.parents:
-        raise RuntimeError(f"Project root must stay under {allowed_root}: {root}")
+    allowed_root = DEFAULT_ROOT.resolve()
+    if root != allowed_root:
+        raise RuntimeError(f"Project root must be exactly {allowed_root}: {root}")
 
-    env_prefix = root / "envs" / "mobipi"
-    repo = root / "repos" / "mobipi"
-    output = args.output or root / "audit" / f"mobipi_{args.stage}_preflight.json"
+    env_prefix = root / "env"
+    repo = root / "Mobipi"
+    output = args.output or root / "artifacts" / "MMWAM-OBC-001" / "setup" / f"mobipi_{args.stage}_preflight.json"
     errors: list[str] = []
     report: dict[str, Any] = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -200,8 +207,8 @@ def main() -> int:
     commits: dict[str, str] = {}
     try:
         commits["root"] = git_head(repo)
-        if commits["root"] != ROOT_COMMIT:
-            errors.append(f"Mobi-pi commit mismatch: {commits['root']}")
+        if not git_is_ancestor(repo, ROOT_BASE_COMMIT, commits["root"]):
+            errors.append(f"Mobi-pi upstream base is not an ancestor: {commits['root']}")
         for relative_path, expected in SUBMODULE_COMMITS.items():
             actual = git_head(repo / relative_path)
             commits[relative_path] = actual
@@ -225,12 +232,12 @@ def main() -> int:
             "ROBOMIMIC_EXPDATA_BASE_PATH": robomimic_macros.EXPDATA_BASE_PATH,
         }
         expected_macros = {
-            "SCENE_MODEL_ROOT_DIR": str(root / "assets" / "scene_models"),
-            "POLICY_CKPT_ROOT_DIR": str(root / "checkpoints"),
-            "LOG_ROOT_DIR": str(root / "experiments" / "mobipi"),
-            "DATA_ROOT_DIR": str(root / "data"),
-            "ROBOCASA_DATASET_BASE_PATH": str(root / "data"),
-            "ROBOMIMIC_EXPDATA_BASE_PATH": str(root / "experiments" / "robomimic"),
+            "SCENE_MODEL_ROOT_DIR": str(root / "data" / "scene_models"),
+            "POLICY_CKPT_ROOT_DIR": str(root / "checkpoints" / "inherited" / "chensiyu-20260830"),
+            "LOG_ROOT_DIR": str(root / "artifacts" / "MMWAM-OBC-001" / "runs"),
+            "DATA_ROOT_DIR": str(root / "data" / "inherited" / "chensiyu-20260830"),
+            "ROBOCASA_DATASET_BASE_PATH": str(root / "data" / "inherited" / "chensiyu-20260830"),
+            "ROBOMIMIC_EXPDATA_BASE_PATH": str(root / "artifacts" / "MMWAM-OBC-001" / "robomimic"),
         }
         report["macros"] = macros
         for name, expected in expected_macros.items():
@@ -302,7 +309,7 @@ def main() -> int:
                     errors.append(f"HDF5 metadata check failed: {type(exc).__name__}: {exc}")
                 artifacts["dataset"] = dataset_record
 
-        clip_audit = root / "audit" / "mobipi_clip_cache.json"
+        clip_audit = root / "artifacts" / "MMWAM-OBC-001" / "setup" / "mobipi_clip_cache.json"
         if not clip_audit.is_file():
             errors.append(f"CLIP cache audit missing: {clip_audit}")
         else:

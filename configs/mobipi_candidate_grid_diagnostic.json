@@ -1,5 +1,6 @@
 {
   "schema_version": "1.0",
+  "schedule_seed": 1701,
   "seeds_per_candidate": 3,
   "dock_candidates": [
     {

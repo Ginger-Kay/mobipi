@@ -13,7 +13,7 @@ import numpy as np
 import robocasa  # noqa: F401 - importing registers Gymnasium environments
 
 
-DEFAULT_ROOT = Path("/share/chensiyu/MobiWAM")
+DEFAULT_ROOT = Path("/share/jhk/MobiWAM")
 
 
 def jsonable(value: Any) -> Any:

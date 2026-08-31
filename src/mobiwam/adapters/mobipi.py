@@ -20,6 +20,7 @@ from mobiwam.assist_trajectory import build_truncated_assist_trajectory
 from mobiwam.collector import RestoreEvidence, SourceSnapshot
 from mobiwam.dataset import assign_group_split
 from mobiwam.dock_protocol import DockSettleTimeout, settle_flush_and_reset_policy
+from mobiwam.events import compile_option_events
 from mobiwam.mobipi_actions import (
     compensate_world_intent,
     invert_pose,
@@ -32,7 +33,13 @@ from mobiwam.mobipi_checkpoint import (
     load_policy_from_checkpoint,
 )
 from mobiwam.mobipi_policy import FutureChunkEvidence, sample_verified_future_chunk
-from mobiwam.records import RouteRolloutRecord, RouteType, SourceStateRecord, Stage
+from mobiwam.records import (
+    DataSplit,
+    RouteRolloutRecord,
+    RouteType,
+    SourceStateRecord,
+    Stage,
+)
 
 
 ACTION_SEMANTICS_ID = "pandaomron-hybrid-mobile-v1"
@@ -85,6 +92,9 @@ class SnapshotPayload:
     torch_rng: Any
     cuda_rng: Any
     env_rng_states: Mapping[str, object]
+    controller_state: Mapping[str, Mapping[str, Any]]
+    controller_hash: str
+    contact_hash: str
     snapshot_hash: str
     observation_hash: str
     progress_before: float
@@ -99,6 +109,7 @@ class RolloutTrace:
     desired_eef_poses: list[np.ndarray] = field(default_factory=list)
     frames: list[np.ndarray] = field(default_factory=list)
     base_positions: list[np.ndarray] = field(default_factory=list)
+    manipulation_contacts: list[bool] = field(default_factory=list)
     base_reference_xy: np.ndarray | None = None
     intent_pos_errors: list[float] = field(default_factory=list)
     intent_rot_errors: list[float] = field(default_factory=list)
@@ -245,13 +256,15 @@ def _detour_pose_from_start(
 
 
 def _default_task_root_pose(raw_env: Any) -> np.ndarray:
-    """Read CloseSingleDoor's unperturbed base pose from the task implementation."""
+    """Read the task's unperturbed base pose from its registered fixture."""
 
     fixture = getattr(raw_env, "door_fxtr", None)
+    if fixture is None:
+        fixture = getattr(raw_env, "init_robot_base_pos", None)
     placement = getattr(raw_env, "compute_robot_base_placement_pose", None)
     if fixture is None or not callable(placement):
         raise RuntimeError(
-            "CloseSingleDoor does not expose door_fxtr and "
+            "task does not expose an initial placement fixture and "
             "compute_robot_base_placement_pose"
         )
     position, orientation = placement(ref_fixture=fixture)
@@ -268,6 +281,26 @@ def _default_task_root_pose(raw_env: Any) -> np.ndarray:
 
 def _is_mobile_base_geom(name: str | None) -> bool:
     return name is not None and "mobilebase" in name.lower()
+
+
+def _has_manipulation_contact(raw_env: Any) -> bool:
+    sim = raw_env.sim
+    for contact in sim.data.contact[: sim.data.ncon]:
+        names = (
+            (sim.model.geom_id2name(contact.geom1) or "").lower(),
+            (sim.model.geom_id2name(contact.geom2) or "").lower(),
+        )
+        robot_side = [
+            ("robot" in name or "gripper" in name or "panda" in name)
+            and "mobilebase" not in name
+            for name in names
+        ]
+        if robot_side[0] == robot_side[1]:
+            continue
+        other = names[1] if robot_side[0] else names[0]
+        if "floor" not in other:
+            return True
+    return False
 
 
 def _hash_update_array(digest: Any, name: str, value: np.ndarray) -> None:
@@ -313,6 +346,76 @@ def _observation_hash(observation: Mapping[str, np.ndarray]) -> str:
     return digest.hexdigest()
 
 
+def _controller_objects(raw_env: Any) -> dict[str, Any]:
+    composite = raw_env.robots[0].composite_controller
+    objects = {"composite": composite}
+    for attribute in ("part_controllers", "controllers"):
+        value = getattr(composite, attribute, None)
+        if isinstance(value, Mapping):
+            for name, controller in value.items():
+                objects[str(name)] = controller
+    return objects
+
+
+def _capture_controller_state(raw_env: Any) -> dict[str, dict[str, Any]]:
+    state: dict[str, dict[str, Any]] = {}
+    for object_name, controller in _controller_objects(raw_env).items():
+        fields: dict[str, Any] = {}
+        for name, value in vars(controller).items():
+            if isinstance(value, np.ndarray):
+                fields[name] = value.copy()
+            elif isinstance(value, (bool, int, float, str)) or value is None:
+                fields[name] = copy.deepcopy(value)
+            elif isinstance(value, tuple) and all(
+                isinstance(item, (bool, int, float, str)) or item is None
+                for item in value
+            ):
+                fields[name] = copy.deepcopy(value)
+        state[object_name] = fields
+    return state
+
+
+def _restore_controller_state(
+    raw_env: Any, state: Mapping[str, Mapping[str, Any]]
+) -> None:
+    objects = _controller_objects(raw_env)
+    if set(objects) != set(state):
+        raise RuntimeError(
+            f"controller topology changed: {sorted(objects)} != {sorted(state)}"
+        )
+    for object_name, fields in state.items():
+        dictionary = vars(objects[object_name])
+        for name, value in fields.items():
+            if name not in dictionary:
+                raise RuntimeError(f"controller field disappeared: {object_name}.{name}")
+            dictionary[name] = copy.deepcopy(value)
+
+
+def _controller_state_hash(state: Mapping[str, Mapping[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for object_name, fields in sorted(state.items()):
+        digest.update(object_name.encode("utf-8"))
+        for name, value in sorted(fields.items()):
+            digest.update(name.encode("utf-8"))
+            if isinstance(value, np.ndarray):
+                _hash_update_array(digest, name, value)
+            else:
+                digest.update(repr(value).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _contact_hash(raw_env: Any) -> str:
+    digest = hashlib.sha256()
+    contacts = raw_env.sim.data.contact[: raw_env.sim.data.ncon]
+    for index, contact in enumerate(contacts):
+        digest.update(
+            f"{index}:{int(contact.geom1)}:{int(contact.geom2)}".encode("ascii")
+        )
+        for name in ("dist", "pos", "frame", "friction"):
+            _hash_update_array(digest, name, np.asarray(getattr(contact, name)))
+    return digest.hexdigest()
+
+
 def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -327,6 +430,13 @@ def _git_head(repo: Path) -> str:
     ).strip()
 
 
+def _git_is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
+        check=False,
+    ).returncode == 0
+
+
 class MobiPiPairedAdapter:
     def __init__(self, *, output_root: Path, config: Mapping[str, Any]):
         self.output_root = Path(output_root)
@@ -335,10 +445,16 @@ class MobiPiPairedAdapter:
         if not repo.is_dir():
             raise FileNotFoundError(f"Mobi-pi repo not found: {repo}")
         observed_commit = _git_head(repo)
-        if observed_commit != str(self.config["mobipi_commit"]):
+        expected_commit = str(self.config.get("code_commit", ""))
+        if not expected_commit or expected_commit == "BIND_AT_RUN":
+            raise RuntimeError("run config must bind the exact clean code_commit")
+        if observed_commit != expected_commit:
             raise RuntimeError(
-                f"Mobi-pi commit mismatch: {observed_commit} != {self.config['mobipi_commit']}"
+                f"Mobi-pi commit mismatch: {observed_commit} != {expected_commit}"
             )
+        upstream_commit = str(self.config["mobipi_upstream_commit"])
+        if not _git_is_ancestor(repo, upstream_commit, observed_commit):
+            raise RuntimeError("Mobi-pi upstream base is not an ancestor of code_commit")
         robocasa_repo = repo / "external" / "robocasa"
         observed_robocasa_commit = _git_head(robocasa_repo)
         if observed_robocasa_commit != str(self.config["robocasa_commit"]):
@@ -420,10 +536,21 @@ class MobiPiPairedAdapter:
 
     def _task_progress(self) -> float:
         raw = self._unwrapped()
-        if self.config.get("env_name", "CloseSingleDoor") != "CloseSingleDoor":
-            raise NotImplementedError("task progress adapter is only verified for CloseSingleDoor")
-        door_state = raw.door_fxtr.get_door_state(env=raw)
-        return float(np.clip(1.0 - max(float(value) for value in door_state.values()), 0.0, 1.0))
+        task = str(self.config.get("env_name", "CloseSingleDoor"))
+        if task == "CloseSingleDoor":
+            state = raw.door_fxtr.get_door_state(env=raw)
+            return float(np.clip(1.0 - max(float(value) for value in state.values()), 0.0, 1.0))
+        if task == "CloseDrawer":
+            state = raw.drawer.get_door_state(env=raw)
+            return float(np.clip(1.0 - max(float(value) for value in state.values()), 0.0, 1.0))
+        if task in {"TurnOnFaucet", "TurnOnSinkFaucet"}:
+            return float(bool(raw.sink.get_handle_state(env=raw)["water_on"]))
+        if task == "TurnOnMicrowave":
+            return float(bool(raw.microwave.get_state()["turned_on"]))
+        if task == "TurnOnStove":
+            value = abs(float(raw.stove.get_knobs_state(env=raw)[raw.knob]))
+            return float(np.clip(value / 0.35, 0.0, 1.0))
+        raise NotImplementedError(f"task progress adapter is not verified for {task}")
 
     def _is_success(self) -> bool:
         return bool(self._unwrapped()._check_success())
@@ -470,7 +597,9 @@ class MobiPiPairedAdapter:
         trace.origin_poses.append(self._origin_pose())
         trace.eef_poses.append(self._eef_pose())
         trace.base_positions.append(trace.origin_poses[-1][:2, 3].copy())
-        trace.frames.append(self._capture_frame(observation))
+        trace.manipulation_contacts.append(_has_manipulation_contact(self._unwrapped()))
+        if bool(self.config.get("save_video", False)):
+            trace.frames.append(self._capture_frame(observation))
         if desired is not None:
             trace.desired_eef_poses.append(desired.copy())
             delta_position = trace.eef_poses[-1][:3, 3] - desired[:3, 3]
@@ -569,7 +698,7 @@ class MobiPiPairedAdapter:
         video_camera = str(
             self.config.get("video_camera", "robot0_agentview_right")
         )
-        if video_camera not in camera_names:
+        if bool(self.config.get("save_video", False)) and video_camera not in camera_names:
             camera_names.append(video_camera)
         override = {
             "layout_and_style_ids": [[self.stratum.layout_id, self.stratum.style_id]],
@@ -624,6 +753,8 @@ class MobiPiPairedAdapter:
             "observation_hash": payload.observation_hash,
             "timestep": payload.timestep,
             "environment_seed": record.environment_seed,
+            "controller_hash": payload.controller_hash,
+            "contact_hash": payload.contact_hash,
         }
         (directory / "snapshot_meta.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -636,6 +767,7 @@ class MobiPiPairedAdapter:
                     "torch": payload.torch_rng,
                     "cuda": payload.cuda_rng,
                     "environment_generators": payload.env_rng_states,
+                    "controller": payload.controller_state,
                 },
                 handle,
                 protocol=pickle.HIGHEST_PROTOCOL,
@@ -656,6 +788,7 @@ class MobiPiPairedAdapter:
         env_state = copy.deepcopy(self.env.get_state())
         history = copy.deepcopy(self.env.obs_history)
         stacked = self._stacked_observation()
+        controller_state = _capture_controller_state(self._unwrapped())
         payload = SnapshotPayload(
             env_state=env_state,
             obs_history=history,
@@ -669,32 +802,51 @@ class MobiPiPairedAdapter:
                 else None
             ),
             env_rng_states=self._generator_states(),
+            controller_state=controller_state,
+            controller_hash=_controller_state_hash(controller_state),
+            contact_hash=_contact_hash(self._unwrapped()),
             snapshot_hash=_state_hash(env_state),
             observation_hash=_observation_hash(stacked),
             progress_before=self._task_progress(),
         )
         environment_seed = self.environment_seed
+        task_id = str(self.config.get("env_name", "CloseSingleDoor"))
         source_id = (
-            f"CloseSingleDoor-l{self.stratum.layout_id}-sig{self.stratum.base_noise_sigma:.2f}"
+            f"{task_id}-l{self.stratum.layout_id}-sig{self.stratum.base_noise_sigma:.2f}"
             f"-seed{environment_seed}"
         )
         snapshot_dir = self.output_root / "snapshots" / source_id
+        split_map = self.config.get("source_split_map", {})
+        split = (
+            DataSplit(str(split_map[source_id]))
+            if source_id in split_map
+            else assign_group_split(source_id)
+        )
         record = SourceStateRecord(
             source_state_id=source_id,
-            task_id=str(self.config.get("env_name", "CloseSingleDoor")),
-            task_family="articulated-door",
+            task_id=task_id,
+            task_family=(
+                "sustained_articulated_contact"
+                if task_id in {"CloseSingleDoor", "CloseDrawer"}
+                else "precise_local_interaction"
+            ),
             episode_id=source_id,
             instruction=self._language(),
             stage=Stage.PRECONTACT,
-            split=assign_group_split(source_id),
+            split=split,
             environment_seed=environment_seed,
             policy_name=str(self.config.get("policy_name", "bc_xfmr")),
             policy_checkpoint_hash=str(self.config["policy_checkpoint_hash"]),
             simulator_version="robocasa==0.2.0",
-            code_commit=str(self.config["mobipi_commit"]),
+            code_commit=str(self.config["code_commit"]),
             snapshot_hash=payload.snapshot_hash,
             observation_hash=payload.observation_hash,
             snapshot_path=str(snapshot_dir),
+            layout_id=self.stratum.layout_id,
+            collector_batch=int(
+                self.config.get("collector_batch", 0)
+            ),
+            schedule_checksum=str(self.config.get("schedule_checksum", "")),
         )
         self._write_snapshot_artifacts(snapshot_dir, payload, record)
         self.source_record = record
@@ -710,6 +862,8 @@ class MobiPiPairedAdapter:
             raise RuntimeError("reset_to did not return an observation")
         self.env.obs_history = copy.deepcopy(payload.obs_history)
         self.env.timestep = payload.timestep
+        _restore_controller_state(self._unwrapped(), payload.controller_state)
+        self._unwrapped().sim.forward()
         random.setstate(copy.deepcopy(payload.python_rng))
         np.random.set_state(copy.deepcopy(payload.numpy_rng))
         import torch
@@ -720,9 +874,15 @@ class MobiPiPairedAdapter:
         self._restore_generator_states(payload.env_rng_states)
         state_hash = _state_hash(self.env.get_state())
         observation_hash = _observation_hash(self._stacked_observation())
+        controller_hash = _controller_state_hash(
+            _capture_controller_state(self._unwrapped())
+        )
+        contact_hash = _contact_hash(self._unwrapped())
         passed = (
             state_hash == payload.snapshot_hash
             and observation_hash == payload.observation_hash
+            and controller_hash == payload.controller_hash
+            and contact_hash == payload.contact_hash
         )
         self._last_restore_passed = passed
         return RestoreEvidence(passed, state_hash, observation_hash)
@@ -817,18 +977,20 @@ class MobiPiPairedAdapter:
         route: RouteType,
         repeat_index: int,
         trace: RolloutTrace,
-    ) -> tuple[str, str, str]:
+        candidate_id: str,
+    ) -> tuple[str, str, str, str]:
         assert self.source_record is not None
         directory = (
             self.output_root
             / "rollouts"
             / self.source_record.source_state_id
-            / f"{route.value}-r{repeat_index}"
+            / f"{candidate_id}-r{repeat_index}"
         )
         directory.mkdir(parents=True, exist_ok=True)
         state_path = directory / "state_trace.npz"
         action_path = directory / "action_trace.npz"
         video_path = directory / "rollout.mp4"
+        event_path = directory / "events.json"
         np.savez_compressed(
             state_path,
             states=np.asarray(trace.states),
@@ -838,16 +1000,38 @@ class MobiPiPairedAdapter:
             base_positions=np.asarray(trace.base_positions),
         )
         np.savez_compressed(action_path, actions=np.asarray(trace.actions))
-        frames = trace.frames or [self._capture_frame(self._stacked_observation())]
-        import imageio.v2 as imageio
-
-        imageio.mimwrite(
-            video_path,
-            frames,
-            fps=int(self.config.get("video_fps", 20)),
-            quality=7,
+        event_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "event_type": event.event_type.value,
+                        "phase_index": event.phase_index,
+                        "boundary": event.boundary.value,
+                        "selection_time_available": event.selection_time_available,
+                        "parallel_group": event.parallel_group,
+                    }
+                    for event in compile_option_events(
+                        route, terminal=self._is_success() or trace.collision
+                    )
+                ],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        return str(video_path), str(state_path), str(action_path)
+        rendered_video = ""
+        if bool(self.config.get("save_video", False)):
+            frames = trace.frames or [self._capture_frame(self._stacked_observation())]
+            import imageio.v2 as imageio
+
+            imageio.mimwrite(
+                video_path,
+                frames,
+                fps=int(self.config.get("video_fps", 20)),
+                quality=7,
+            )
+            rendered_video = str(video_path)
+        return rendered_video, str(state_path), str(action_path), str(event_path)
 
     def _record(
         self,
@@ -862,8 +1046,9 @@ class MobiPiPairedAdapter:
         candidate_id: str | None = None,
     ) -> RouteRolloutRecord:
         assert self.source_record is not None
-        video, state_trace, action_trace = self._save_rollout(
-            route, repeat_index, trace
+        resolved_candidate_id = candidate_id or f"{route.value.lower()}0"
+        video, state_trace, action_trace, event_trace = self._save_rollout(
+            route, repeat_index, trace, resolved_candidate_id
         )
         progress_after = self._task_progress()
         if trace.base_positions:
@@ -920,12 +1105,15 @@ class MobiPiPairedAdapter:
         if not transform_passed and trace.invalid_reason is None:
             trace.invalid_reason = "intent_tolerance_exceeded"
         hard_valid = trace.invalid_reason is None and not trace.collision and transform_passed
+        contact_before = bool(trace.manipulation_contacts[0]) if trace.manipulation_contacts else False
+        contact_after = bool(trace.manipulation_contacts[-1]) if trace.manipulation_contacts else False
+        contact_loss = any(trace.manipulation_contacts) and not contact_after
         recorded_candidate_params = dict(candidate_params)
         recorded_candidate_params["max_base_displacement_m"] = max_base_displacement
         recorded_candidate_params["transform_closure_pos_max_m"] = transform_pos
         recorded_candidate_params["transform_closure_rot_max_rad"] = transform_rot
         return RouteRolloutRecord(
-            schema_version="1.0",
+            schema_version="1.1",
             source_state_id=self.source_record.source_state_id,
             task_id=self.source_record.task_id,
             task_family=self.source_record.task_family,
@@ -933,7 +1121,7 @@ class MobiPiPairedAdapter:
             split=self.source_record.split,
             stage=self.source_record.stage,
             route_type=route,
-            candidate_id=candidate_id or f"{route.value.lower()}0",
+            candidate_id=resolved_candidate_id,
             repeat_index=repeat_index,
             environment_seed=self.source_record.environment_seed,
             policy_seed=policy_seed,
@@ -953,7 +1141,7 @@ class MobiPiPairedAdapter:
             success=hard_valid and self._is_success(),
             irreversible_failure=trace.collision,
             collision=trace.collision,
-            contact_loss=False,
+            contact_loss=contact_loss,
             task_progress_before=progress_before,
             task_progress_after=progress_after,
             progress_delta=progress_after - progress_before,
@@ -964,11 +1152,14 @@ class MobiPiPairedAdapter:
             failure_type=(trace.invalid_reason or (None if self._is_success() else "task_failure")),
             intent_pos_error_p95_m=intent_pos,
             intent_rot_error_p95_rad=intent_rot,
+            contact_state_before="contact" if contact_before else "no_contact",
+            contact_state_after="contact" if contact_after else "no_contact",
             candidate_params=recorded_candidate_params,
             source_snapshot_path=self.source_record.snapshot_path,
             video_path=video,
             state_trace_path=state_trace,
             action_trace_path=action_trace,
+            event_trace_path=event_trace,
             labeler_version="mobipi-close-door-v1",
         )
 
@@ -1163,6 +1354,10 @@ class MobiPiPairedAdapter:
     ) -> RouteRolloutRecord:
         payload = snapshot.opaque_handle
         trace = RolloutTrace()
+        query_ready_metadata: dict[str, Any] = {
+            "post_dock_policy_ready": False,
+            "history_reset_protocol": HISTORY_PROTOCOL_ID,
+        }
         observation, dock_target_pose_world, realized_params = self._navigate_to_dock(
             trace,
             candidate_params=candidate_params,
@@ -1194,6 +1389,16 @@ class MobiPiPairedAdapter:
             dock_macro = sample_verified_future_chunk(
                 self.rollout_policy, observation, atol=1e-6
             )
+            query_ready_metadata.update(
+                {
+                    "post_dock_policy_ready": True,
+                    "query_ready_timestamp_ns": time.time_ns(),
+                    "post_dock_observation_hash": _observation_hash(observation),
+                    "history_reset_fingerprint": _observation_hash(observation),
+                    "policy_query_seed": policy_seed,
+                    "policy_query_first_action_max_abs_error": dock_macro.evidence.max_abs_error,
+                }
+            )
             manipulation_steps = 0
             for action in dock_macro.chunk:
                 if self._is_success():
@@ -1217,6 +1422,7 @@ class MobiPiPairedAdapter:
             repeat_index=repeat_index,
             candidate_params={
                 **realized_params,
+                **query_ready_metadata,
                 "target": "task_compute_robot_base_placement_pose",
                 "navigation": "short_closed_loop_direct",
             },

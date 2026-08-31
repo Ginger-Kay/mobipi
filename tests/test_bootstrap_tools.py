@@ -102,7 +102,7 @@ class BootstrapToolTest(unittest.TestCase):
         self.assertEqual(config["release_name"], "RoboCasa365 v1.0.1")
         self.assertEqual(len(config["robocasa_commit"]), 40)
         self.assertEqual(len(config["robosuite_commit"]), 40)
-        self.assertNotEqual(config["robocasa_repo"], "/share/chensiyu/MobiWAM/repos/mobipi")
+        self.assertNotEqual(config["robocasa_repo"], "/share/jhk/MobiWAM/Mobipi")
 
 
 if __name__ == "__main__":

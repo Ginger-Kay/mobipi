@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import random
 from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Mapping, Protocol, Sequence
@@ -189,6 +191,7 @@ class PairedBranchCollector:
         seeds_per_candidate: int,
         dock_candidates: Sequence[RouteCandidate],
         assist_candidates: Sequence[RouteCandidate],
+        schedule_seed: int,
     ) -> tuple[RouteRolloutRecord, ...]:
         if min(policy_seed_start, route_seed_start) < 0:
             raise ValueError("seeds must be non-negative")
@@ -206,69 +209,75 @@ class PairedBranchCollector:
             for candidate in candidates:
                 candidate.validate_for(route)
 
-        rows: list[RouteRolloutRecord] = []
+        if schedule_seed < 0:
+            raise ValueError("schedule_seed must be non-negative")
+        nominal_by_seed: dict[int, Any] = {}
         for seed_index in range(seeds_per_candidate):
             policy_seed = policy_seed_start + seed_index
-            route_seed = route_seed_start + seed_index
-
             self._restore_or_fail(snapshot, RouteType.EXECUTE)
-            nominal_chunk = self.adapter.sample_nominal_policy(snapshot, policy_seed)
-            execute = self.adapter.execute_e(
-                snapshot,
-                nominal_chunk,
-                policy_seed=policy_seed,
-                route_seed=route_seed,
-                repeat_index=seed_index,
+            nominal_by_seed[seed_index] = self.adapter.sample_nominal_policy(
+                snapshot, policy_seed
             )
-            self._validate_branch(
-                snapshot,
-                execute,
-                RouteType.EXECUTE,
-                seed_index,
-                "e0",
-            )
-            rows.append(execute)
 
+        jobs: list[tuple[float, RouteType, int, RouteCandidate]] = []
+        digest = hashlib.sha256(
+            f"{schedule_seed}:{snapshot.record.source_state_id}".encode("utf-8")
+        ).digest()
+        rng = random.Random(int.from_bytes(digest[:8], "big"))
+        execute_priority: dict[int, float] = {}
+        execute_candidate = RouteCandidate("e0", {})
+        for seed_index in range(seeds_per_candidate):
+            execute_priority[seed_index] = rng.random()
+            jobs.append(
+                (execute_priority[seed_index], RouteType.EXECUTE, seed_index, execute_candidate)
+            )
             for candidate_index, candidate in enumerate(dock_candidates):
-                repeat_index = candidate_index * seeds_per_candidate + seed_index
-                self._restore_or_fail(snapshot, RouteType.DOCK)
-                dock = self.adapter.execute_d(
-                    snapshot,
-                    policy_seed=policy_seed,
-                    route_seed=route_seed,
-                    repeat_index=repeat_index,
-                    candidate_id=candidate.candidate_id,
-                    candidate_params=candidate.candidate_params,
-                )
-                self._validate_branch(
-                    snapshot,
-                    dock,
-                    RouteType.DOCK,
-                    repeat_index,
-                    candidate.candidate_id,
-                )
-                rows.append(dock)
-
+                del candidate_index
+                jobs.append((rng.random(), RouteType.DOCK, seed_index, candidate))
             for candidate_index, candidate in enumerate(assist_candidates):
-                repeat_index = candidate_index * seeds_per_candidate + seed_index
-                self._restore_or_fail(snapshot, RouteType.ASSIST)
-                assist = self.adapter.execute_a(
+                del candidate_index
+                # A consumes the paired E intent trace. Its random priority is
+                # therefore topologically constrained to follow E for the same seed.
+                priority = execute_priority[seed_index] + 1.0 + rng.random()
+                jobs.append((priority, RouteType.ASSIST, seed_index, candidate))
+
+        rows: list[RouteRolloutRecord] = []
+        dock_index = {candidate.candidate_id: index for index, candidate in enumerate(dock_candidates)}
+        assist_index = {candidate.candidate_id: index for index, candidate in enumerate(assist_candidates)}
+        for _, route, seed_index, candidate in sorted(jobs, key=lambda job: job[0]):
+            policy_seed = policy_seed_start + seed_index
+            route_seed = route_seed_start + seed_index
+            nominal_chunk = nominal_by_seed[seed_index]
+            if route is RouteType.EXECUTE:
+                repeat_index = seed_index
+                self._restore_or_fail(snapshot, route)
+                branch = self.adapter.execute_e(
                     snapshot,
                     nominal_chunk,
                     policy_seed=policy_seed,
                     route_seed=route_seed,
                     repeat_index=repeat_index,
-                    candidate_id=candidate.candidate_id,
+                )
+            elif route is RouteType.DOCK:
+                repeat_index = dock_index[candidate.candidate_id] * seeds_per_candidate + seed_index
+                self._restore_or_fail(snapshot, route)
+                branch = self.adapter.execute_d(
+                    snapshot, policy_seed=policy_seed, route_seed=route_seed,
+                    repeat_index=repeat_index, candidate_id=candidate.candidate_id,
                     candidate_params=candidate.candidate_params,
                 )
-                self._validate_branch(
-                    snapshot,
-                    assist,
-                    RouteType.ASSIST,
-                    repeat_index,
-                    candidate.candidate_id,
+            else:
+                repeat_index = assist_index[candidate.candidate_id] * seeds_per_candidate + seed_index
+                self._restore_or_fail(snapshot, route)
+                branch = self.adapter.execute_a(
+                    snapshot, nominal_chunk, policy_seed=policy_seed, route_seed=route_seed,
+                    repeat_index=repeat_index, candidate_id=candidate.candidate_id,
+                    candidate_params=candidate.candidate_params,
                 )
-                rows.append(assist)
+            self._validate_branch(
+                snapshot, branch, route, repeat_index, candidate.candidate_id
+            )
+            rows.append(branch)
 
         return tuple(rows)
 
