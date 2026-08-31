@@ -46,6 +46,16 @@ class ProjectBindingTest(unittest.TestCase):
                     self.assertNotIn(token, text, f"{token!r} leaked into {path}")
         self.assertTrue(checked)
 
+    def test_language_encoder_is_pinned_to_project_cache(self):
+        source = (
+            REPO_ROOT
+            / "external/robomimic/robomimic/utils/lang_utils.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("32bd64288804d66eefd0ccbe215aa642df71cc41", source)
+        self.assertIn("local_files_only=True", source)
+        self.assertIn("use_safetensors=False", source)
+        self.assertNotIn("~/tmp/clip", source)
+
 
 if __name__ == "__main__":
     unittest.main()

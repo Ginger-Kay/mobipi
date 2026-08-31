@@ -23,7 +23,7 @@ SUBMODULE_COMMITS = {
     "external/lelan": "8a84208be913b3838f2e550929d39cd0d674b252",
     "external/mimicgen": "05c723bdf9b4e1ddb77fea63bdde21920408b5fd",
     "external/robocasa": "426bc4dbbadec923d37752b012ba1152d25f8716",
-    "external/robomimic": "ff9f7f4157a5c8257f17c5910067030e2291378f",
+    "external/robomimic": "b3c1151775be0b960229c21463c36df1bc803496",
     "external/robomimic/act": "742c753c0d4a5d87076c8f69e5628c79a8cc5488",
 }
 EXPECTED_DISTRIBUTIONS = {

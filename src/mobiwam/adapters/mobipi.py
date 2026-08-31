@@ -885,7 +885,13 @@ class MobiPiPairedAdapter:
             and contact_hash == payload.contact_hash
         )
         self._last_restore_passed = passed
-        return RestoreEvidence(passed, state_hash, observation_hash)
+        return RestoreEvidence(
+            passed,
+            state_hash,
+            observation_hash,
+            controller_hash,
+            contact_hash,
+        )
 
     def sample_nominal_policy(
         self, snapshot: SourceSnapshot, policy_seed: int

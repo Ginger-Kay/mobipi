@@ -26,7 +26,13 @@ def main() -> None:
     snapshot = adapter.capture_source_state()
     restore = adapter.restore_source_state(snapshot)
     if not restore.passed:
-        raise RuntimeError(f"snapshot restore failed before vanilla rollout: state expected={snapshot.opaque_handle.snapshot_hash} actual={restore.snapshot_hash}; observation expected={snapshot.opaque_handle.observation_hash} actual={restore.observation_hash}")
+        raise RuntimeError(
+            "snapshot restore failed before vanilla rollout: "
+            f"state expected={snapshot.opaque_handle.snapshot_hash} actual={restore.snapshot_hash}; "
+            f"observation expected={snapshot.opaque_handle.observation_hash} actual={restore.observation_hash}; "
+            f"controller expected={snapshot.opaque_handle.controller_hash} actual={restore.controller_hash}; "
+            f"contact expected={snapshot.opaque_handle.contact_hash} actual={restore.contact_hash}"
+        )
     record = adapter.run_vanilla(snapshot, policy_seed=args.policy_seed)
     output = args.output_root / "vanilla_record.json"
     output.write_text(

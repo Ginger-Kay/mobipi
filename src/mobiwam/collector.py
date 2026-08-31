@@ -20,6 +20,8 @@ class RestoreEvidence:
     passed: bool
     snapshot_hash: str
     observation_hash: str
+    controller_hash: str = ""
+    contact_hash: str = ""
 
 
 @dataclass(frozen=True)

@@ -28,3 +28,5 @@ Snapshots include MuJoCo state/model metadata, observation history, Python/NumPy
 ## Safety boundary
 
 This branch contains no GPU lease, preemption, kill, stop/restore, or donor-runtime wrapper. GPU selection is performed outside the model code from a recorded 10-second `nvidia-smi` series. Unknown processes are never modified. Each formal run gets one launch attempt, a unique artifact root, and tmux run/status windows.
+
+The endpoint retention process is `/share/chensiyu/pi0.5_test.py`. Platform cleanup may occur after more than 60 minutes at `<=1%` chip utilization. Never kill, pause, modify, or duplicate an existing retention process. If it is absent and every allocation-visible GPU has reached `0%` utilization, restore one instance from the researcher-approved path; verify it again before handoff. Its utilization is infrastructure retention, not MMWAM runtime evidence.
