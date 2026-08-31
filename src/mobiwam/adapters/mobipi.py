@@ -458,12 +458,55 @@ def _contact_hash(raw_env: Any) -> str:
         record = hashlib.sha256()
         record.update(names[0].encode("utf-8"))
         record.update(names[1].encode("utf-8"))
-        for name in ("dist", "pos", "frame", "friction"):
-            _hash_update_array(record, name, np.asarray(getattr(contact, name)))
+        # Contact position and penetration are derived from the compiled XML.
+        # MuJoCo's XML quaternion round-trip can shift them by a few microns
+        # even when qpos/qvel, geom identities, and the contact set are the
+        # same. Quantize only those derived numerics; geom names and contact
+        # multiplicity remain exact.
+        for name, decimals in (
+            ("dist", 5),
+            ("pos", 5),
+            ("frame", 10),
+            ("friction", 10),
+        ):
+            value = np.asarray(
+                np.round(
+                    np.asarray(getattr(contact, name), dtype=np.float64),
+                    decimals=decimals,
+                )
+            )
+            value = np.where(value == 0.0, 0.0, value)
+            _hash_update_array(record, name, value)
         contact_records.append(record.digest())
     for record in sorted(contact_records):
         digest.update(record)
     return digest.hexdigest()
+
+
+def _restore_episode_language(
+    wrapper: Any,
+    raw_env: Any,
+    *,
+    task_id: str,
+    instruction: str,
+) -> None:
+    """Restore language-dependent task attributes lost by reset_to."""
+    if task_id == "CloseDrawer":
+        tokens = instruction.split()
+        if len(tokens) != 4 or tokens[:2] != ["close", "the"] or tokens[3] != "drawer":
+            raise RuntimeError(f"unexpected CloseDrawer instruction: {instruction}")
+        side = tokens[2]
+        if side not in {"left", "right"}:
+            raise RuntimeError(f"unexpected CloseDrawer side: {side}")
+        raw_env.drawer_side = side
+    wrapper._ep_lang_str = instruction
+    get_ep_meta = getattr(raw_env, "get_ep_meta", None)
+    if callable(get_ep_meta):
+        observed = str(get_ep_meta().get("lang", ""))
+        if observed != instruction:
+            raise RuntimeError(
+                f"episode language restore mismatch: {observed!r} != {instruction!r}"
+            )
 
 
 def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -913,6 +956,12 @@ class MobiPiPairedAdapter:
         restored = self.env.reset_to(copy.deepcopy(payload.env_state))
         if restored is None:
             raise RuntimeError("reset_to did not return an observation")
+        _restore_episode_language(
+            self.env,
+            self._unwrapped(),
+            task_id=snapshot.record.task_id,
+            instruction=snapshot.record.instruction,
+        )
         self.env.obs_history = copy.deepcopy(payload.obs_history)
         self.env.timestep = payload.timestep
         _restore_controller_state(self._unwrapped(), payload.controller_state)

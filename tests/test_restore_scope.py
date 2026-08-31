@@ -7,6 +7,7 @@ from mobiwam.adapters.mobipi import (
     _capture_controller_state,
     _contact_hash,
     _controller_state_hash,
+    _restore_episode_language,
     _restore_controller_state,
 )
 
@@ -75,6 +76,48 @@ class ControllerRestoreTest(unittest.TestCase):
         self.assertEqual(_contact_hash(raw), reference)
         robot_contact.dist = np.array(-0.5)
         self.assertNotEqual(_contact_hash(raw), reference)
+
+    def test_contact_hash_tolerates_compiled_xml_micron_jitter(self):
+        names = {0: "microwave_fixture", 1: "robot0_link6_collision"}
+
+        def contact(distance, position):
+            return SimpleNamespace(
+                geom1=0,
+                geom2=1,
+                dist=np.array(distance),
+                pos=np.asarray(position),
+                frame=np.eye(3).reshape(-1),
+                friction=np.array([1.0, 1.0, 0.005, 0.0001, 0.0001]),
+            )
+
+        expected = contact(-0.00020246566028489505, [0.9869353416, -0.8424366562, 1.4684609025])
+        actual = contact(-0.00020292542476570073, [0.9869354681, -0.8424363645, 1.4684580425])
+        model = SimpleNamespace(geom_id2name=names.__getitem__)
+        expected_raw = SimpleNamespace(sim=SimpleNamespace(data=SimpleNamespace(contact=[expected], ncon=1), model=model))
+        actual_raw = SimpleNamespace(sim=SimpleNamespace(data=SimpleNamespace(contact=[actual], ncon=1), model=model))
+        self.assertEqual(_contact_hash(expected_raw), _contact_hash(actual_raw))
+
+        actual.pos[2] += 2e-5
+        self.assertNotEqual(_contact_hash(expected_raw), _contact_hash(actual_raw))
+
+    def test_close_drawer_language_side_is_restored(self):
+        wrapper = SimpleNamespace(_ep_lang_str="close the left drawer")
+
+        class DrawerEnvironment:
+            drawer_side = "left"
+
+            def get_ep_meta(self):
+                return {"lang": f"close the {self.drawer_side} drawer"}
+
+        raw = DrawerEnvironment()
+        _restore_episode_language(
+            wrapper,
+            raw,
+            task_id="CloseDrawer",
+            instruction="close the right drawer",
+        )
+        self.assertEqual(wrapper._ep_lang_str, "close the right drawer")
+        self.assertEqual(raw.drawer_side, "right")
 
 
 if __name__ == "__main__":
