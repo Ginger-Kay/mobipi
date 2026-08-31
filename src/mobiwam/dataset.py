@@ -114,6 +114,7 @@ def validate_paired_collection(
     repeats_per_route: int = 1,
     expected_repeats_by_route: Mapping[RouteType, int] | None = None,
     expected_candidates_by_route: Mapping[RouteType, Sequence[str]] | None = None,
+    expected_source_splits: Mapping[str, DataSplit | str] | None = None,
     require_precontact: bool = True,
 ) -> PairedCollectionReport:
     if expected_source_states <= 0:
@@ -133,6 +134,16 @@ def validate_paired_collection(
 
     issues: list[ValidationIssue] = []
     sources: dict[str, SourceStateRecord] = {}
+    normalized_source_splits = (
+        None
+        if expected_source_splits is None
+        else {
+            str(source_state_id): (
+                split if isinstance(split, DataSplit) else DataSplit(str(split))
+            )
+            for source_state_id, split in expected_source_splits.items()
+        }
+    )
     for source in source_states:
         source.validate()
         if source.source_state_id in sources:
@@ -145,8 +156,21 @@ def validate_paired_collection(
                 )
             )
         sources[source.source_state_id] = source
-        expected_split = assign_group_split(source.source_state_id)
-        if source.split is not expected_split:
+        expected_split = (
+            assign_group_split(source.source_state_id)
+            if normalized_source_splits is None
+            else normalized_source_splits.get(source.source_state_id)
+        )
+        if expected_split is None:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "missing_expected_source_split",
+                    "source_state_id is absent from the frozen split map",
+                    source.source_state_id,
+                )
+            )
+        elif source.split is not expected_split:
             issues.append(
                 ValidationIssue(
                     "error",
@@ -162,6 +186,18 @@ def validate_paired_collection(
                     "pilot_requires_precontact",
                     "the 100 x E/D/A pilot requires precontact source states",
                     source.source_state_id,
+                )
+            )
+
+    if normalized_source_splits is not None:
+        unexpected_split_ids = sorted(set(normalized_source_splits).difference(sources))
+        if unexpected_split_ids:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "unexpected_source_split_map_entries",
+                    "frozen split map contains source IDs absent from the collection: "
+                    + ", ".join(unexpected_split_ids),
                 )
             )
 
@@ -415,6 +451,11 @@ def main() -> None:
     parser.add_argument("--execute-repeats", type=int)
     parser.add_argument("--dock-repeats", type=int)
     parser.add_argument("--assist-repeats", type=int)
+    parser.add_argument(
+        "--source-split-map",
+        type=Path,
+        help="frozen JSON source_state_id to split mapping; defaults to legacy hash assignment",
+    )
     parser.add_argument("--allow-contact", action="store_true")
     args = parser.parse_args()
 
@@ -440,12 +481,20 @@ def main() -> None:
             RouteType.ASSIST: args.assist_repeats,
         }
     )
+    expected_source_splits = None
+    if args.source_split_map is not None:
+        expected_source_splits = json.loads(
+            args.source_split_map.read_text(encoding="utf-8")
+        )
+        if not isinstance(expected_source_splits, dict):
+            parser.error("--source-split-map must contain a JSON object")
     report = validate_paired_collection(
         sources,  # type: ignore[arg-type]
         rollouts,  # type: ignore[arg-type]
         expected_source_states=args.expected_source_states,
         repeats_per_route=args.repeats_per_route,
         expected_repeats_by_route=expected_repeats_by_route,
+        expected_source_splits=expected_source_splits,
         require_precontact=not args.allow_contact,
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)

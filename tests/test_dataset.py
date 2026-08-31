@@ -196,6 +196,50 @@ class PairedDatasetTest(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertIn("branch_metadata_mismatch", {issue.code for issue in report.issues})
 
+    def test_frozen_stratified_split_map_overrides_legacy_hash_assignment(self):
+        original = source("s1")
+        alternative = (
+            DataSplit.LOCKED_TEST
+            if original.split is not DataSplit.LOCKED_TEST
+            else DataSplit.TRAIN
+        )
+        source_record = SourceStateRecord(**{**original.__dict__, "split": alternative})
+        rows = [
+            rollout(source_record, route)
+            for route in (RouteType.EXECUTE, RouteType.DOCK, RouteType.ASSIST)
+        ]
+        legacy_report = validate_paired_collection(
+            [source_record], rows, expected_source_states=1
+        )
+        self.assertIn(
+            "noncanonical_group_split",
+            {issue.code for issue in legacy_report.issues},
+        )
+
+        formal_report = validate_paired_collection(
+            [source_record],
+            rows,
+            expected_source_states=1,
+            expected_source_splits={source_record.source_state_id: alternative.value},
+        )
+        self.assertTrue(formal_report.ok)
+
+    def test_frozen_split_map_must_exactly_cover_collection_sources(self):
+        source_record = source("s1")
+        rows = [
+            rollout(source_record, route)
+            for route in (RouteType.EXECUTE, RouteType.DOCK, RouteType.ASSIST)
+        ]
+        report = validate_paired_collection(
+            [source_record],
+            rows,
+            expected_source_states=1,
+            expected_source_splits={"another-source": DataSplit.TRAIN},
+        )
+        codes = {issue.code for issue in report.issues}
+        self.assertIn("missing_expected_source_split", codes)
+        self.assertIn("unexpected_source_split_map_entries", codes)
+
     def test_x_is_derived_instead_of_executed(self):
         source_record = source("s1")
         failed = [
