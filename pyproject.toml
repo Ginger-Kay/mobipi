@@ -20,6 +20,7 @@ mobiwam-evaluate = "mobiwam.evaluate_cli:main"
 mobiwam-latency = "mobiwam.latency:main"
 mobiwam-bind-config = "mobiwam.run_config:main"
 mobiwam-extract-features = "mobiwam.extract_features:main"
+mobiwam-predict = "mobiwam.predict:main"
 
 [tool.setuptools]
 packages = ["mobipi", "mobiwam", "mobiwam.adapters"]
