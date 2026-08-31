@@ -6,6 +6,7 @@ import json
 import os
 import pickle
 import random
+import re
 import subprocess
 import sys
 import time
@@ -313,7 +314,35 @@ def _hash_update_array(digest: Any, name: str, value: np.ndarray) -> None:
 
 def _canonicalize_model_xml(model: Any) -> str:
     # MuJoCo may omit an explicitly serialized identity refquat after reload.
-    return str(model).replace(' refquat="1 0 0 0"', "")
+    canonical = str(model).replace(' refquat="1 0 0 0"', "")
+
+    # The XML round-trip normalizes compiled geom quaternions and serializes
+    # them with six decimal places. Normalize the captured side to that same
+    # boundary so a fixture-only 1e-6 text change does not invalidate an
+    # otherwise bit-identical simulator state. This remains sensitive to
+    # material orientation changes and does not alter refquat semantics.
+    def canonicalize_quaternion(match: re.Match[str]) -> str:
+        values = np.asarray(
+            [float(value) for value in match.group("values").split()],
+            dtype=np.float64,
+        )
+        if values.shape != (4,) or not np.isfinite(values).all():
+            return match.group(0)
+        norm = float(np.linalg.norm(values))
+        if norm <= 0.0:
+            return match.group(0)
+        normalized = values / norm
+        formatted = " ".join(
+            "0.000000" if abs(value) < 0.5e-6 else f"{value:.6f}"
+            for value in normalized
+        )
+        return f'quat="{formatted}"'
+
+    return re.sub(
+        r'\bquat="(?P<values>[^"]+)"',
+        canonicalize_quaternion,
+        canonical,
+    )
 
 
 def _state_hash(state: Mapping[str, Any]) -> str:
