@@ -785,6 +785,9 @@ class MobiPiPairedAdapter:
             )
         import torch
 
+        # MuJoCo contacts are derived buffers rather than part of qpos/qvel.
+        # Canonicalize them at the same post-forward boundary used by restore.
+        self._unwrapped().sim.forward()
         env_state = copy.deepcopy(self.env.get_state())
         history = copy.deepcopy(self.env.obs_history)
         stacked = self._stacked_observation()
