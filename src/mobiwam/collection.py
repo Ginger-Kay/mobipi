@@ -232,6 +232,7 @@ def run_candidate_grid_collection(
     source_indices: Sequence[int],
     candidate_grid: Mapping[str, Any],
     seeds_per_candidate_override: int | None = None,
+    seed_stride_per_source: int | None = None,
     environment_seed_start: int = 0,
     policy_seed_start: int = 0,
     route_seed_start: int = 0,
@@ -249,6 +250,15 @@ def run_candidate_grid_collection(
     )
     if seeds_per_candidate <= 0:
         raise ValueError("seeds_per_candidate must be positive")
+    seed_stride = (
+        seeds_per_candidate
+        if seed_stride_per_source is None
+        else int(seed_stride_per_source)
+    )
+    if seed_stride < seeds_per_candidate:
+        raise ValueError(
+            "seed_stride_per_source must be at least seeds_per_candidate"
+        )
     schedule_seed = int(candidate_grid.get("schedule_seed", -1))
     if schedule_seed < 0:
         raise ValueError("candidate grid requires a non-negative schedule_seed")
@@ -268,8 +278,8 @@ def run_candidate_grid_collection(
     collector = PairedBranchCollector(adapter)
     for source_index in indices:
         environment_seed = environment_seed_start + source_index
-        source_policy_seed = policy_seed_start + source_index * seeds_per_candidate
-        source_route_seed = route_seed_start + source_index * seeds_per_candidate
+        source_policy_seed = policy_seed_start + source_index * seed_stride
+        source_route_seed = route_seed_start + source_index * seed_stride
         if source_index in completed:
             source, rows = completed[source_index]
             if source.environment_seed != environment_seed:
@@ -335,6 +345,11 @@ def main() -> None:
         type=int,
         help="split-frozen C2 repeat count; candidate parameters still come from the immutable grid",
     )
+    parser.add_argument(
+        "--seed-stride-per-source",
+        type=int,
+        help="fixed source seed stride; C2 uses 3 for every split",
+    )
     parser.add_argument("--source-indices", type=Path)
     args = parser.parse_args()
 
@@ -346,6 +361,8 @@ def main() -> None:
             parser.error(
                 "--seeds-per-candidate-override requires --candidate-grid-config"
             )
+        if args.seed_stride_per_source is not None:
+            parser.error("--seed-stride-per-source requires --candidate-grid-config")
         if args.source_indices is not None:
             parser.error("--source-indices requires --candidate-grid-config")
         run_collection(
@@ -378,6 +395,7 @@ def main() -> None:
             source_indices=source_indices,
             candidate_grid=candidate_grid,
             seeds_per_candidate_override=args.seeds_per_candidate_override,
+            seed_stride_per_source=args.seed_stride_per_source,
             environment_seed_start=args.environment_seed_start,
             policy_seed_start=args.policy_seed_start,
             route_seed_start=args.route_seed_start,

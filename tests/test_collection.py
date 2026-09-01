@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mobiwam.collection import load_transactions, run_collection
+from mobiwam.collection import (
+    load_transactions,
+    run_candidate_grid_collection,
+    run_collection,
+)
 from mobiwam.collector import RestoreEvidence, SourceSnapshot
 from mobiwam.dataset import assign_group_split, validate_paired_collection
 from mobiwam.records import RouteRolloutRecord, RouteType, SourceStateRecord, Stage
@@ -108,6 +112,25 @@ class CollectionAdapter:
 
 
 class CollectionRunnerTest(unittest.TestCase):
+    def test_candidate_repeat_override_rejects_overlapping_source_seed_stride(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(
+                ValueError, "seed_stride_per_source must be at least"
+            ):
+                run_candidate_grid_collection(
+                    CollectionAdapter(),
+                    output_root=Path(temporary),
+                    source_indices=[0],
+                    candidate_grid={
+                        "seeds_per_candidate": 2,
+                        "schedule_seed": 1,
+                        "dock_candidates": [],
+                        "assist_candidates": [],
+                    },
+                    seeds_per_candidate_override=3,
+                    seed_stride_per_source=2,
+                )
+
     def test_collection_materializes_complete_paired_manifests(self):
         with tempfile.TemporaryDirectory() as temporary:
             output_root = Path(temporary)
