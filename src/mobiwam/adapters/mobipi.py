@@ -1268,7 +1268,7 @@ class MobiPiPairedAdapter:
             state_trace_path=state_trace,
             action_trace_path=action_trace,
             event_trace_path=event_trace,
-            labeler_version="mobipi-close-door-v1",
+            labeler_version="mobipi-four-task-collision-risk-v2",
         )
 
     def execute_e(

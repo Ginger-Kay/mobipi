@@ -18,11 +18,11 @@ class EvaluatorArchitectureTest(unittest.TestCase):
 
     def test_obc_wam_shape_and_frozen_capacity(self):
         model = OBCWAM(self.config)
-        self.assertEqual(model.backbone.encoder.num_layers, 6)
+        self.assertEqual(model.backbone.encoder.num_layers, 4)
         self.assertEqual(model.backbone.encoder.layers[0].self_attn.num_heads, 8)
         count = trainable_parameter_count(model)
-        self.assertGreaterEqual(count, 50_000_000)
-        self.assertLessEqual(count, 80_000_000)
+        self.assertGreaterEqual(count, 5_000_000)
+        self.assertLessEqual(count, 10_000_000)
         batch = model(
             context=torch.randn(2, 4, 64),
             option_ids=torch.tensor([0, 2]),
@@ -30,7 +30,7 @@ class EvaluatorArchitectureTest(unittest.TestCase):
             phase_ids=torch.tensor([0, 1]),
             duration=torch.tensor([0.0, 0.5]),
         )
-        self.assertEqual(batch["common_boundary_latent"].shape, (2, 512))
+        self.assertEqual(batch["common_boundary_latent"].shape, (2, 256))
         self.assertEqual(batch["typed_internal_states"].shape[:2], (2, 3))
         self.assertEqual(batch["success"].shape, (2, 1))
         self.assertEqual(batch["duration_cost"].shape, (2, 6))

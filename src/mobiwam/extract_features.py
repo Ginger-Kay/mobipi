@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from .feature_cache import FeatureCache, feature_cache_key
+from .feature_partitions import partition_feature_arrays
 from .records import DataSplit, RouteRolloutRecord, RouteType, SourceStateRecord, Stage
 
 
@@ -444,6 +445,16 @@ def _load_jsonl(path: Path, factory: Any) -> list[Any]:
     return rows
 
 
+def _atomic_savez(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.partial-{os.getpid()}")
+    with partial.open("wb") as stream:
+        np.savez_compressed(stream, **arrays)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(partial, path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Extract frozen observable train-side MMWAM features"
@@ -456,6 +467,7 @@ def main() -> None:
     parser.add_argument("--expected-encoder-weight-sha256", required=True)
     parser.add_argument("--cache-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--labels-output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -465,8 +477,12 @@ def main() -> None:
         choices=["train", "validation", "calibration"],
     )
     args = parser.parse_args()
-    if args.output.exists() or args.manifest.exists():
-        raise FileExistsError("refusing to overwrite feature output or manifest")
+    if args.output == args.labels_output:
+        parser.error("--output and --labels-output must be different paths")
+    if args.output.exists() or args.labels_output.exists() or args.manifest.exists():
+        raise FileExistsError(
+            "refusing to overwrite observable features, simulator labels, or manifest"
+        )
     encoder_weight = args.encoder_path / "pytorch_model.bin"
     observed_encoder_weight_sha256 = sha256_file(encoder_weight)
     if observed_encoder_weight_sha256 != args.expected_encoder_weight_sha256:
@@ -530,13 +546,9 @@ def main() -> None:
         contexts=contexts,
         allowed_splits=allowed,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    partial = args.output.with_name(f".{args.output.name}.partial-{os.getpid()}")
-    with partial.open("wb") as stream:
-        np.savez_compressed(stream, **arrays)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(partial, args.output)
+    observable_arrays, label_arrays = partition_feature_arrays(arrays)
+    _atomic_savez(args.output, observable_arrays)
+    _atomic_savez(args.labels_output, label_arrays)
     manifest = {
         "schema_version": "1.0",
         "status": "pass",
@@ -560,8 +572,17 @@ def main() -> None:
         "feature_row_count": len(arrays["source_ids"]),
         "a0_auxiliary_rows": int(arrays["is_a0"].sum()),
         "split_counts": dict(sorted(Counter(arrays["split"].tolist()).items())),
-        "output": str(args.output),
-        "output_sha256": sha256_file(args.output),
+        "physical_partition": {
+            "observable_contains_simulator_outcomes": False,
+            "alignment_fields_duplicated_with_exact_equality": True,
+            "simulator_labels_required_for_model_forward": False,
+        },
+        "observable_output": str(args.output),
+        "observable_output_sha256": sha256_file(args.output),
+        "observable_array_names": sorted(observable_arrays),
+        "labels_output": str(args.labels_output),
+        "labels_output_sha256": sha256_file(args.labels_output),
+        "label_array_names": sorted(label_arrays),
         "cache_records": cache_records,
     }
     args.manifest.parent.mkdir(parents=True, exist_ok=True)

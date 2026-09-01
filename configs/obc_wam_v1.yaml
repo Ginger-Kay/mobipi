@@ -1,16 +1,21 @@
 schema_version: "1.0"
 experiment_id: MMWAM-OBC-001
+contract_id: MMWAM-OBC-001-C2
+profile: compact_c2_primary
 encoder:
   model_id: openai/clip-vit-large-patch14
   revision: 32bd64288804d66eefd0ccbe215aa642df71cc41
   frozen: true
 model:
-  hidden_dim: 512
-  layers: 6
+  input_dim: 1024
+  candidate_dim: 16
+  hidden_dim: 256
+  layers: 4
   heads: 8
-  feedforward_dim: 7168
-  adapter_rank: 64
-  trainable_parameter_range: [50000000, 80000000]
+  feedforward_dim: 2560
+  adapter_rank: 32
+  trainable_parameter_range: [5000000, 10000000]
+  matched_parameter_relative_tolerance: 0.10
   typed_internal_states: 3
   common_outcome_boundary: true
 heads:
@@ -41,7 +46,13 @@ training:
   early_stopping_metric: validation_source_group_route_regret
   patience: 8
 split:
-  train: 0.60
-  validation: 0.15
-  calibration: 0.10
-  locked_test: 0.15
+  source_count: 480
+  train: 264
+  validation: 48
+  calibration: 72
+  locked_test: 96
+  repeats:
+    train: 2
+    validation: 2
+    calibration: 3
+    locked_test: 3

@@ -231,6 +231,7 @@ def run_candidate_grid_collection(
     output_root: Path,
     source_indices: Sequence[int],
     candidate_grid: Mapping[str, Any],
+    seeds_per_candidate_override: int | None = None,
     environment_seed_start: int = 0,
     policy_seed_start: int = 0,
     route_seed_start: int = 0,
@@ -241,7 +242,11 @@ def run_candidate_grid_collection(
     if not indices or min(indices) < 0 or len(indices) != len(set(indices)):
         raise ValueError("source_indices must be non-empty, unique, and non-negative")
 
-    seeds_per_candidate = int(candidate_grid.get("seeds_per_candidate", 0))
+    seeds_per_candidate = int(
+        candidate_grid.get("seeds_per_candidate", 0)
+        if seeds_per_candidate_override is None
+        else seeds_per_candidate_override
+    )
     if seeds_per_candidate <= 0:
         raise ValueError("seeds_per_candidate must be positive")
     schedule_seed = int(candidate_grid.get("schedule_seed", -1))
@@ -325,6 +330,11 @@ def main() -> None:
     parser.add_argument("--policy-seed-start", type=int, default=0)
     parser.add_argument("--route-seed-start", type=int, default=0)
     parser.add_argument("--candidate-grid-config", type=Path)
+    parser.add_argument(
+        "--seeds-per-candidate-override",
+        type=int,
+        help="split-frozen C2 repeat count; candidate parameters still come from the immutable grid",
+    )
     parser.add_argument("--source-indices", type=Path)
     args = parser.parse_args()
 
@@ -332,6 +342,10 @@ def main() -> None:
     factory = _load_factory(args.adapter_factory)
     adapter = factory(output_root=args.output_root, config=config)  # type: ignore[operator]
     if args.candidate_grid_config is None:
+        if args.seeds_per_candidate_override is not None:
+            parser.error(
+                "--seeds-per-candidate-override requires --candidate-grid-config"
+            )
         if args.source_indices is not None:
             parser.error("--source-indices requires --candidate-grid-config")
         run_collection(
@@ -363,6 +377,7 @@ def main() -> None:
             output_root=args.output_root,
             source_indices=source_indices,
             candidate_grid=candidate_grid,
+            seeds_per_candidate_override=args.seeds_per_candidate_override,
             environment_seed_start=args.environment_seed_start,
             policy_seed_start=args.policy_seed_start,
             route_seed_start=args.route_seed_start,

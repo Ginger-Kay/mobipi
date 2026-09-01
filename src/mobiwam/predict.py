@@ -10,6 +10,7 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+from .feature_partitions import load_feature_partitions
 from .models import EvaluatorConfig
 from .training import build_model
 
@@ -68,9 +69,6 @@ def prediction_arrays(
         "duration",
         "source_ids",
         "split",
-        "success",
-        "irreversible_risk",
-        "duration_cost",
     }
     missing = sorted(required.difference(data))
     if missing:
@@ -119,9 +117,6 @@ def prediction_arrays(
         "success_logits": np.concatenate(outputs["success"]),
         "risk_logits": np.concatenate(outputs["irreversible_risk"]),
         "duration_cost_prediction": np.concatenate(outputs["duration_cost"]),
-        "success": np.asarray(data["success"])[indices],
-        "irreversible_risk": np.asarray(data["irreversible_risk"])[indices],
-        "duration_cost": np.asarray(data["duration_cost"])[indices],
         "source_ids": np.asarray(data["source_ids"])[indices],
         "split": np.asarray(data["split"])[indices],
     }
@@ -158,6 +153,7 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--features", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument(
         "--split",
         choices=["validation", "calibration", "locked_test"],
@@ -179,8 +175,7 @@ def main() -> None:
     elif args.locked_freeze_manifest is not None:
         parser.error("locked freeze manifest is only valid with --split locked_test")
 
-    with np.load(args.features, allow_pickle=False) as archive:
-        data = {name: archive[name] for name in archive.files}
+    observable, labels, data = load_feature_partitions(args.features, args.labels)
     indices = np.flatnonzero(data["split"].astype(str) == args.split)
     if "is_a0" in data:
         indices = indices[~data["is_a0"][indices].astype(bool)]
@@ -197,11 +192,13 @@ def main() -> None:
     model.load_state_dict(checkpoint["model"])
     arrays = prediction_arrays(
         model,
-        data,
+        observable,
         indices,
         device=device,
         batch_size=args.batch_size,
     )
+    for name in ("success", "irreversible_risk", "duration_cost"):
+        arrays[name] = np.asarray(labels[name])[indices]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     partial = args.output.with_name(f".{args.output.name}.partial-{os.getpid()}")
     with partial.open("wb") as stream:
@@ -219,6 +216,10 @@ def main() -> None:
         "checkpoint_sha256": sha256_file(args.checkpoint),
         "features": str(args.features),
         "features_sha256": sha256_file(args.features),
+        "labels": str(args.labels),
+        "labels_sha256": sha256_file(args.labels),
+        "observable_and_labels_physically_separate": True,
+        "model_forward_opened_labels": False,
         "row_count": len(indices),
         "a0_auxiliary_rows_excluded": True,
         "output": str(args.output),

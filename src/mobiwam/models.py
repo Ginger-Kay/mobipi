@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
 import torch
 from torch import Tensor, nn
@@ -11,25 +11,45 @@ from torch import Tensor, nn
 class EvaluatorConfig:
     input_dim: int = 1024
     candidate_dim: int = 16
-    hidden_dim: int = 512
-    num_layers: int = 6
+    hidden_dim: int = 256
+    num_layers: int = 4
     num_heads: int = 8
-    feedforward_dim: int = 7168
+    feedforward_dim: int = 2560
     dropout: float = 0.1
     num_options: int = 4
     num_events: int = 16
     num_phases: int = 32
-    adapter_rank: int = 64
+    adapter_rank: int = 32
     trajectory_horizon: int = 16
     trajectory_dim: int = 7
 
     def validate(self) -> None:
-        if self.hidden_dim != 512 or self.num_layers != 6 or self.num_heads != 8:
-            raise ValueError("OBC-WAM v1 requires 6 layers, d=512, and 8 heads")
+        if min(self.hidden_dim, self.num_layers, self.num_heads) <= 0:
+            raise ValueError("hidden size, layers, and heads must be positive")
+        if self.hidden_dim % self.num_heads:
+            raise ValueError("hidden_dim must be divisible by num_heads")
         if self.feedforward_dim <= self.hidden_dim:
             raise ValueError("feedforward_dim must exceed hidden_dim")
         if min(self.input_dim, self.candidate_dim, self.adapter_rank) <= 0:
             raise ValueError("feature and adapter dimensions must be positive")
+        if min(self.num_options, self.num_events, self.num_phases) <= 0:
+            raise ValueError("option, event, and phase counts must be positive")
+
+    @classmethod
+    def from_mapping(cls, row: Mapping[str, Any]) -> "EvaluatorConfig":
+        aliases = {
+            "layers": "num_layers",
+            "heads": "num_heads",
+        }
+        fields = set(cls.__dataclass_fields__)
+        values: dict[str, Any] = {}
+        for name, value in row.items():
+            resolved = aliases.get(name, name)
+            if resolved in fields:
+                values[resolved] = value
+        config = cls(**values)
+        config.validate()
+        return config
 
 
 class OptionAdapter(nn.Module):

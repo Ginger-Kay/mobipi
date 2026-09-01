@@ -10,8 +10,10 @@ from typing import Iterator
 
 import numpy as np
 import torch
+import yaml
 from torch import Tensor, nn
 
+from .feature_partitions import load_feature_partitions
 from .losses import OBCWAMLoss
 from .models import (
     EvaluatorConfig,
@@ -174,14 +176,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train a matched MobiWAM evaluator")
     parser.add_argument("--model", choices=["value-only", "trajectory-only", "obc-wam"], required=True)
     parser.add_argument("--features", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--seed", type=int, choices=MODEL_SEEDS, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--gradient-accumulation", type=int, default=1)
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=8)
-    parser.add_argument("--input-dim", type=int, default=1024)
-    parser.add_argument("--candidate-dim", type=int, default=16)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
     if args.max_epochs > 50 or args.patience != 8:
@@ -195,23 +197,31 @@ def main() -> None:
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
-    data_file = np.load(args.features, allow_pickle=False)
-    data = {name: data_file[name] for name in data_file.files}
-    required = {
-        "context", "option_ids", "candidate_params", "phase_ids", "duration",
-        "success", "irreversible_risk", "duration_cost", "source_ids", "split",
-    }
-    missing = sorted(required.difference(data))
-    if missing:
-        raise ValueError(f"feature file is missing: {missing}")
+    _observable, _labels, data = load_feature_partitions(args.features, args.labels)
     train_indices = np.flatnonzero(data["split"].astype(str) == "train")
     validation_indices = np.flatnonzero(data["split"].astype(str) == "validation")
     if not len(train_indices) or not len(validation_indices):
         raise ValueError("training and validation source groups must both be non-empty")
 
-    config = EvaluatorConfig(input_dim=args.input_dim, candidate_dim=args.candidate_dim)
+    raw_model_config = yaml.safe_load(args.model_config.read_text(encoding="utf-8"))
+    if not isinstance(raw_model_config, dict) or not isinstance(
+        raw_model_config.get("model"), dict
+    ):
+        raise ValueError("model config must contain a model mapping")
+    config = EvaluatorConfig.from_mapping(raw_model_config["model"])
     model = build_model(args.model, config).to(device)
     parameter_count = trainable_parameter_count(model)
+    parameter_range = raw_model_config["model"].get(
+        "trainable_parameter_range", [5_000_000, 10_000_000]
+    )
+    if (
+        not isinstance(parameter_range, list)
+        or len(parameter_range) != 2
+        or not int(parameter_range[0]) <= parameter_count <= int(parameter_range[1])
+    ):
+        raise ValueError(
+            f"{args.model} parameter count {parameter_count} is outside the frozen range"
+        )
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_epochs)
     rng = np.random.default_rng(args.seed)
@@ -286,6 +296,10 @@ def main() -> None:
         "status": "completed", "model": args.model, "seed": args.seed,
         "started_at": started_at, "ended_at": ended_at,
         "features": str(args.features.resolve()), "features_sha256": sha256_file(args.features),
+        "labels": str(args.labels.resolve()), "labels_sha256": sha256_file(args.labels),
+        "model_config": str(args.model_config.resolve()),
+        "model_config_sha256": sha256_file(args.model_config),
+        "observable_and_labels_physically_separate": True,
         "trainable_parameters": parameter_count, "best_epoch": best_epoch,
         "best_validation_source_group_route_regret": best_regret,
         "optimizer": {"name": "AdamW", "lr": 3e-4, "weight_decay": 0.05, "gradient_clip": 1.0, "schedule": "cosine"},

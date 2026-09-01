@@ -23,10 +23,10 @@ Snapshots include MuJoCo state/model metadata, observation history, Python/NumPy
 
 ## Frozen learned ladder
 
-`configs/obc_wam_v1.yaml` fixes a shared frozen encoder, six `d=512` Transformer layers, eight heads, typed event/phase/duration tokens, E/D/A low-rank adapters, structured heads, and 50–80M trainable parameters. `value-only`, `trajectory-only`, and `obc-wam` use the same backbone capacity and source/candidate features. Training seeds are 17/23/41; validation selects epochs, calibration freezes temperatures/operating points, and the locked evaluator refuses non-`locked_test` rows.
+Under C2, `configs/obc_wam_v1.yaml` fixes the compact primary profile: a shared frozen encoder, four `d=256` Transformer layers, eight heads, `ff=2560`, typed event/phase/duration tokens, E/D/A low-rank adapters, and 5–10M trainable parameters. `value-only`, `trajectory-only`, and `obc-wam` use the same backbone capacity and source/candidate features and remain within 10% trainable parameters. Observable tensors and simulator-only labels are written to separate artifacts; model forward paths open only the observable partition. Training seeds are 17/23/41; validation selects epochs, calibration freezes temperatures/operating points, and the locked evaluator refuses non-`locked_test` rows.
 
 ## Safety boundary
 
-This branch contains no GPU lease, preemption, kill, stop/restore, or donor-runtime wrapper. GPU selection is performed outside the model code from a recorded 10-second `nvidia-smi` series. Unknown processes are never modified. Each formal run gets one launch attempt, a unique artifact root, and tmux run/status windows.
+This branch contains no GPU lease, preemption, kill, stop/restore, or donor-runtime wrapper. GPU selection is performed outside the model code from a recorded 10-second `nvidia-smi` series. Unknown processes are never modified. Each logical unit gets at most five lineage-preserving attempts, a unique artifact root per attempt, and tmux run/status windows for long jobs.
 
 The endpoint retention process is `/share/chensiyu/pi0.5_test.py`. Platform cleanup may occur after more than 60 minutes at `<=1%` chip utilization. Never kill, pause, modify, or duplicate an existing retention process. If it is absent and every allocation-visible GPU has reached `0%` utilization, restore one instance from the researcher-approved path; verify it again before handoff. Its utilization is infrastructure retention, not MMWAM runtime evidence.
