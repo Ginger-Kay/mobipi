@@ -272,7 +272,14 @@ def main() -> None:
 
         model.eval()
         with torch.no_grad():
-            predictions = model(**_model_inputs(data, validation_indices, device))
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=device.type == "cuda",
+            ):
+                predictions = model(
+                    **_model_inputs(data, validation_indices, device)
+                )
         success_logits = predictions["success"].float().cpu().numpy().reshape(-1)
         risk_logits = predictions["irreversible_risk"].float().cpu().numpy().reshape(-1)
         regret = source_group_route_regret(
