@@ -118,6 +118,9 @@ class RolloutTrace:
     transform_rot_errors: list[float] = field(default_factory=list)
     collision: bool = False
     invalid_reason: str | None = None
+    step_timestamps_s: list[float] = field(default_factory=list)
+    base_commands: list[np.ndarray] = field(default_factory=list)
+    arm_commands: list[np.ndarray] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -686,6 +689,9 @@ class MobiPiPairedAdapter:
         desired: np.ndarray | None = None,
     ) -> None:
         trace.actions.append(np.asarray(action).copy())
+        trace.step_timestamps_s.append(len(trace.actions) / float(self._unwrapped().control_freq))
+        trace.base_commands.append(np.asarray(action)[-3:].copy())
+        trace.arm_commands.append(np.asarray(action)[:-3].copy())
         trace.states.append(self._sim_state())
         trace.origin_poses.append(self._origin_pose())
         trace.eef_poses.append(self._eef_pose())
@@ -1106,6 +1112,9 @@ class MobiPiPairedAdapter:
             eef_poses=np.asarray(trace.eef_poses),
             desired_eef_poses=np.asarray(trace.desired_eef_poses),
             base_positions=np.asarray(trace.base_positions),
+            step_timestamps_s=np.asarray(trace.step_timestamps_s),
+            base_commands=np.asarray(trace.base_commands),
+            arm_commands=np.asarray(trace.arm_commands),
         )
         np.savez_compressed(action_path, actions=np.asarray(trace.actions))
         event_path.write_text(
@@ -1127,6 +1136,16 @@ class MobiPiPairedAdapter:
             + "\n",
             encoding="utf-8",
         )
+        (directory / "instrumentation.json").write_text(
+            json.dumps({
+                "schema_version": "c2-a2-r2-instrumentation-v1",
+                "route": route.value,
+                "step_timestamps_s": trace.step_timestamps_s,
+                "base_command_nonzero_steps": int(sum(bool(np.linalg.norm(x) > 1e-9) for x in trace.base_commands)),
+                "arm_command_nonzero_steps": int(sum(bool(np.linalg.norm(x) > 1e-9) for x in trace.arm_commands)),
+                "base_arm_overlap_steps": int(sum(bool(np.linalg.norm(b) > 1e-9 and np.linalg.norm(a) > 1e-9) for b, a in zip(trace.base_commands, trace.arm_commands))),
+                "camera": {"external_world_frame": False, "reason": "adapter has no verified external world-frame renderer"},
+            }, indent=2) + "\n", encoding="utf-8")
         rendered_video = ""
         if bool(self.config.get("save_video", False)):
             frames = trace.frames or [self._capture_frame(self._stacked_observation())]
