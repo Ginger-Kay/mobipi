@@ -40,11 +40,14 @@ class OBCWAMLoss(nn.Module):
         success_logit = predictions["success"].reshape(-1)
         pair_margin = success_logit[pair_indices[:, 0]] - success_logit[pair_indices[:, 1]]
         paired_rank = self.binary(pair_margin, targets["pair_preferred"].reshape(-1))
+        target_boundary = targets["common_boundary_latent"]
+        if target_boundary.shape[-1] != predictions["common_boundary_latent"].shape[-1]:
+            target_boundary = target_boundary[..., : predictions["common_boundary_latent"].shape[-1]]
         a0_latent = predictions["common_boundary_latent"][targets["a0_indices"].long()]
         e_latent = predictions["common_boundary_latent"][targets["e_indices"].long()]
         a0_equals_e = self.regression(a0_latent, e_latent)
         boundary = self.regression(
-            predictions["common_boundary_latent"], targets["common_boundary_latent"]
+            predictions["common_boundary_latent"], target_boundary
         )
         loss = (
             event
