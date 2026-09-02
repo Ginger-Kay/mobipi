@@ -177,7 +177,13 @@ class OBCWAM(nn.Module):
         self.heads = nn.ModuleDict(
             {name: _head(config.hidden_dim, size) for name, size in self.HEAD_DIMS.items()}
         )
-        self.event_state_projection = nn.Linear(config.hidden_dim, config.hidden_dim)
+        # Feature labels retain the 512-dim typed event state from the frozen
+        # encoder; project model hidden states to that contract before loss.
+        self.event_state_projection = nn.Sequential(
+            nn.Linear(config.hidden_dim, 32, bias=False),
+            nn.GELU(),
+            nn.Linear(32, 512, bias=False),
+        )
 
     def forward(self, **inputs: Tensor) -> dict[str, Tensor]:
         common, internal = self.backbone(**inputs)

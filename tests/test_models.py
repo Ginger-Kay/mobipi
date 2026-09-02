@@ -31,7 +31,7 @@ class EvaluatorArchitectureTest(unittest.TestCase):
             duration=torch.tensor([0.0, 0.5]),
         )
         self.assertEqual(batch["common_boundary_latent"].shape, (2, 256))
-        self.assertEqual(batch["typed_internal_states"].shape[:2], (2, 3))
+        self.assertEqual(batch["typed_internal_states"].shape, (2, 3, 512))
         self.assertEqual(batch["success"].shape, (2, 1))
         self.assertEqual(batch["duration_cost"].shape, (2, 6))
         del model
