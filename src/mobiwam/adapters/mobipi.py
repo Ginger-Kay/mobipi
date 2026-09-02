@@ -23,6 +23,7 @@ from mobiwam.dataset import assign_group_split
 from mobiwam.dock_protocol import DockSettleTimeout, settle_flush_and_reset_policy
 from mobiwam.events import compile_option_events
 from mobiwam.mobipi_actions import (
+    BASE,
     compensate_world_intent,
     invert_pose,
     lock_base,
@@ -690,8 +691,8 @@ class MobiPiPairedAdapter:
     ) -> None:
         trace.actions.append(np.asarray(action).copy())
         trace.step_timestamps_s.append(len(trace.actions) / float(self._unwrapped().control_freq))
-        trace.base_commands.append(np.asarray(action)[-3:].copy())
-        trace.arm_commands.append(np.asarray(action)[:-3].copy())
+        trace.base_commands.append(np.asarray(action)[BASE].copy())
+        trace.arm_commands.append(np.asarray(action)[: BASE.start].copy())
         trace.states.append(self._sim_state())
         trace.origin_poses.append(self._origin_pose())
         trace.eef_poses.append(self._eef_pose())
