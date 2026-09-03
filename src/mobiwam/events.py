@@ -46,7 +46,7 @@ def _common_outcome(terminal: bool, phase_index: int) -> OptionEvent:
 
 
 def compile_option_events(
-    route_type: RouteType, *, terminal: bool = False
+    route_type: RouteType, *, terminal: bool = False, assist_chunks: int = 1
 ) -> tuple[OptionEvent, ...]:
     if route_type is RouteType.EXECUTE:
         return (
@@ -71,14 +71,17 @@ def compile_option_events(
             _common_outcome(terminal, 7),
         )
     if route_type is RouteType.ASSIST:
-        return (
-            OptionEvent(EventType.QUERY, 0),
-            OptionEvent(
-                EventType.EXECUTE, 1, parallel_group="base_arm_dispatch"
-            ),
-            OptionEvent(EventType.ASSIST, 1, parallel_group="base_arm_dispatch"),
-            _common_outcome(terminal, 2),
-        )
+        if assist_chunks <= 0:
+            raise ValueError("assist_chunks must be positive")
+        events: list[OptionEvent] = []
+        for chunk_index in range(assist_chunks):
+            events.extend((
+                OptionEvent(EventType.QUERY, chunk_index * 3),
+                OptionEvent(EventType.EXECUTE, chunk_index * 3 + 1, parallel_group="base_arm_dispatch"),
+                OptionEvent(EventType.ASSIST, chunk_index * 3 + 1, parallel_group="base_arm_dispatch"),
+            ))
+        events.append(_common_outcome(terminal, assist_chunks * 3))
+        return tuple(events)
     if route_type is RouteType.ABSTAIN:
         return (
             OptionEvent(

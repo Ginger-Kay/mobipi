@@ -35,6 +35,7 @@ from mobiwam.mobipi_checkpoint import (
     load_policy_from_checkpoint,
 )
 from mobiwam.mobipi_policy import FutureChunkEvidence, sample_verified_future_chunk
+from mobiwam.persistent_assist import compile_persistent_assist
 from mobiwam.records import (
     DataSplit,
     RouteRolloutRecord,
@@ -122,6 +123,10 @@ class RolloutTrace:
     step_timestamps_s: list[float] = field(default_factory=list)
     base_commands: list[np.ndarray] = field(default_factory=list)
     arm_commands: list[np.ndarray] = field(default_factory=list)
+    phases: list[str] = field(default_factory=list)
+    base_velocities: list[np.ndarray] = field(default_factory=list)
+    assist_query_count: int = 0
+    assist_chunk_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -673,6 +678,19 @@ class MobiPiPairedAdapter:
         return float(np.linalg.norm(linear[:2])), float(abs(angular[2]))
 
     def _capture_frame(self, observation: Mapping[str, np.ndarray]) -> np.ndarray:
+        if bool(self.config.get("save_video", False)) and bool(self.config.get("external_world_camera", False)):
+            raw = self._unwrapped()
+            camera_name = str(self.config.get("external_camera_name", "b0_external_world"))
+            if camera_name not in list(getattr(raw.sim.model, "camera_names", ())):
+                raise RuntimeError(f"missing fixed external world-frame camera: {camera_name}")
+            width = int(self.config.get("external_camera_width", 1920))
+            height = int(self.config.get("external_camera_height", 1080))
+            if width < 1920 or height < 1080:
+                raise RuntimeError("external world camera must render natively at least 1920x1080")
+            image = np.asarray(raw.sim.render(camera_name=camera_name, width=width, height=height))
+            if image.shape[:2] != (height, width):
+                raise RuntimeError(f"native external render returned {image.shape}, expected {(height, width)}")
+            return image[::-1].copy()
         key = str(self.config.get("video_observation_key", "robot0_agentview_right_image"))
         image = np.asarray(observation[key])[-1]
         if image.ndim == 3 and image.shape[0] in (1, 3, 4):
@@ -697,6 +715,9 @@ class MobiPiPairedAdapter:
         trace.origin_poses.append(self._origin_pose())
         trace.eef_poses.append(self._eef_pose())
         trace.base_positions.append(trace.origin_poses[-1][:2, 3].copy())
+        linear_speed, angular_speed = self._base_speed(None)
+        trace.base_velocities.append(np.array([linear_speed, angular_speed], dtype=float))
+        trace.phases.append(str(getattr(trace, "current_phase", "UNKNOWN")))
         trace.manipulation_contacts.append(_has_manipulation_contact(self._unwrapped()))
         if bool(self.config.get("save_video", False)):
             trace.frames.append(self._capture_frame(observation))
@@ -1116,6 +1137,8 @@ class MobiPiPairedAdapter:
             step_timestamps_s=np.asarray(trace.step_timestamps_s),
             base_commands=np.asarray(trace.base_commands),
             arm_commands=np.asarray(trace.arm_commands),
+            base_velocities=np.asarray(trace.base_velocities),
+            phases=np.asarray(trace.phases),
         )
         np.savez_compressed(action_path, actions=np.asarray(trace.actions))
         event_path.write_text(
@@ -1144,8 +1167,8 @@ class MobiPiPairedAdapter:
                 "step_timestamps_s": trace.step_timestamps_s,
                 "base_command_nonzero_steps": int(sum(bool(np.linalg.norm(x) > 1e-9) for x in trace.base_commands)),
                 "arm_command_nonzero_steps": int(sum(bool(np.linalg.norm(x) > 1e-9) for x in trace.arm_commands)),
-                "base_arm_overlap_steps": int(sum(bool(np.linalg.norm(b) > 1e-9 and np.linalg.norm(a) > 1e-9) for b, a in zip(trace.base_commands, trace.arm_commands))),
-                "camera": {"external_world_frame": False, "reason": "adapter has no verified external world-frame renderer"},
+                "command_overlap_legacy_steps": int(sum(bool(np.linalg.norm(b) > 1e-9 and np.linalg.norm(a) > 1e-9) for b, a in zip(trace.base_commands, trace.arm_commands))),
+                "camera": {"external_world_frame": bool(self.config.get("external_world_camera", False)), "native_width": int(self.config.get("external_camera_width", 0)), "native_height": int(self.config.get("external_camera_height", 0))},
             }, indent=2) + "\n", encoding="utf-8")
         rendered_video = ""
         if bool(self.config.get("save_video", False)):
@@ -1303,6 +1326,7 @@ class MobiPiPairedAdapter:
         payload = snapshot.opaque_handle
         progress_before = payload.progress_before
         trace = RolloutTrace()
+        trace.current_phase = "MANIPULATE"
         self._execute_stationary_nominal(
             nominal_chunk,
             trace,
@@ -1367,6 +1391,7 @@ class MobiPiPairedAdapter:
     ) -> tuple[Mapping[str, np.ndarray], np.ndarray, dict[str, Any]]:
         assert self.dock_origin_pose_world is not None
         params = dict(candidate_params or {})
+        trace.current_phase = "NAVIGATE"
         offset_local = np.asarray(
             params.get("target_offset_local_xy_m", [0.0, 0.0]),
             dtype=np.float64,
@@ -1482,6 +1507,7 @@ class MobiPiPairedAdapter:
     ) -> RouteRolloutRecord:
         payload = snapshot.opaque_handle
         trace = RolloutTrace()
+        trace.current_phase = "NAVIGATE"
         query_ready_metadata: dict[str, Any] = {
             "post_dock_policy_ready": False,
             "history_reset_protocol": HISTORY_PROTOCOL_ID,
@@ -1513,6 +1539,7 @@ class MobiPiPairedAdapter:
             except DockSettleTimeout:
                 trace.invalid_reason = "dock_settle_timeout"
         if trace.invalid_reason is None:
+            trace.current_phase = "MANIPULATE"
             observation = self._stacked_observation()
             dock_macro = sample_verified_future_chunk(
                 self.rollout_policy, observation, atol=1e-6
@@ -1572,6 +1599,7 @@ class MobiPiPairedAdapter:
         payload = snapshot.opaque_handle
         params = dict(candidate_params or {})
         trace = RolloutTrace()
+        trace.current_phase = "ASSIST_ACTIVE"
         observation = self._stacked_observation()
         self._seed_policy(policy_seed)
         self.rollout_policy.start_episode(lang=self._language())
@@ -1661,53 +1689,74 @@ class MobiPiPairedAdapter:
                     trace.invalid_reason = "base_collision_during_zero_assist_replay"
                     break
         else:
+            # Receding-horizon A: query once per option boundary and execute one
+            # frozen chunk, while compiling the next base target from actual pose.
             previous_origin = self._origin_pose()
             dt = 1.0 / self._unwrapped().control_freq
-            for index in range(count):
-                if self._is_success():
+            chunks = int(params.get("persistent_chunks", self.config.get("persistent_chunks", 3)))
+            if chunks < 1:
+                raise ValueError("persistent_chunks must be positive")
+            total_cap = float(params.get("total_travel_cap_m", self.config.get("assist_total_travel_cap_m", 0.45)))
+            total_travel = 0.0
+            assist_start_origin = self._origin_pose()
+            for chunk_index in range(chunks):
+                if self._is_success() or trace.collision:
                     break
+                if chunk_index == 0:
+                    macro = nominal_chunk
+                else:
+                    trace.current_phase = "ASSIST_ACTIVE"
+                    macro = sample_verified_future_chunk(self.rollout_policy, self._stacked_observation(), atol=1e-6)
+                trace.assist_query_count += 1
+                trace.assist_chunk_count += 1
                 current_origin = self._origin_pose()
                 current_eef = self._eef_pose()
-                compensation = compensate_world_intent(
-                    nominal_chunk.chunk[index],
-                    nominal_origin_pose_world=nominal_chunk.e_origin_poses_world[index],
-                    nominal_eef_pose_world=nominal_chunk.e_eef_poses_world[index],
-                    assist_origin_pose_world_current=current_origin,
-                    assist_origin_pose_world_next=trajectory.poses_world[index + 1],
-                    assist_eef_pose_world_current=current_eef,
-                )
-                trace.transform_pos_errors.append(
-                    compensation.transform_closure_pos_error_m
-                )
-                trace.transform_rot_errors.append(
-                    compensation.transform_closure_rot_error_rad
-                )
-                if compensation.saturated:
-                    trace.invalid_reason = "arm_compensation_saturated"
+                start_intent = current_eef.copy()
+                end_intent = nominal_world_intent(macro.chunk[-1], current_origin, current_eef)
+                remaining = max(0.0, total_cap - total_travel)
+                if remaining <= 1e-12:
                     break
-                base_command = self._target_base_pose_to_action(
-                    trajectory.poses_world[index + 1],
-                    current_origin,
-                    previous_origin,
-                    dt,
-                    legacy=bool(self.config.get("legacy_navigation", True)),
+                assist_plan = compile_persistent_assist(
+                    [(start_intent, end_intent)], [current_origin], candidate_id,
+                    total_travel_cap_m=remaining,
+                    parallel_cap_m=float(params.get("parallel_cap_m", 0.45)),
                 )
-                previous_origin = current_origin
-                action = with_base_command(compensation.action, base_command)
-                observation, _, _, _ = self.env.step(action)
-                self._record_step(
-                    trace, action, observation, compensation.desired_eef_pose_world
-                )
-                if trace.collision:
-                    trace.invalid_reason = "base_collision_during_assist"
-                    break
+                target = assist_plan.chunk_poses_world[0]
+                for action_index, nominal_action in enumerate(macro.chunk):
+                    if self._is_success():
+                        break
+                    current_origin = self._origin_pose()
+                    current_eef = self._eef_pose()
+                    desired = nominal_world_intent(nominal_action, current_origin, current_eef)
+                    compensation = compensate_world_intent(
+                        nominal_action,
+                        nominal_origin_pose_world=current_origin,
+                        nominal_eef_pose_world=current_eef,
+                        assist_origin_pose_world_current=current_origin,
+                        assist_origin_pose_world_next=target,
+                        assist_eef_pose_world_current=current_eef,
+                    )
+                    trace.transform_pos_errors.append(compensation.transform_closure_pos_error_m)
+                    trace.transform_rot_errors.append(compensation.transform_closure_rot_error_rad)
+                    if compensation.saturated:
+                        trace.invalid_reason = "arm_compensation_saturated"
+                        break
+                    base_command = self._target_base_pose_to_action(target, current_origin, previous_origin, dt, legacy=bool(self.config.get("legacy_navigation", True)))
+                    previous_origin = current_origin
+                    action = with_base_command(compensation.action, base_command)
+                    observation, _, _, _ = self.env.step(action)
+                    self._record_step(trace, action, observation, desired)
+                    realized_total = float(np.linalg.norm(self._origin_pose()[:2, 3] - assist_start_origin[:2, 3]))
+                    if realized_total > total_cap + 1e-6:
+                        trace.invalid_reason = "assist_total_travel_cap_exceeded"
+                        break
+                    if trace.collision:
+                        trace.invalid_reason = "base_collision_during_assist"
+                        break
+                actual_now = self._origin_pose()
+                total_travel = float(np.linalg.norm(actual_now[:2, 3] - assist_start_origin[:2, 3]))
             if trace.invalid_reason is None:
-                observation = self._run_policy_tail(
-                    observation,
-                    trace,
-                    len(trace.actions),
-                    base_target_pose_world=trajectory.poses_world[-1],
-                )
+                trace.current_phase = "ASSIST_HOLD"
         del observation
         assist_realized_params = {
             **params,
@@ -1726,6 +1775,10 @@ class MobiPiPairedAdapter:
             "zero_assist_action_source": (
                 "paired_execute_trace" if exact_zero_assist else None
             ),
+            "persistent_assist": not exact_zero_assist,
+            "assist_query_count": trace.assist_query_count,
+            "assist_chunk_count": trace.assist_chunk_count,
+            "total_travel_cap_m": params.get("total_travel_cap_m", self.config.get("assist_total_travel_cap_m", 0.45)),
         }
         if assist_target_offset_local is not None:
             assist_realized_params["target_offset_local_xy_m"] = (

@@ -33,29 +33,38 @@ class PersistentAssistPlan:
 
 
 def compile_persistent_assist(
-    nominal_intents_world: Sequence[np.ndarray],
+    nominal_intents_world: Sequence[tuple[np.ndarray, np.ndarray]],
     actual_base_poses_world: Sequence[np.ndarray],
     candidate_id: str,
     *,
     parallel_cap_m: float = 0.45,
     lateral_cap_m: float = 0.25,
     yaw_cap_rad: float = 0.35,
+    total_travel_cap_m: float = 0.45,
 ) -> PersistentAssistPlan:
-    """Compile one receding-horizon plan using the actual pose at each chunk."""
+    """Compile a bounded receding-horizon plan from EE start/end transforms.
+
+    ``total_travel_cap_m`` is a rollout-wide budget, not a per-chunk cap.
+    """
     if candidate_id not in ASSIST_CANDIDATES:
         raise ValueError("candidate_id must be one of a1..a5; A(0) is not a candidate")
     if len(nominal_intents_world) != len(actual_base_poses_world) or not nominal_intents_world:
         raise ValueError("one actual base pose is required for every nominal chunk")
+    if min(parallel_cap_m, lateral_cap_m, total_travel_cap_m, yaw_cap_rad) < 0.0:
+        raise ValueError("assist limits must be non-negative")
     parallel, lateral, yaw_gain = ASSIST_CANDIDATES[candidate_id]
     planned: list[np.ndarray] = []
     total_translation = 0.0
     total_yaw = 0.0
-    for intent, actual in zip(nominal_intents_world, actual_base_poses_world):
-        intent = np.asarray(intent, dtype=float)
+    for intent_pair, actual in zip(nominal_intents_world, actual_base_poses_world):
+        if not isinstance(intent_pair, (tuple, list)) or len(intent_pair) != 2:
+            raise ValueError("each nominal intent must be (T_WE_start, T_WE_end)")
+        intent_start = np.asarray(intent_pair[0], dtype=float)
+        intent_end = np.asarray(intent_pair[1], dtype=float)
         actual = np.asarray(actual, dtype=float)
-        if intent.shape != (4, 4) or actual.shape != (4, 4):
-            raise ValueError("nominal intents and actual poses must have shape (4, 4)")
-        tangent = intent[:2, 3]
+        if intent_start.shape != (4, 4) or intent_end.shape != (4, 4) or actual.shape != (4, 4):
+            raise ValueError("nominal intent transforms and actual poses must have shape (4, 4)")
+        tangent = intent_end[:2, 3] - intent_start[:2, 3]
         norm = float(np.linalg.norm(tangent))
         if norm < 1e-9:
             delta = np.zeros(2)
@@ -64,6 +73,10 @@ def compile_persistent_assist(
             lateral_axis = np.array([-tangent[1], tangent[0]])
             delta = (parallel * tangent + lateral * lateral_axis) * min(norm, parallel_cap_m / max(abs(parallel), 1e-12))
         delta = np.clip(delta, -max(parallel_cap_m, lateral_cap_m), max(parallel_cap_m, lateral_cap_m))
+        remaining = max(0.0, total_travel_cap_m - total_translation)
+        delta_norm = float(np.linalg.norm(delta))
+        if delta_norm > remaining:
+            delta *= remaining / delta_norm if delta_norm else 0.0
         pose = actual.copy()
         pose[:2, 3] = actual[:2, 3] + delta
         yaw = float(np.arctan2(actual[1, 0], actual[0, 0]))
@@ -100,7 +113,9 @@ def realized_motion_metrics(
         if len(phase) != len(poses):
             raise ValueError("phase must have one label per pose")
         active = np.asarray([p in {"MANIPULATE", "ASSIST_ACTIVE"} for p in phase])
-        result["active_path_fraction"] = float(np.linalg.norm(np.diff(poses[active, :2, 3], axis=0), axis=1).sum() / path) if active.sum() > 1 and path > 1e-12 else 0.0
+        adjacent_active = active[:-1] & active[1:]
+        active_path = float(np.linalg.norm(np.diff(poses[:, :2, 3], axis=0)[adjacent_active], axis=1).sum()) if adjacent_active.any() else 0.0
+        result["active_path_fraction"] = active_path / path if path > 1e-12 else 0.0
     return result
 
 
@@ -109,3 +124,14 @@ def compile_source_without_outcome(fields: Mapping[str, object]) -> dict[str, ob
     if leaked:
         raise ValueError(f"source compiler received forbidden outcome fields: {leaked}")
     return dict(fields)
+
+
+def validate_nominal_intent_pair(start: np.ndarray, end: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Require explicit T_WE(start), T_WE(end); absolute pose is not a tangent."""
+    start = np.asarray(start, dtype=float)
+    end = np.asarray(end, dtype=float)
+    if start.shape != (4, 4) or end.shape != (4, 4):
+        raise ValueError("nominal EE intent must be an explicit (T_WE_start, T_WE_end) pair")
+    if not np.all(np.isfinite(start)) or not np.all(np.isfinite(end)):
+        raise ValueError("nominal EE intent contains non-finite values")
+    return start, end
