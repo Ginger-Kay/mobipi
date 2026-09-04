@@ -308,6 +308,7 @@ def main() -> int:
     frame_dir = args.artifact_root / "native-frames"
     records_path = args.artifact_root / "scene-capacity-records.jsonl"
     rows = [json.loads(line) for line in records_path.read_text().splitlines()] if records_path.exists() else []
+    reset_count = len(rows)
     checkpoint_path = args.artifact_root / "checkpoint-compatibility.json"
     checkpoint_meta = json.loads(checkpoint_path.read_text()).get("checkpoints", {}) if checkpoint_path.exists() else {}
     selected_tasks = tuple(part.strip() for part in args.tasks.split(",") if part.strip())
