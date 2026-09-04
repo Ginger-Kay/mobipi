@@ -635,6 +635,8 @@ def main() -> int:
     parser.add_argument("--scene-root", type=Path, required=True)
     parser.add_argument("--code-commit", required=True)
     args = parser.parse_args(); root = args.artifact_root; root.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("MUJOCO_GL") != "egl" or os.environ.get("PYOPENGL_PLATFORM") != "egl":
+        raise RuntimeError("U2 requires MUJOCO_GL=egl and PYOPENGL_PLATFORM=egl for native frame capture")
     repo = Path(__file__).resolve().parents[1]
     observed = git(repo, "rev-parse", "HEAD")
     if observed != args.code_commit or git(repo, "status", "--porcelain"):
