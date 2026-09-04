@@ -109,7 +109,11 @@ def create_env(config: Any, env_meta: Mapping[str, Any], shape_meta: Mapping[str
         "layout_and_style_ids": [[cell, cell]], "seed": seed, "camera_names": cameras,
         "hard_reset": True, "render_gpu_device_id": 0,
     }
-    return create_env_from_checkpoint_metadata(config, meta, shape_meta, override)
+    env = create_env_from_checkpoint_metadata(config, meta, shape_meta, override)
+    raw = env.unwrapped.env
+    raw.sim.model.vis.global_.offwidth = 1920
+    raw.sim.model.vis.global_.offheight = 1080
+    return env
 
 
 def close_env(env: Any) -> None:
