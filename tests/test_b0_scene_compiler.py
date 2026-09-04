@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 
 from mobiwam.b0_scene_compiler import (
-    continuous_corridor, dock_target, source_lattice, stable_seed,
+    camera_projection_metrics, continuous_corridor, dock_target, fixture_derived_dock,
+    sample_segment, source_lattice, stable_seed,
     validate_a_geometry, validate_d_geometry, validate_fixture, validate_native_frame,
 )
 
@@ -27,6 +28,18 @@ class SceneCompilerTest(unittest.TestCase):
         data = continuous_corridor([[0, 0], [.25, 0], [.5, 0]], [.1, .1, .1], spacing_m=.02)
         self.assertEqual(data["length_m"], .5)
         validate_native_frame(np.zeros((1080, 1920, 3), dtype=np.uint8))
+
+    def test_segment_dock_and_projection(self):
+        segment = sample_segment([0, 0], [.5, 0])
+        self.assertGreaterEqual(len(segment), 26)
+        self.assertTrue(np.allclose(segment[[0, -1]], [[0, 0], [.5, 0]]))
+        dock = fixture_derived_dock([0, 0, 0], [1, .5, .8], [0, -1], .25)
+        self.assertLess(dock[1], 0)
+        projection = camera_projection_metrics(
+            np.array([[0., 0., 1.], [.1, .1, 1.]]), np.eye(4), width=2, height=2,
+            border_fraction=0.0,
+        )
+        self.assertTrue(projection["passed"])
 
 
 if __name__ == "__main__":

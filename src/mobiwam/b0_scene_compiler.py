@@ -98,3 +98,72 @@ def continuous_corridor(points: Iterable[Sequence[float]], clearance_m: Iterable
 def validate_native_frame(frame: np.ndarray) -> None:
     if frame.ndim != 3 or frame.shape[0] != 1080 or frame.shape[1] != 1920:
         raise ValueError("camera must return native 1920x1080 RGB, no upscale")
+
+
+def sample_segment(start: Sequence[float], end: Sequence[float], spacing_m: float = 0.02) -> np.ndarray:
+    """Return a deterministic endpoint-inclusive planar segment."""
+    if spacing_m <= 0.0 or spacing_m > 0.02:
+        raise ValueError("segment spacing must be in (0, 0.02]")
+    start_arr, end_arr = np.asarray(start, float), np.asarray(end, float)
+    distance = float(np.linalg.norm(end_arr - start_arr))
+    count = max(2, int(np.ceil(distance / spacing_m)) + 1)
+    return np.linspace(start_arr, end_arr, count)
+
+
+def fixture_derived_dock(
+    fixture_position: Sequence[float],
+    fixture_size: Sequence[float],
+    policy_base_xy: Sequence[float],
+    robot_radius_m: float,
+    standoff_margin_m: float = 0.08,
+) -> np.ndarray:
+    """Construct a front-side dock using actual fixture and policy-base geometry."""
+    position = np.asarray(fixture_position, float)[:2]
+    size = np.asarray(fixture_size, float)[:2]
+    base = np.asarray(policy_base_xy, float)[:2]
+    direction = base - position
+    norm = float(np.linalg.norm(direction))
+    if norm < 1e-6:
+        raise ValueError("fixture and policy base centers coincide")
+    direction /= norm
+    half_extent = 0.5 * float(np.sum(np.abs(direction) * size))
+    return position + direction * (half_extent + robot_radius_m + standoff_margin_m)
+
+
+def camera_projection_metrics(
+    points_world: np.ndarray,
+    world_to_pixel: np.ndarray,
+    *,
+    width: int = 1920,
+    height: int = 1080,
+    border_fraction: float = 0.05,
+) -> dict[str, object]:
+    """Project without clipping so out-of-envelope points remain observable."""
+    points = np.asarray(points_world, float)
+    homogeneous = np.concatenate([points, np.ones((len(points), 1))], axis=1)
+    projected = (np.asarray(world_to_pixel, float) @ homogeneous.T).T
+    depths = projected[:, 2]
+    pixels = projected[:, :2] / depths[:, None]
+    x_margin = border_fraction * width
+    y_margin = border_fraction * height
+    passed = bool(
+        np.all(depths > 0.0)
+        and np.all(pixels[:, 0] >= x_margin)
+        and np.all(pixels[:, 0] <= width - x_margin)
+        and np.all(pixels[:, 1] >= y_margin)
+        and np.all(pixels[:, 1] <= height - y_margin)
+    )
+    return {
+        "passed": passed,
+        "positive_depth": bool(np.all(depths > 0.0)),
+        "min_border_fraction": float(
+            min(
+                np.min(pixels[:, 0]) / width,
+                np.min(pixels[:, 1]) / height,
+                np.min(width - pixels[:, 0]) / width,
+                np.min(height - pixels[:, 1]) / height,
+            )
+        ),
+        "pixels": pixels.tolist(),
+        "depths": depths.tolist(),
+    }
