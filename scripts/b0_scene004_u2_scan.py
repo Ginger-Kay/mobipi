@@ -120,6 +120,15 @@ def close_env(env: Any) -> None:
         closer()
 
 
+def release_render_context(env: Any) -> None:
+    """Drop an idle MuJoCo offscreen context before another env renders."""
+    raw = env.unwrapped.env
+    sim = getattr(raw, "sim", None)
+    if sim is not None and getattr(sim, "_render_context_offscreen", None) is not None:
+        sim._render_context_offscreen = None
+        gc.collect()
+
+
 def origin_pose(raw: Any) -> np.ndarray:
     position, rotation = raw.robots[0].composite_controller.get_controller_base_pose("right")
     value = np.eye(4); value[:3, :3] = rotation; value[:3, 3] = position
@@ -681,6 +690,9 @@ def main() -> int:
             camera = freeze_camera_for_groups(task, cell, held); camera_freezes[(task, cell)] = camera
             write_json(root / f"cell-camera-{task}-l{cell}.json", camera)
             for item in held:
+                for other in held:
+                    if other is not item:
+                        release_render_context(other["env"])
                 group = render_and_save_group(root, item, camera); all_groups.append(group)
                 append_jsonl(root / "screening-records.jsonl", group)
                 try: close_env(item["env"])
