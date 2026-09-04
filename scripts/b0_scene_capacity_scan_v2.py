@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import hashlib
 import json
 import math
@@ -31,6 +32,8 @@ from mobiwam.b0_scene_compiler import (
     validate_fixture,
     validate_native_frame,
 )
+from mobiwam.mobipi_checkpoint import create_env_from_checkpoint_metadata, load_policy_from_checkpoint
+from mobiwam.mobipi_policy import sample_verified_future_chunk
 
 
 TASKS = ("CloseSingleDoor", "CloseDrawer")
@@ -56,23 +59,18 @@ def write_json(path: Path, payload: object) -> None:
 
 def load_task(task: str):
     from robomimic.config import config_factory
-    from robomimic.utils.file_utils import maybe_dict_from_checkpoint
-    import robomimic.utils.obs_utils as ObsUtils
 
     checkpoint_path = CHECKPOINTS[task]
     config_data = json.loads((checkpoint_path.parent.parent / "config.json").read_text())
     config = config_factory(config_data["algo_name"])
     with config.values_unlocked():
         config.update(config_data)
-    ObsUtils.initialize_obs_utils_with_config(config)
-    checkpoint = maybe_dict_from_checkpoint(ckpt_path=str(checkpoint_path))
-    return config, checkpoint
+    model, policy, _, env_meta, shape_meta = load_policy_from_checkpoint(config, checkpoint_path)
+    return config, model, policy, env_meta, shape_meta
 
 
-def create_env(task: str, checkpoint: dict, cell: int, seed: int):
-    import robomimic.utils.env_utils as EnvUtils
-
-    meta = copy.deepcopy(checkpoint["env_metadata"])
+def create_env(config, env_meta: dict, shape_meta: dict, cell: int, seed: int):
+    meta = copy.deepcopy(env_meta)
     cameras = list(meta["env_kwargs"].get("camera_names", []))
     if "freeview" not in cameras:
         cameras.append("freeview")
@@ -83,12 +81,14 @@ def create_env(task: str, checkpoint: dict, cell: int, seed: int):
         "hard_reset": True,
         "render_gpu_device_id": 0,
     })
-    return EnvUtils.create_env_from_metadata(
-        env_meta=meta,
-        env_name=meta["env_name"],
-        render=False,
-        render_offscreen=True,
-        use_image_obs=True,
+    return create_env_from_checkpoint_metadata(
+        config, meta, shape_meta, {
+            "layout_and_style_ids": [[cell, cell]],
+            "seed": seed,
+            "camera_names": cameras,
+            "hard_reset": True,
+            "render_gpu_device_id": 0,
+        },
     )
 
 
@@ -150,9 +150,11 @@ def configure_camera(raw, points_xy: np.ndarray, robot_radius: float):
     return metrics
 
 
-def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_dir: Path):
+def compile_reset(task: str, cell: int, seed: int, env, policy, scene_root: Path, frame_dir: Path):
     env.reset()
-    raw = getattr(env, "env", env)
+    raw = env.unwrapped.env
+    policy.start_episode(lang=str(env._ep_lang_str))
+    policy_evidence = sample_verified_future_chunk(policy, env._get_stacked_obs_from_history(), atol=1e-6)
     fixture = raw.door_fxtr if task == "CloseSingleDoor" else raw.drawer
     fixture_name = next(name for name, value in raw.fixtures.items() if value is fixture)
     fixture_data = fixture_record(fixture_name, fixture, raw.sim)
@@ -180,7 +182,7 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
     base_outward = policy_base - fixture_xy
     base_outward /= np.linalg.norm(base_outward)
     angle_offsets = (0, 15, -15, 30, -30, 45, -45, 60, -60)
-    geometry_options = []
+    d_options = []
     fixture_size = np.asarray(fixture.size, float)[:2]
     for angle_deg in angle_offsets:
         outward = Rotation.from_euler("z", angle_deg, degrees=True).apply([*base_outward, 0.0])[:2]
@@ -189,21 +191,32 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
         d_start = dock + 0.50 * outward
         d_points = sample_segment(d_start, dock)
         d_clearance, d_nearest = clearance(d_points, obstacles, floor, inflated_radius)
-        for lateral_sign in (1, -1):
-            lateral = lateral_sign * np.array([-outward[1], outward[0]])
-            a_end = dock + 0.40 * lateral
-            envelope_end = dock + 0.50 * lateral
-            a_envelope_points = sample_segment(dock, envelope_end)
-            a_clearance, a_nearest = clearance(a_envelope_points, obstacles, floor, inflated_radius)
-            margin = float(min(np.min(d_clearance), np.min(a_clearance)))
-            geometry_options.append((margin, -abs(angle_deg), lateral_sign, angle_deg, dock, d_start, a_end, d_clearance, d_nearest, a_clearance, a_nearest))
-    _, _, lateral_sign, angle_deg, dock, d_start, a_end, d_clearance, d_nearest, a_clearance, a_nearest = max(
-        geometry_options, key=lambda option: option[:3]
-    )
-    geometry_pass = bool(np.min(d_clearance) >= 0.05 and np.min(a_clearance) >= 0.05)
+        d_options.append((float(np.min(d_clearance)), -abs(angle_deg), angle_deg, dock, d_start, d_clearance, d_nearest))
+    _, _, angle_deg, dock, d_start, d_clearance, d_nearest = max(d_options, key=lambda option: option[:2])
+    nominal_planar = np.asarray(policy_evidence.chunk[:, :2], float).sum(axis=0)
+    nominal_norm = float(np.linalg.norm(nominal_planar))
+    intent_valid = nominal_norm >= 1e-4
+    if intent_valid:
+        local_tangent = nominal_planar / nominal_norm
+        heading = float(np.asarray(raw._init_robot_ori).reshape(-1)[-1])
+        world_tangent = Rotation.from_euler("z", heading).apply([*local_tangent, 0.0])[:2]
+    else:
+        world_tangent = np.zeros(2)
+    a_start = policy_base
+    a_end = a_start + 0.40 * world_tangent
+    a_envelope_end = a_start + 0.50 * world_tangent
+    a_clearance, a_nearest = clearance(sample_segment(a_start, a_envelope_end), obstacles, floor, inflated_radius)
+    robot_joint_ids = np.asarray([raw.sim.model.joint_name2id(name) for name in raw.robots[0].robot_joints], int)
+    limited = np.asarray(raw.sim.model.jnt_limited, bool)[robot_joint_ids]
+    ranges = np.asarray(raw.sim.model.jnt_range, float)[robot_joint_ids]
+    qpos_addresses = np.asarray(raw.sim.model.jnt_qposadr, int)[robot_joint_ids]
+    joint_values = np.asarray(raw.sim.data.qpos, float)[qpos_addresses]
+    joint_margin = float(np.min(np.minimum(joint_values[limited] - ranges[limited, 0], ranges[limited, 1] - joint_values[limited]))) if np.any(limited) else float("inf")
+    kinematic_pass = bool(intent_valid and joint_margin > 1e-4 and np.all(np.isfinite(policy_evidence.chunk)))
+    geometry_pass = bool(np.min(d_clearance) >= 0.05 and np.min(a_clearance) >= 0.05 and kinematic_pass)
 
     context = np.array([[.25, .25], [.25, -.25], [-.25, .25], [-.25, -.25]])
-    key_xy = np.vstack([policy_base, d_start, dock, a_end, fixture_xy, dock + context, d_start + context, a_end + context])
+    key_xy = np.vstack([policy_base, d_start, dock, a_start, a_end, fixture_xy, dock + context, d_start + context, a_end + context])
     camera = configure_camera(raw, key_xy, robot_radius)
     frame = np.asarray(raw.sim.render(camera_name="freeview", width=1920, height=1080))[::-1]
     validate_native_frame(frame)
@@ -224,7 +237,7 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
     }
     scene_pass = all(len(paths) == 1 for paths in scene_files.values())
     source_rows = []
-    for stratum, xy, margin in (("E-compatible", policy_base, float(np.min(d_clearance))), ("D-required", d_start, float(np.min(d_clearance))), ("A-required", dock, float(np.min(a_clearance)))):
+    for stratum, xy, margin in (("E-compatible", policy_base, joint_margin), ("D-required", d_start, float(np.min(d_clearance))), ("A-required", a_start, float(np.min(a_clearance)))):
         source_rows.append({
             "source_pose_id": f"{task}-l{cell}-seed{seed:02d}-{stratum[0].lower()}",
             "stratum": stratum,
@@ -251,11 +264,16 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
             "d_start_xy": d_start.tolist(),
             "d_distance_m": 0.50,
             "a_primary": "a2",
+            "a_start_xy": a_start.tolist(),
             "a_endpoint_xy": a_end.tolist(),
             "a_planned_net_m": 0.40,
             "a_chunks": 4,
             "front_direction_offset_deg": angle_deg,
-            "a_lateral_sign": lateral_sign,
+            "nominal_planar_action_sum": nominal_planar.tolist(),
+            "nominal_intent_norm": nominal_norm,
+            "nominal_world_tangent": world_tangent.tolist(),
+            "joint_limit_margin": joint_margin,
+            "kinematic_dry_run_passed": kinematic_pass,
             "inflation_m": 0.05,
             "sample_spacing_m": 0.02,
             "d_min_clearance_m": float(np.min(d_clearance)),
@@ -267,6 +285,12 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
         "camera": camera,
         "scene_model": {"path": str(scene), "files": {key: [str(p) for p in value] for key, value in scene_files.items()}, "passed": scene_pass},
         "controlled_lattice_size": len(lattice),
+        "policy_forward": {
+            "future_chunk_shape": list(policy_evidence.chunk.shape),
+            "future_chunk_sha256": hashlib.sha256(np.ascontiguousarray(policy_evidence.chunk).tobytes()).hexdigest(),
+            "first_action_max_abs_error": policy_evidence.max_abs_error,
+            "no_actuation": True,
+        },
         "sources": source_rows,
         "status": "eligible" if passed else ("ineligible_fixture" if not fixture_pass else "ineligible_hard_geometry_or_camera"),
     }
@@ -284,22 +308,21 @@ def main() -> int:
     frame_dir = args.artifact_root / "native-frames"
     records_path = args.artifact_root / "scene-capacity-records.jsonl"
     rows = [json.loads(line) for line in records_path.read_text().splitlines()] if records_path.exists() else []
-    reset_count = len(rows)
     checkpoint_path = args.artifact_root / "checkpoint-compatibility.json"
     checkpoint_meta = json.loads(checkpoint_path.read_text()).get("checkpoints", {}) if checkpoint_path.exists() else {}
     selected_tasks = tuple(part.strip() for part in args.tasks.split(",") if part.strip())
     if not selected_tasks or any(task not in TASKS for task in selected_tasks):
         raise ValueError(f"unsupported --tasks selection: {selected_tasks}")
     for task in selected_tasks:
-        _, checkpoint = load_task(task)
+        config, model, policy, env_meta, shape_meta = load_task(task)
         checkpoint_meta[task] = {"path": str(CHECKPOINTS[task]), "bytes": CHECKPOINTS[task].stat().st_size, "sha256": sha256(CHECKPOINTS[task])}
         for cell in CELLS:
             for seed in range(args.stage_a_start, args.stage_a_end + 1):
                 started = datetime.now(timezone.utc).isoformat()
                 env = None
                 try:
-                    env = create_env(task, checkpoint, cell, seed)
-                    row = compile_reset(task, cell, seed, env, args.scene_root, frame_dir)
+                    env = create_env(config, env_meta, shape_meta, cell, seed)
+                    row = compile_reset(task, cell, seed, env, policy, args.scene_root, frame_dir)
                     reset_count += 1
                     row.update({"started_at": started, "ended_at": datetime.now(timezone.utc).isoformat(), "attempt": 1})
                 except Exception as error:
@@ -316,6 +339,8 @@ def main() -> int:
                             env.close()
                         except Exception:
                             pass
+                    del env
+                    gc.collect()
                 rows.append(row)
                 with records_path.open("a") as handle:
                     handle.write(json.dumps(row) + "\n")
@@ -323,6 +348,8 @@ def main() -> int:
                     "status": "running", "reset_count": reset_count, "route_rollouts": 0,
                     "last_unit": [task, cell, seed], "updated_at": datetime.now(timezone.utc).isoformat(),
                 })
+        del policy, model
+        gc.collect()
 
     summary = []
     for task in TASKS:
