@@ -24,7 +24,6 @@ from shapely.geometry import Point, Polygon
 
 from mobiwam.b0_scene_compiler import (
     camera_projection_metrics,
-    fixture_derived_dock,
     fixture_record,
     sample_segment,
     source_lattice,
@@ -176,20 +175,31 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
     robot_radius = float(raw.robots[0].robot_model.base.horizontal_radius)
     policy_base = np.asarray(raw._init_robot_pos, float)[:2]
     fixture_xy = np.asarray(fixture.pos, float)[:2]
-    dock = fixture_derived_dock(fixture.pos, fixture.size, policy_base, robot_radius)
-    outward = dock - fixture_xy
-    outward /= np.linalg.norm(outward)
-    lateral = np.array([-outward[1], outward[0]])
-    d_start = dock + 0.50 * outward
-    a_end = dock + 0.40 * lateral
-    envelope_end = dock + 0.50 * lateral
-    d_points = sample_segment(d_start, dock)
-    a_points = sample_segment(dock, a_end)
-    a_envelope_points = sample_segment(dock, envelope_end)
     obstacles, floor = obstacle_geometry(raw)
     inflated_radius = robot_radius + 0.05
-    d_clearance, d_nearest = clearance(d_points, obstacles, floor, inflated_radius)
-    a_clearance, a_nearest = clearance(a_envelope_points, obstacles, floor, inflated_radius)
+    base_outward = policy_base - fixture_xy
+    base_outward /= np.linalg.norm(base_outward)
+    angle_offsets = (0, 15, -15, 30, -30, 45, -45, 60, -60)
+    geometry_options = []
+    fixture_size = np.asarray(fixture.size, float)[:2]
+    for angle_deg in angle_offsets:
+        outward = Rotation.from_euler("z", angle_deg, degrees=True).apply([*base_outward, 0.0])[:2]
+        half_extent = 0.5 * float(np.sum(np.abs(outward) * fixture_size))
+        dock = fixture_xy + outward * (half_extent + robot_radius + 0.12)
+        d_start = dock + 0.50 * outward
+        d_points = sample_segment(d_start, dock)
+        d_clearance, d_nearest = clearance(d_points, obstacles, floor, inflated_radius)
+        for lateral_sign in (1, -1):
+            lateral = lateral_sign * np.array([-outward[1], outward[0]])
+            a_end = dock + 0.40 * lateral
+            envelope_end = dock + 0.50 * lateral
+            a_envelope_points = sample_segment(dock, envelope_end)
+            a_clearance, a_nearest = clearance(a_envelope_points, obstacles, floor, inflated_radius)
+            margin = float(min(np.min(d_clearance), np.min(a_clearance)))
+            geometry_options.append((margin, -abs(angle_deg), lateral_sign, angle_deg, dock, d_start, a_end, d_clearance, d_nearest, a_clearance, a_nearest))
+    _, _, lateral_sign, angle_deg, dock, d_start, a_end, d_clearance, d_nearest, a_clearance, a_nearest = max(
+        geometry_options, key=lambda option: option[:3]
+    )
     geometry_pass = bool(np.min(d_clearance) >= 0.05 and np.min(a_clearance) >= 0.05)
 
     context = np.array([[.25, .25], [.25, -.25], [-.25, .25], [-.25, -.25]])
@@ -244,6 +254,8 @@ def compile_reset(task: str, cell: int, seed: int, env, scene_root: Path, frame_
             "a_endpoint_xy": a_end.tolist(),
             "a_planned_net_m": 0.40,
             "a_chunks": 4,
+            "front_direction_offset_deg": angle_deg,
+            "a_lateral_sign": lateral_sign,
             "inflation_m": 0.05,
             "sample_spacing_m": 0.02,
             "d_min_clearance_m": float(np.min(d_clearance)),
