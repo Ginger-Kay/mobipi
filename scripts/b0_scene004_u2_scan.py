@@ -112,6 +112,14 @@ def create_env(config: Any, env_meta: Mapping[str, Any], shape_meta: Mapping[str
     return create_env_from_checkpoint_metadata(config, meta, shape_meta, override)
 
 
+def close_env(env: Any) -> None:
+    """Release the underlying robosuite environment when it provides ``close``."""
+    raw = env.unwrapped.env
+    closer = getattr(raw, "close", None)
+    if callable(closer):
+        closer()
+
+
 def origin_pose(raw: Any) -> np.ndarray:
     position, rotation = raw.robots[0].composite_controller.get_controller_base_pose("right")
     value = np.eye(4); value[:3, :3] = rotation; value[:3, 3] = position
@@ -643,6 +651,7 @@ def main() -> int:
             for seed in range(3):
                 attempt = 0
                 while True:
+                    if reset_calls >= 64: raise RuntimeError("64-reset cap exceeded")
                     attempt += 1; env = None; reset_calls += 1; call_started = utcnow()
                     try:
                         env = create_env(config, env_meta, shape_meta, cell, seed)
@@ -661,7 +670,7 @@ def main() -> int:
                                                    "error": str(error), "traceback": traceback.format_exc(), "env_step_calls": 0,
                                                    "route_outcome_read": False})
                         if env is not None:
-                            try: env.close()
+                            try: close_env(env)
                             except Exception: pass
                         if reserve_used >= 6 or attempt >= 5: raise
                         reserve_used += 1
@@ -672,7 +681,7 @@ def main() -> int:
             for item in held:
                 group = render_and_save_group(root, item, camera); all_groups.append(group)
                 append_jsonl(root / "screening-records.jsonl", group)
-                try: item["env"].close()
+                try: close_env(item["env"])
                 except Exception: pass
             del held; gc.collect()
         del policy, model; gc.collect()
@@ -692,8 +701,8 @@ def main() -> int:
             for seed in range(3, 10):
                 attempt = 0
                 while True:
+                    if reset_calls >= 64: raise RuntimeError("64-reset cap exceeded")
                     attempt += 1; env = None; reset_calls += 1; call_started = utcnow()
-                    if reset_calls > 64: raise RuntimeError("64-reset cap exceeded")
                     try:
                         env = create_env(config, env_meta, shape_meta, cell, seed)
                         group, snapshots = compile_reset_call(task, cell, seed, env, policy, args.scene_root,
@@ -714,7 +723,7 @@ def main() -> int:
                                                    "environment_seed": seed, "attempt": attempt, "started_at": call_started,
                                                    "ended_at": utcnow(), "status": "complete_raw_snapshot", "env_step_calls": 0,
                                                    "route_outcome_read": False})
-                        env.close(); break
+                        close_env(env); break
                     except Exception as error:
                         append_jsonl(call_ledger, {"call_index": reset_calls, "phase": "expansion", "task": task, "cell": cell,
                                                    "environment_seed": seed, "attempt": attempt, "started_at": call_started,
@@ -722,7 +731,7 @@ def main() -> int:
                                                    "error": str(error), "traceback": traceback.format_exc(), "env_step_calls": 0,
                                                    "route_outcome_read": False})
                         if env is not None:
-                            try: env.close()
+                            try: close_env(env)
                             except Exception: pass
                         if reserve_used >= 6 or attempt >= 5: raise
                         reserve_used += 1
