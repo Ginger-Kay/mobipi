@@ -4,11 +4,13 @@ import numpy as np
 from shapely.geometry import Polygon
 
 from mobiwam.scene004 import (
+    CANDIDATE_FEATURE_FIELDS,
     FixtureFunctionalRecord,
     a0_command,
     assist_candidates,
     bounded_x_fallback,
     build_minimal_input,
+    candidate_feature_vector,
     best_fixed_route,
     camera_grid,
     fixture_anchored_lattice,
@@ -102,8 +104,9 @@ class Scene004Test(unittest.TestCase):
     def test_minimal_model_exact_shape_count_and_loss(self):
         import torch
         model = make_minimal_obc()
-        self.assertEqual(trainable_parameter_count(model), 69189)
-        features = build_minimal_input(np.zeros((4, 1024)), np.zeros(16), "CloseDrawer", "precontact", 0.5)
+        self.assertEqual(trainable_parameter_count(model), 5230)
+        candidate = candidate_feature_vector({name: 0.0 for name in CANDIDATE_FEATURE_FIELDS})
+        features = build_minimal_input(np.zeros((4, 1024)), candidate)
         self.assertEqual(features.shape, (1045,))
         raw = model(torch.from_numpy(features)[None])
         self.assertEqual(tuple(raw.shape), (1, 5))
@@ -116,13 +119,15 @@ class Scene004Test(unittest.TestCase):
             {"candidate_id": "e0", "route_family": "E", "stage_eligible": True, "hard_valid": True,
              "predicted_success": .80, "predicted_failure": .20, "predicted_progress": .70,
              "predicted_base_path_m": 0.0, "predicted_completion_time_s": 10,
-             "visibility": .8, "reachability": .8, "normalized_joint_margin": .8,
-             "planned_intent_error": .1, "planned_base_path_m": 0.0},
+             "minimum_continuous_clearance_m": .08, "minimum_manipulability_or_joint_margin": .8,
+             "minimum_policy_view_compatibility": .8, "total_planned_base_path_m": 0.0,
+             "total_planned_time_s": 10.0},
             {"candidate_id": "d1", "route_family": "D", "stage_eligible": True, "hard_valid": True,
              "predicted_success": .86, "predicted_failure": .19, "predicted_progress": .80,
              "predicted_base_path_m": .4, "predicted_completion_time_s": 12,
-             "visibility": .9, "reachability": .9, "normalized_joint_margin": .9,
-             "planned_intent_error": .05, "planned_base_path_m": .4},
+             "minimum_continuous_clearance_m": .09, "minimum_manipulability_or_joint_margin": .9,
+             "minimum_policy_view_compatibility": .9, "total_planned_base_path_m": .4,
+             "total_planned_time_s": 12.0},
         ]
         self.assertEqual(prediction_first_select(rows), "d1")
         self.assertEqual(geometry_rule_select(rows), "d1")

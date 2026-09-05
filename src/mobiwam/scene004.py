@@ -36,6 +36,30 @@ OUTCOME_DENYLIST = frozenset(
     }
 )
 
+CANDIDATE_FEATURE_FIELDS = (
+    "route_E",
+    "route_D",
+    "route_A",
+    "task_CloseDrawer",
+    "task_CloseSingleDoor",
+    "stage_precontact",
+    "hard_valid",
+    "minimum_continuous_clearance_m",
+    "minimum_manipulability",
+    "minimum_joint_margin_rad",
+    "minimum_policy_view_compatibility",
+    "total_planned_base_path_m",
+    "planned_time_normalized",
+    "planned_base_net_m",
+    "planned_eef_path_m",
+    "maximum_eef_tracking_error_m",
+    "minimum_velocity_margin",
+    "minimum_acceleration_margin",
+    "solver_residual",
+    "slot_index_normalized",
+    "simulator_oracle_pre_outcome",
+)
+
 
 def canonical_hash(value: Any) -> str:
     def convert(item: Any) -> Any:
@@ -391,19 +415,31 @@ def bounded_x_fallback(action_dim: int = 12, duration_s: float = 0.2) -> dict[st
             "option_boundaries": 1, "terminates_episode": True, "safe_claim": False}
 
 
-def build_minimal_input(
-    context_tokens: np.ndarray, candidate_encoding: Sequence[float], task: str, stage: str,
-    planned_duration_normalized: float,
-) -> np.ndarray:
+def candidate_feature_vector(record: Mapping[str, Any]) -> np.ndarray:
+    """Materialize the frozen 21-D planner-derived candidate schema.
+
+    The caller must provide already-derived scalar features. Raw simulator
+    state, controlled-stratum tags, and outcome fields are rejected here.
+    """
+    forbidden = set(OUTCOME_DENYLIST) | {"stratum", "source_stratum", "qpos", "qvel", "raw_state"}
+    leaked = sorted(forbidden.intersection(str(key) for key in record))
+    if leaked:
+        raise ValueError(f"candidate feature record contains denied fields: {leaked}")
+    missing = [name for name in CANDIDATE_FEATURE_FIELDS if name not in record]
+    if missing:
+        raise ValueError(f"candidate feature record is incomplete: {missing}")
+    result = np.asarray([record[name] for name in CANDIDATE_FEATURE_FIELDS], dtype=np.float32)
+    if result.shape != (21,) or not np.all(np.isfinite(result)):
+        raise ValueError("candidate feature vector must be finite and 21-D")
+    return result
+
+
+def build_minimal_input(context_tokens: np.ndarray, candidate_encoding: Sequence[float]) -> np.ndarray:
     context = np.asarray(context_tokens, dtype=np.float32)
     candidate = np.asarray(candidate_encoding, dtype=np.float32)
-    if context.shape != (4, 1024) or candidate.shape != (16,):
-        raise ValueError("minimal input requires [4,1024] context and 16-D candidate")
-    if task not in TASKS or stage not in ("precontact", "stable_contact"):
-        raise ValueError("unsupported task/stage")
-    task_onehot = [float(task == name) for name in TASKS]
-    stage_onehot = [float(stage == name) for name in ("precontact", "stable_contact")]
-    result = np.concatenate([context.mean(axis=0), candidate, task_onehot, stage_onehot, [planned_duration_normalized]]).astype(np.float32)
+    if context.shape != (4, 1024) or candidate.shape != (21,):
+        raise ValueError("minimal input requires [4,1024] context and frozen 21-D candidate features")
+    result = np.concatenate([context.mean(axis=0), candidate]).astype(np.float32)
     if result.shape != (1045,) or not np.all(np.isfinite(result)):
         raise ValueError("minimal observable/candidate input must be finite and 1045-D")
     return result
@@ -416,8 +452,8 @@ def transformed_outputs(raw: Any, *, timeout_s: float) -> dict[str, Any]:
         raise ValueError("minimal OBC raw output must end in 5 dimensions")
     return {
         "success": torch.sigmoid(raw[..., 0]),
-        "progress": torch.sigmoid(raw[..., 1]),
-        "failure": torch.sigmoid(raw[..., 2]),
+        "failure": torch.sigmoid(raw[..., 1]),
+        "progress": torch.sigmoid(raw[..., 2]),
         "base_path_m": torch.nn.functional.softplus(raw[..., 3]) * 2.0,
         "completion_time_s": torch.nn.functional.softplus(raw[..., 4]) * float(timeout_s),
     }
@@ -430,12 +466,12 @@ def minimal_obc_loss(raw: Any, targets: Mapping[str, Any], *, timeout_s: float) 
     if any(name not in targets for name in names):
         raise ValueError("minimal OBC targets incomplete")
     success = torch.nn.functional.binary_cross_entropy_with_logits(raw[..., 0], targets["success"].float())
-    progress = torch.nn.functional.smooth_l1_loss(torch.sigmoid(raw[..., 1]), targets["progress"].float())
-    failure = torch.nn.functional.binary_cross_entropy_with_logits(raw[..., 2], targets["failure"].float())
-    path = 0.25 * torch.nn.functional.smooth_l1_loss(
+    failure = torch.nn.functional.binary_cross_entropy_with_logits(raw[..., 1], targets["failure"].float())
+    progress = torch.nn.functional.smooth_l1_loss(torch.sigmoid(raw[..., 2]), targets["progress"].float())
+    path = torch.nn.functional.smooth_l1_loss(
         torch.nn.functional.softplus(raw[..., 3]), targets["base_path_m"].float() / 2.0
     )
-    timing = 0.25 * torch.nn.functional.smooth_l1_loss(
+    timing = torch.nn.functional.smooth_l1_loss(
         torch.nn.functional.softplus(raw[..., 4]), targets["completion_time_s"].float() / float(timeout_s)
     )
     total = success + progress + failure + path + timing
@@ -445,9 +481,7 @@ def minimal_obc_loss(raw: Any, targets: Mapping[str, Any], *, timeout_s: float) 
 def make_minimal_obc() -> Any:
     import torch
 
-    return torch.nn.Sequential(
-        torch.nn.Linear(1045, 64), torch.nn.GELU(), torch.nn.Linear(64, 32), torch.nn.GELU(), torch.nn.Linear(32, 5)
-    )
+    return torch.nn.Linear(1045, 5)
 
 
 def trainable_parameter_count(model: Any) -> int:
@@ -476,8 +510,17 @@ def geometry_rule_select(candidates: Sequence[Mapping[str, Any]]) -> str:
     if not hard:
         return "X"
     def key(row: Mapping[str, Any]) -> tuple[Any, ...]:
-        margin = min(float(row["visibility"]), float(row["reachability"]), float(row["normalized_joint_margin"]))
-        return (-margin, float(row["planned_intent_error"]), float(row["planned_base_path_m"]),
+        required = (
+            "minimum_continuous_clearance_m", "minimum_manipulability_or_joint_margin",
+            "minimum_policy_view_compatibility", "total_planned_base_path_m", "total_planned_time_s",
+        )
+        missing = [name for name in required if name not in row]
+        if missing:
+            raise ValueError(f"geometry rule candidate lacks route-wide fields: {missing}")
+        return (-float(row["minimum_continuous_clearance_m"]),
+                -float(row["minimum_manipulability_or_joint_margin"]),
+                -float(row["minimum_policy_view_compatibility"]),
+                float(row["total_planned_base_path_m"]), float(row["total_planned_time_s"]),
                 ROUTE_ORDER[str(row["route_family"])], str(row["candidate_id"]))
     return min(hard, key=key)["candidate_id"]
 
