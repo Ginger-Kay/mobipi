@@ -40,6 +40,8 @@ def main() -> int:
     with np.load(args.snapshot / "frame_history.npz", allow_pickle=False) as history:
         if not history.files or not all(np.asarray(history[key]).size for key in history.files):
             raise ValueError("frame history is empty")
+    if not meta.get("history_frame_counts") or set(meta["history_frame_counts"].values()) != {10}:
+        raise ValueError("frame history does not contain exactly 10 frames per key")
     rng = pickle.loads((args.snapshot / "rng_state.pkl").read_bytes())
     if not isinstance(rng, dict) or "python_rng" not in rng or "numpy_rng" not in rng:
         raise ValueError("RNG state is incomplete")

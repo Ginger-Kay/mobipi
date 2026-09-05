@@ -173,11 +173,23 @@ def set_planar_base_pose_without_step(raw: Any, xy_heading: np.ndarray) -> None:
 
 
 def refresh_frame_stack(env: Any) -> Mapping[str, np.ndarray]:
+    # FrameStackWrapper.update_obs reads timestep while deciding whether the
+    # episode is at its reset boundary.  A task constructor has already
+    # sampled the state, so initialize wrapper bookkeeping before asking it to
+    # build observations; do not call either inner or wrapper reset here.
+    env.timestep = 0
     observation = env.env.get_observation()
     env.update_obs(observation, reset=True)
-    env.timestep = 0
     env.obs_history = env._get_initial_obs_history(observation)
     return env._get_stacked_obs_from_history()
+
+
+def initialize_constructor_frame_stack(env: Any) -> Mapping[str, np.ndarray]:
+    """Initialize wrapper episode metadata/history without another reset."""
+    raw = env.unwrapped.env
+    meta = raw.get_ep_meta() if hasattr(raw, "get_ep_meta") else {}
+    env._ep_lang_str = meta.get("lang", "dummy")
+    return refresh_frame_stack(env)
 
 
 def no_actuation_policy_query(raw: Any, env: Any, policy: Any, seed: int) -> dict[str, Any]:
@@ -515,10 +527,7 @@ def compile_reset_call(task: str, cell: int, seed: int, env: Any, policy: Any, s
     if perform_explicit_reset:
         env.reset()
     else:
-        raw_for_obs = env.unwrapped.env
-        meta = raw_for_obs.get_ep_meta() if hasattr(raw_for_obs, "get_ep_meta") else {}
-        env._ep_lang_str = meta.get("lang", "dummy")
-        refresh_frame_stack(env)
+        initialize_constructor_frame_stack(env)
     raw = env.unwrapped.env
     raw_state = {"model": str(raw.sim.model.get_xml()), "states": np.asarray(raw.sim.get_state().flatten()).copy()}
     raw_dir.mkdir(parents=True, exist_ok=True)

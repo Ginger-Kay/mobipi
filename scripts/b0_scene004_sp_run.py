@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Corrected-sampler SCENE-004 SP-v1.3 U2-only runner."""
+"""Deadline-minimum SCENE-004 v1.4 U2 runner."""
 from __future__ import annotations
 
 import argparse
@@ -34,7 +34,11 @@ from b0_scene004_u2_scan import (
 from mobiwam.b0_scene_compiler import camera_projection_metrics
 from mobiwam.scene004 import independent_reason_vector, select_cell_camera
 from mobiwam.scene004_renderer import camera_payload_hash, load_snapshot_sim
-from mobiwam.scene004_sampler import persist_source_snapshot_atomic
+from mobiwam.scene004_sampler import (
+    expansion_reuse_members,
+    promote_validated_snapshot_group,
+    write_source_snapshot_in_group,
+)
 from robosuite.utils.camera_utils import get_camera_transform_matrix
 
 
@@ -89,29 +93,55 @@ def persist_and_validate_group(
         "call_index": call_index, "attempt": attempt, "state_sampling_call": group["state_sampling_call"],
         "constructor_count": 1, "explicit_reset_count": 0, "code_commit": code_commit,
         "captured_at": utcnow(), "env_step_calls": 0, "route_outcome_reads": 0,
+        "call_path": {
+            "sampling": "create_env_from_checkpoint_metadata constructor",
+            "wrapper": "initialize_constructor_frame_stack -> update_obs(reset=True) -> 10-frame history",
+            "inner_env_reset": False,
+            "wrapper_reset": False,
+            "explicit_reset": False,
+        },
     }
-    attempt_root = root / "snapshot-attempts" / f"newcall{call_index:02d}-attempt{attempt}"
+    stem = f"{group['task']}-l{group['cell']}-seed{group['environment_seed']:02d}"
+    attempt_root = root / "snapshot-attempts" / f"newcall{call_index:02d}" / f"attempt{attempt}" / stem
+    temporary_group = attempt_root / f".{stem}.tmp"
+    canonical_group = root / "canonical-snapshot-groups" / stem
+    receipts = {}
+    try:
+        for source in group["sources"]:
+            child = temporary_group / source["source_id"]
+            write_source_snapshot_in_group(child, source, snapshots[source["stratum"]], provenance)
+        # Validate only after all three children have been materialized.
+        for source in group["sources"]:
+            child = temporary_group / source["source_id"]
+            receipt = child / "roundtrip-receipt.json"
+            result = subprocess.run(
+                validator_command(repo, child, receipt), capture_output=True, text=True,
+                env={**os.environ, "PYTHONNOUSERSITE": "1"},
+            )
+            (child / "roundtrip-validator.log").write_text(result.stdout + result.stderr)
+            if result.returncode != 0:
+                raise RuntimeError(f"round-trip failed for {source['source_id']}: {result.returncode}")
+            receipts[source["source_id"]] = receipt
+        aggregate = promote_validated_snapshot_group(temporary_group, canonical_group, receipts)
+    except Exception:
+        if temporary_group.exists():
+            failure_group = attempt_root / f"{stem}.failed"
+            if failure_group.exists():
+                raise FileExistsError(f"failure attempt path already exists: {failure_group}")
+            temporary_group.rename(failure_group)
+        raise
     for source in group["sources"]:
-        final, metadata = persist_source_snapshot_atomic(
-            attempt_root, source, snapshots[source["stratum"]], provenance
-        )
-        receipt = root / "roundtrip-receipts" / f"{source['source_id']}.json"
-        result = subprocess.run(
-            validator_command(repo, final, receipt), capture_output=True, text=True,
-            env={**os.environ, "PYTHONNOUSERSITE": "1"},
-        )
-        log = root / "roundtrip-logs" / f"{source['source_id']}.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(result.stdout + result.stderr)
-        if result.returncode != 0:
-            raise RuntimeError(f"round-trip failed for {source['source_id']}: {result.returncode}")
-        source["snapshot_path"] = str(final)
+        child = canonical_group / source["source_id"]
+        metadata = json.loads((child / "snapshot-meta.json").read_text())
+        source["snapshot_path"] = str(child)
         source["snapshot_hash"] = metadata["snapshot_hash"]
-        source["roundtrip_receipt"] = str(receipt)
+        source["roundtrip_receipt"] = str(child / "roundtrip-receipt.json")
         source["camera"] = {"passed": None, "camera_hash": None}
         source["reason_vector"]["predicates"]["camera"] = False
         source["reason_vector"] = independent_reason_vector(source["reason_vector"]["predicates"])
     group["camera"] = {"passed": None, "camera_hash": None}
+    group["complete_snapshot"] = True
+    group["snapshot_aggregate_hash"] = aggregate["aggregate_hash"]
     group["complete_seed_group"] = False
     group["corrected_sampler"] = provenance
     group.pop("envelope_points_xyz", None)
@@ -217,6 +247,7 @@ def main() -> int:
     parser.add_argument("--reuse-manifest", type=Path, required=True)
     parser.add_argument("--parent-screening", type=Path, required=True)
     parser.add_argument("--parent-expansion", type=Path, required=True)
+    parser.add_argument("--expansion-candidates", type=Path, required=True)
     parser.add_argument("--scene-root", type=Path, required=True)
     parser.add_argument("--code-commit", required=True)
     parser.add_argument("--new-reset-cap", type=int, required=True)
@@ -232,6 +263,12 @@ def main() -> int:
     parent_exp: dict[tuple[str, int, int], dict[str, Any]] = {}
     for row in parent_exp_records:
         parent_exp.setdefault((row["task"], row["cell"], row["environment_seed"]), row)
+    candidate_manifest = json.loads(args.expansion_candidates.read_text())
+    candidate_keys = {
+        (row["task"], int(row["cell"]), int(row["environment_seed"]))
+        for row in candidate_manifest["candidates"]
+        if row.get("dimension_closed") and row.get("eligible_for_final_matching")
+    }
     new_resets = 0; mechanical = 0; screening: list[dict[str, Any]] = []
     reset_ledger = root / "new-reset-ledger.jsonl"
     for task in sorted(TASKS):
@@ -241,15 +278,15 @@ def main() -> int:
                 key = (task, cell, seed)
                 if key in accepted:
                     screening.append(canonicalize_reuse(parent_screen[key])); continue
-                attempt = 0
+                attempt = 1
                 while True:
-                    attempt += 1
                     if new_resets >= args.new_reset_cap: raise RuntimeError("new reset cap exceeded")
                     new_resets += 1; env = None; started = utcnow()
                     try:
                         env = create_env(config, env_meta, shape_meta, cell, seed)
                         group, snapshots = compile_reset_call(task, cell, seed, env, policy, args.scene_root,
-                            root / "raw-snapshots" / f"{task}-l{cell}-seed{seed:02d}-newcall{new_resets:02d}", perform_explicit_reset=False)
+                            root / "snapshot-attempts" / f"newcall{new_resets:02d}" / f"attempt{attempt}" /
+                            f"{task}-l{cell}-seed{seed:02d}" / "raw-source", perform_explicit_reset=False)
                         group = persist_and_validate_group(root, repo, group, snapshots, new_resets, attempt, args.code_commit)
                         close_env(env); env = None
                         append_jsonl(reset_ledger, {"new_call_index": new_resets, "phase": "screening", "task": task, "cell": cell,
@@ -266,7 +303,23 @@ def main() -> int:
                             "traceback": traceback.format_exc(), "started_at": started, "ended_at": utcnow(), "env_step_calls": 0,
                             "route_outcome_reads": 0})
                         mechanical += 1
-                        if mechanical > 6 or attempt >= 5: raise
+                        fingerprint = hashlib.sha256(traceback.format_exc().encode()).hexdigest()
+                        write_json(root / "sampling-budget-exhausted.json", {
+                            "machine_verdict": "sampling_budget_exhausted_hold", "phase": "screening",
+                            "task": task, "cell": cell, "environment_seed": seed, "new_call_index": new_resets,
+                            "attempt": attempt, "traceback_fingerprint": fingerprint,
+                            "prior_sp_sampling_failures": 5, "v1_4_sampling_failures": 1,
+                            "shared_failure_cap": 6, "remaining_failure_calls": 0,
+                            "env_step_calls": 0, "route_outcome_reads": 0, "ended_at": utcnow(),
+                        })
+                        write_json(root / "u2-decision.json", {"machine_verdict": "sampling_budget_exhausted_hold",
+                            "R_screen": len(accepted), "actual_new_calls": new_resets, "global_total_calls": 55 + new_resets,
+                            "screening_groups_available": len(screening), "expansion_groups": 0,
+                            "env_step_calls": 0, "route_rollouts": 0, "route_outcome_reads": 0})
+                        write_json(root / "status.json", {"status": "completed", "unit": "M2",
+                            "verdict": "sampling_budget_exhausted_hold", "updated_at": utcnow(),
+                            "not_run_gate": ["remaining_U2", "M3", "M4", "M5", "M6", "M7"]})
+                        return 4
         del policy, model; gc.collect()
     cameras = {}
     for task in sorted(TASKS):
@@ -281,34 +334,36 @@ def main() -> int:
     write_json(root / "screening-cell-ranking.json", {"selected_cells": selected,
         "ranking_rule": ["complete_seed_groups_desc", "worst_signed_clearance_desc", "fixed_camera_min_border_desc", "joint_margin_desc", "layout_id_asc"],
         "ranked": {task: [{"cell": cell, "rank_key": cell_rank(screening, task, cell)} for cell in sorted(CELLS, key=lambda c: cell_rank(screening, task, c))] for task in sorted(TASKS)}})
-    # Only the earliest existing expansion record may be reused, and only if its final cell is selected.
-    exp_reuse = {key for key in parent_exp if key[1] in selected[key[0]] and all(Path(s["snapshot_path"]).exists() for s in parent_exp[key]["sources"])}
-    r_exp = len(exp_reuse); baseline = (30 - len(accepted)) + (28 - r_exp); absolute_cap = baseline + 6
-    write_json(root / "reuse-expansion-manifest.json", {"R_expansion": r_exp, "accepted": [list(x) for x in sorted(exp_reuse)],
-        "selection_cells": selected, "selection_rule": "earliest complete duplicate position only", "frozen_at": utcnow()})
+    exp_reuse = expansion_reuse_members(candidate_manifest["candidates"], selected, candidate_keys)
+    exp_reuse &= set(parent_exp)
+    r_exp = len(exp_reuse); baseline = (30 - len(accepted)) + (12 - r_exp); absolute_cap = baseline + 1
+    write_json(root / "reuse-expansion-manifest-v1.4.json", {"R_expansion_min": r_exp, "accepted": [list(x) for x in sorted(exp_reuse)],
+        "selection_cells": selected, "seed_range": [3, 4, 5], "candidate_manifest": str(args.expansion_candidates),
+        "candidate_manifest_sha256": sha256(args.expansion_candidates), "selection_rule": "pre-audited full criteria and final schedule match", "frozen_at": utcnow()})
     write_json(root / "exact-new-reset-budget.json", {"R_screen": len(accepted), "R_expansion": r_exp,
-        "screening_new": 30 - len(accepted), "expansion_new": 28 - r_exp, "baseline_new": baseline,
-        "mechanical_recovery_cap": 6, "absolute_new_cap": absolute_cap, "pre_expansion_outer_cap": args.new_reset_cap,
-        "global_historical_resets": 50, "actual_new_before_expansion": new_resets, "passed": absolute_cap <= args.new_reset_cap})
+        "screening_new": 30 - len(accepted), "expansion_new": 12 - r_exp, "baseline_new": baseline,
+        "prior_sp_sampling_failures": 5, "remaining_failure_calls": 1, "absolute_new_cap": absolute_cap,
+        "pre_expansion_outer_cap": args.new_reset_cap, "global_historical_calls": 55,
+        "actual_new_before_expansion": new_resets, "passed": absolute_cap <= args.new_reset_cap})
     if absolute_cap > args.new_reset_cap: raise RuntimeError("exact expansion budget exceeds frozen cap")
     expansion: list[dict[str, Any]] = []
     for task in sorted(TASKS):
         config, model, policy, env_meta, shape_meta = load_task(task)
         for cell in sorted(selected[task]):
-            for seed in range(3, 10):
+            for seed in range(3, 6):
                 key = (task, cell, seed)
                 if key in exp_reuse:
                     group = canonicalize_reuse(parent_exp[key])
                     expansion.append(render_group(root, repo, group, cameras[(task, cell)], "expansion")); continue
-                attempt = 0
+                attempt = 1
                 while True:
-                    attempt += 1
                     if new_resets >= absolute_cap: raise RuntimeError("exact new reset cap exceeded")
                     new_resets += 1; env = None; started = utcnow()
                     try:
                         env = create_env(config, env_meta, shape_meta, cell, seed)
                         group, snapshots = compile_reset_call(task, cell, seed, env, policy, args.scene_root,
-                            root / "raw-snapshots" / f"{task}-l{cell}-seed{seed:02d}-newcall{new_resets:02d}", perform_explicit_reset=False)
+                            root / "snapshot-attempts" / f"newcall{new_resets:02d}" / f"attempt{attempt}" /
+                            f"{task}-l{cell}-seed{seed:02d}" / "raw-source", perform_explicit_reset=False)
                         group = persist_and_validate_group(root, repo, group, snapshots, new_resets, attempt, args.code_commit)
                         close_env(env); env = None
                         group = render_group(root, repo, group, cameras[(task, cell)], "expansion")
@@ -326,7 +381,24 @@ def main() -> int:
                             "traceback": traceback.format_exc(), "started_at": started, "ended_at": utcnow(), "env_step_calls": 0,
                             "route_outcome_reads": 0})
                         mechanical += 1
-                        if mechanical > 6 or attempt >= 5: raise
+                        fingerprint = hashlib.sha256(traceback.format_exc().encode()).hexdigest()
+                        write_json(root / "sampling-budget-exhausted.json", {
+                            "machine_verdict": "sampling_budget_exhausted_hold", "phase": "expansion",
+                            "task": task, "cell": cell, "environment_seed": seed, "new_call_index": new_resets,
+                            "attempt": attempt, "traceback_fingerprint": fingerprint,
+                            "prior_sp_sampling_failures": 5, "v1_4_sampling_failures": 1,
+                            "shared_failure_cap": 6, "remaining_failure_calls": 0,
+                            "env_step_calls": 0, "route_outcome_reads": 0, "ended_at": utcnow(),
+                        })
+                        write_json(root / "u2-decision.json", {"machine_verdict": "sampling_budget_exhausted_hold",
+                            "R_screen": len(accepted), "R_expansion_min": r_exp, "actual_new_calls": new_resets,
+                            "global_total_calls": 55 + new_resets, "screening_groups": len(screening),
+                            "expansion_groups_available": len(expansion), "env_step_calls": 0,
+                            "route_rollouts": 0, "route_outcome_reads": 0})
+                        write_json(root / "status.json", {"status": "completed", "unit": "M2",
+                            "verdict": "sampling_budget_exhausted_hold", "updated_at": utcnow(),
+                            "not_run_gate": ["remaining_U2", "M3", "M4", "M5", "M6", "M7"]})
+                        return 4
         del policy, model; gc.collect()
     expansion.sort(key=lambda r: (r["task"], r["cell"], r["environment_seed"]))
     (root / "expansion-records.jsonl").write_text("".join(json.dumps(r, sort_keys=True, default=str) + "\n" for r in expansion))
@@ -342,7 +414,7 @@ def main() -> int:
             insufficient |= len(complete) < 6
     verdict = "scene_compiler_insufficient" if insufficient else "u2_source_freeze_pass"
     decision = {"machine_verdict": verdict, "R_screen": len(accepted), "R_expansion": r_exp,
-        "actual_new_resets": new_resets, "global_total_resets": 50 + new_resets, "mechanical_recovery_calls": mechanical,
+        "actual_new_calls": new_resets, "global_total_calls": 55 + new_resets, "v1_4_sampling_failures": mechanical,
         "screening_groups": len(screening), "expansion_groups": len(expansion), "selected_cells": selected,
         "selected_cell_summary": summary, "env_step_calls": 0, "route_rollouts": 0, "route_outcome_reads": 0}
     write_json(root / "u2-decision.json", decision)
