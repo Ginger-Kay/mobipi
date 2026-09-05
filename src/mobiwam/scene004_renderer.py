@@ -73,6 +73,10 @@ def load_snapshot_sim(snapshot_dir: Path) -> tuple[Any, Any]:
     model = mujoco.MjModel.from_xml_string(xml)
     model.vis.global_.offwidth = NATIVE_WIDTH
     model.vis.global_.offheight = NATIVE_HEIGHT
+    # Disable GPU multisample resolve: it is a renderer-only setting and
+    # removes cross-process edge-pixel nondeterminism without changing the
+    # frozen XML/state/camera geometry.
+    model.vis.quality.offsamples = 0
     sim = MjSim(model)
     sim.set_state_from_flattened(np.load(state_path, allow_pickle=False))
     sim.forward()
