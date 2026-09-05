@@ -90,9 +90,10 @@ def persist_and_validate_group(
         "constructor_count": 1, "explicit_reset_count": 0, "code_commit": code_commit,
         "captured_at": utcnow(), "env_step_calls": 0, "route_outcome_reads": 0,
     }
+    attempt_root = root / "snapshot-attempts" / f"newcall{call_index:02d}-attempt{attempt}"
     for source in group["sources"]:
         final, metadata = persist_source_snapshot_atomic(
-            root / "snapshots", source, snapshots[source["stratum"]], provenance
+            attempt_root, source, snapshots[source["stratum"]], provenance
         )
         receipt = root / "roundtrip-receipts" / f"{source['source_id']}.json"
         result = subprocess.run(
