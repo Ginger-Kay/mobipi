@@ -16,6 +16,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from mobiwam.scene004 import canonical_hash
+
 
 NATIVE_WIDTH = 1920
 NATIVE_HEIGHT = 1080
@@ -104,6 +106,43 @@ def set_snapshot_state(sim: Any, snapshot_dir: Path) -> None:
     sim.forward()
 
 
+def camera_payload_hash(payload: Mapping[str, Any]) -> str:
+    return canonical_hash(
+        {
+            "cell_key": payload["cell_key"],
+            "anchor_xy": payload["anchor_xy"],
+            "pose": payload["pose"],
+        }
+    )
+
+
+def apply_camera_payload(sim: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply a world-fixed camera independent of the frozen snapshot XML."""
+    expected = camera_payload_hash(payload)
+    if payload.get("camera_hash") != expected:
+        raise ValueError("camera payload hash mismatch")
+    model = sim.model
+    camera_id = model.camera_name2id("freeview")
+    if int(model.cam_bodyid[camera_id]) != 0:
+        raise RuntimeError("freeview camera is not world-frame fixed")
+    anchor = np.asarray(payload["anchor_xy"], dtype=float)
+    pose = payload["pose"]
+    offset = np.asarray(pose["center_offset_xy"], dtype=float)
+    model.cam_pos[camera_id] = [*(anchor + offset), float(pose["height_m"])]
+    model.cam_quat[camera_id] = [1.0, 0.0, 0.0, 0.0]
+    model.cam_fovy[camera_id] = float(pose["fov_deg"])
+    sim.forward()
+    return {
+        "camera_id": int(camera_id),
+        "camera_body_id": int(model.cam_bodyid[camera_id]),
+        "camera_hash": expected,
+        "world_fixed": True,
+        "position": np.asarray(model.cam_pos[camera_id], dtype=float).tolist(),
+        "quaternion": np.asarray(model.cam_quat[camera_id], dtype=float).tolist(),
+        "fov_deg": float(model.cam_fovy[camera_id]),
+    }
+
+
 def render_rgb(sim: Any, context: Any, camera_name: str = "freeview") -> tuple[np.ndarray, dict[str, Any]]:
     """Make the sole context current immediately before render/read."""
     context.gl_ctx.make_current()
@@ -151,10 +190,12 @@ def render_seed_group(payload: Mapping[str, Any], output_dir: Path, device_id: i
     context = create_context(sim, device_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     frame_rows = []
+    camera_receipt = apply_camera_payload(sim, payload["camera_payload"])
     try:
         for source in sources:
             snapshot_dir = Path(source["snapshot_path"])
             set_snapshot_state(sim, snapshot_dir)
+            camera_receipt = apply_camera_payload(sim, payload["camera_payload"])
             frame, render_receipt = render_rgb(sim, context)
             path = output_dir / f"{source['source_id']}.png"
             Image.fromarray(frame, mode="RGB").save(path)
@@ -167,7 +208,7 @@ def render_seed_group(payload: Mapping[str, Any], output_dir: Path, device_id: i
                 "frame_path": str(path),
                 "frame_sha256": sha256(path),
                 "frame_bytes": path.stat().st_size,
-                "camera_hash": source.get("camera", {}).get("camera_hash"),
+                "camera_hash": camera_receipt["camera_hash"],
                 "render": render_receipt,
             })
     finally:
@@ -188,6 +229,7 @@ def render_seed_group(payload: Mapping[str, Any], output_dir: Path, device_id: i
         "environment_seed": payload.get("environment_seed"),
         "source_count": len(frame_rows),
         "frames": frame_rows,
+        "camera": camera_receipt,
         "env_reset_calls": 0,
         "env_step_calls": 0,
         "route_outcome_reads": 0,

@@ -353,8 +353,15 @@ def snapshot_in_memory(env: Any, policy_evidence: Mapping[str, Any]) -> dict[str
         generator = getattr(raw, name, None)
         if generator is not None and hasattr(generator, "bit_generator"):
             generators[name] = copy.deepcopy(generator.bit_generator.state)
+    model_xml = str(raw.sim.model.get_xml())
+    flattened_state = np.asarray(raw.sim.get_state().flatten()).copy()
     return {
-        "env_state": copy.deepcopy(env.get_state()), "obs_history": copy.deepcopy(env.obs_history),
+        "env_state": {"model": model_xml, "states": flattened_state,
+                      "ep_meta": json.dumps(raw.get_ep_meta(), sort_keys=True) if hasattr(raw, "get_ep_meta") else "{}"},
+        "state_schema": {"nq": int(raw.sim.model.nq), "nv": int(raw.sim.model.nv),
+                         "expected_flattened_length": int(1 + raw.sim.model.nq + raw.sim.model.nv),
+                         "actual_flattened_length": int(len(flattened_state)), "schema": "time_qpos_qvel"},
+        "obs_history": copy.deepcopy(env.obs_history),
         "timestep": int(env.timestep), "python_rng": copy.deepcopy(random.getstate()),
         "numpy_rng": copy.deepcopy(np.random.get_state()), "torch_rng": torch.get_rng_state().clone(),
         "cuda_rng": [state.clone() for state in torch.cuda.get_rng_state_all()] if torch.cuda.is_available() else None,
@@ -502,11 +509,18 @@ def compile_source(
     return record, snapshot_in_memory(env, policy_result)
 
 
-def compile_reset_call(task: str, cell: int, seed: int, env: Any, policy: Any, scene_root: Path, raw_dir: Path):
+def compile_reset_call(task: str, cell: int, seed: int, env: Any, policy: Any, scene_root: Path, raw_dir: Path,
+                       *, perform_explicit_reset: bool = True):
     started = utcnow(); reset_invoked = True
-    env.reset()
+    if perform_explicit_reset:
+        env.reset()
+    else:
+        raw_for_obs = env.unwrapped.env
+        meta = raw_for_obs.get_ep_meta() if hasattr(raw_for_obs, "get_ep_meta") else {}
+        env._ep_lang_str = meta.get("lang", "dummy")
+        refresh_frame_stack(env)
     raw = env.unwrapped.env
-    raw_state = copy.deepcopy(env.get_state())
+    raw_state = {"model": str(raw.sim.model.get_xml()), "states": np.asarray(raw.sim.get_state().flatten()).copy()}
     raw_dir.mkdir(parents=True, exist_ok=True)
     np.save(raw_dir / "sim_state.npy", np.asarray(raw_state["states"]))
     (raw_dir / "model.xml").write_text(str(raw_state["model"]))
@@ -539,7 +553,8 @@ def compile_reset_call(task: str, cell: int, seed: int, env: Any, policy: Any, s
         "fixture": {**fixture.__dict__, **fixture_extra, **fixture_result}, "lattice": lattice,
         "scene_model": {"path": str(scene), "files": {name: [str(path) for path in paths] for name, paths in scene_files.items()}, "passed": scene_pass},
         "robot_radius_m": radius, "sources": sources, "camera": {"passed": None},
-        "route_outcome_read": False, "env_step_calls": 0, "reset_invoked": reset_invoked,
+        "route_outcome_read": False, "env_step_calls": 0, "reset_invoked": perform_explicit_reset,
+        "state_sampling_call": "explicit_env_reset" if perform_explicit_reset else "task_environment_constructor",
     }
     group["envelope_points_xyz"] = envelope_points(sources, fixture_extra).tolist()
     return group, snapshots
