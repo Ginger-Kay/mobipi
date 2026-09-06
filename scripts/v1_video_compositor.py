@@ -22,7 +22,11 @@ def labels(root: Path, task: str) -> dict[str, dict]:
 
 
 def frames(path: str) -> list[np.ndarray]:
-    return [np.asarray(frame)[:1080, :1920, :3] for frame in imageio.imiter(path)]
+    reader = imageio.get_reader(path)
+    try:
+        return [np.asarray(frame)[:1080, :1920, :3] for frame in reader]
+    finally:
+        reader.close()
 
 
 def annotate(frame: np.ndarray, label: str, row: dict) -> np.ndarray:
