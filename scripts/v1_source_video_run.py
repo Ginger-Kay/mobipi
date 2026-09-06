@@ -268,7 +268,8 @@ def load_frozen(root: Path, task: str, *, save_config: bool = True):
     camera = json.loads((root / "camera-freeze-v1.0.json").read_text())["cameras"][task]
     selected = freeze_data["selected"][task]["primary"]
     code_commit = str(freeze_data["code_commit"])
-    config = adapter_config(task, root / "workers" / task, code_commit, camera)
+    config = adapter_config(task, root, code_commit, camera)
+    config["output_root"] = str(root / "workers" / task)
     if save_config:
         write(root / "workers" / task / "adapter-config.json", config)
     adapter = create_adapter(output_root=root / "workers" / task, config=config)
@@ -286,6 +287,17 @@ def probe(root: Path, task: str) -> None:
     from PIL import Image
 
     started = now()
+    worker_root = root / "workers" / task
+    current_receipt = worker_root / "no-actuation-probe-receipt.json"
+    attempts_root = worker_root / "attempts"
+    attempts_root.mkdir(parents=True, exist_ok=True)
+    if current_receipt.exists() and not (attempts_root / "no-actuation-probe-attempt-1.json").exists():
+        write(
+            attempts_root / "no-actuation-probe-attempt-1.json",
+            json.loads(current_receipt.read_text()),
+        )
+    attempt = 1 + len(list(attempts_root.glob("no-actuation-probe-attempt-*.json")))
+    attempt_path = attempts_root / f"no-actuation-probe-attempt-{attempt}.json"
     adapter = None
     try:
         adapter, snapshot, selected, camera = load_frozen(root, task)
@@ -314,9 +326,13 @@ def probe(root: Path, task: str) -> None:
             "env_step_calls": 0,
             "outcome_reads": 0,
         }
-        write(root / "workers" / task / "no-actuation-probe-receipt.json", receipt)
+        receipt["attempt"] = attempt
+        write(attempt_path, receipt)
+        write(current_receipt, receipt)
     except Exception as error:
-        write(root / "workers" / task / "no-actuation-probe-receipt.json", {"task": task, "started_at": started, "ended_at": now(), "status": "mechanical_failure", "error_type": type(error).__name__, "error": str(error), "traceback": traceback.format_exc(), "env_step_calls": 0, "outcome_reads": 0})
+        failure = {"task": task, "attempt": attempt, "started_at": started, "ended_at": now(), "status": "mechanical_failure", "error_type": type(error).__name__, "error": str(error), "traceback": traceback.format_exc(), "env_step_calls": 0, "outcome_reads": 0}
+        write(attempt_path, failure)
+        write(current_receipt, failure)
         raise
     finally:
         if adapter is not None and adapter.env is not None:
