@@ -303,6 +303,20 @@ def probe(root: Path, task: str) -> None:
         adapter, snapshot, selected, camera = load_frozen(root, task)
         restore = adapter.restore_source_state(snapshot)
         if not restore.passed:
+            failure = {
+                "task": task,
+                "source_id": selected["source_id"],
+                "started_at": started,
+                "ended_at": now(),
+                "status": "restore_mismatch",
+                "restore": asdict(restore),
+                "expected_snapshot_hash": snapshot.record.snapshot_hash,
+                "expected_observation_hash": snapshot.record.observation_hash,
+                "env_step_calls": 0,
+                "outcome_reads": 0,
+            }
+            write(attempt_path, failure)
+            write(current_receipt, failure)
             raise RuntimeError("frozen source restore mismatch")
         frame = adapter._capture_frame(adapter._stacked_observation())
         frame_path = root / "workers" / task / "no-actuation-camera-probe.png"
