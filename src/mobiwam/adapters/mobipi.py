@@ -36,6 +36,7 @@ from mobiwam.mobipi_checkpoint import (
 )
 from mobiwam.mobipi_policy import FutureChunkEvidence, sample_verified_future_chunk
 from mobiwam.persistent_assist import compile_persistent_assist
+from mobiwam.planner_min import velocity_level_qp
 from mobiwam.records import (
     DataSplit,
     RouteRolloutRecord,
@@ -129,6 +130,10 @@ class RolloutTrace:
     assist_query_count: int = 0
     assist_chunk_count: int = 0
     observation_hashes: list[str] = field(default_factory=list)
+    fixture_progress: list[float] = field(default_factory=list)
+    manifold_errors_m: list[float] = field(default_factory=list)
+    solver_status: list[str] = field(default_factory=list)
+    action_saturated: bool = False
 
 
 @dataclass(frozen=True)
@@ -718,6 +723,28 @@ class MobiPiPairedAdapter:
             image = np.clip(image * scale, 0.0, 255.0).astype(np.uint8)
         return image
 
+    def _target_handle_position(self) -> np.ndarray:
+        raw = self._unwrapped()
+        fixture = (
+            raw.drawer
+            if str(self.config.get("env_name")) == "CloseDrawer"
+            else raw.door_fxtr
+        )
+        prefix = str(fixture.name).lower()
+        candidates: list[np.ndarray] = []
+        for index, name in enumerate(raw.sim.model.geom_names):
+            lowered = str(name or "").lower()
+            if prefix in lowered and "handle" in lowered:
+                candidates.append(np.asarray(raw.sim.data.geom_xpos[index], float).copy())
+        for index, name in enumerate(raw.sim.model.site_names):
+            lowered = str(name or "").lower()
+            if prefix in lowered and "handle" in lowered:
+                candidates.append(np.asarray(raw.sim.data.site_xpos[index], float).copy())
+        if not candidates:
+            return self._eef_pose()[:3, 3].copy()
+        eef = self._eef_pose()[:3, 3]
+        return min(candidates, key=lambda point: float(np.linalg.norm(point - eef)))
+
     def _apply_frozen_external_camera(self) -> None:
         if not bool(self.config.get("external_world_camera", False)):
             return
@@ -758,6 +785,10 @@ class MobiPiPairedAdapter:
         trace.phases.append(str(getattr(trace, "current_phase", "UNKNOWN")))
         trace.manipulation_contacts.append(_has_manipulation_contact(self._unwrapped()))
         trace.observation_hashes.append(_observation_hash(observation))
+        trace.fixture_progress.append(self._task_progress())
+        trace.manifold_errors_m.append(
+            float(np.linalg.norm(self._eef_pose()[:3, 3] - self._target_handle_position()))
+        )
         if bool(self.config.get("save_video", False)):
             trace.frames.append(self._capture_frame(observation))
             trace.policy_frames.append(self._capture_policy_frame(observation))
@@ -965,17 +996,30 @@ class MobiPiPairedAdapter:
                 )
                 for key in archive.files
             }
-        self.env.timestep = int(rng_payload["timestep"])
-        random.setstate(copy.deepcopy(rng_payload["python_rng"]))
-        np.random.set_state(copy.deepcopy(rng_payload["numpy_rng"]))
+        legacy_meta = (
+            json.loads((snapshot_dir / "snapshot_meta.json").read_text())
+            if (snapshot_dir / "snapshot_meta.json").is_file()
+            else {}
+        )
+        timestep = int(rng_payload.get("timestep", legacy_meta.get("timestep", 0)))
+        python_rng = rng_payload.get("python_rng", rng_payload.get("python"))
+        numpy_rng = rng_payload.get("numpy_rng", rng_payload.get("numpy"))
+        torch_rng = rng_payload.get("torch_rng", rng_payload.get("torch"))
+        cuda_rng = rng_payload.get("cuda_rng", rng_payload.get("cuda"))
+        env_generators = rng_payload.get(
+            "env_generators", rng_payload.get("environment_generators", {})
+        )
+        self.env.timestep = timestep
+        random.setstate(copy.deepcopy(python_rng))
+        np.random.set_state(copy.deepcopy(numpy_rng))
         import torch
 
-        torch.set_rng_state(rng_payload["torch_rng"].clone())
-        if rng_payload.get("cuda_rng") is not None and torch.cuda.is_available():
+        torch.set_rng_state(torch_rng.clone())
+        if cuda_rng is not None and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(
-                [state.clone() for state in rng_payload["cuda_rng"]]
+                [state.clone() for state in cuda_rng]
             )
-        self._restore_generator_states(rng_payload.get("env_generators", {}))
+        self._restore_generator_states(env_generators)
         self._unwrapped().sim.forward()
         controller_state = _capture_controller_state(self._unwrapped())
         # The parent SCENE-004 snapshots were serialized by a lower-level
@@ -989,15 +1033,15 @@ class MobiPiPairedAdapter:
             env_state=copy.deepcopy(env_state),
             obs_history=copy.deepcopy(self.env.obs_history),
             timestep=int(self.env.timestep),
-            python_rng=copy.deepcopy(rng_payload["python_rng"]),
-            numpy_rng=copy.deepcopy(rng_payload["numpy_rng"]),
-            torch_rng=rng_payload["torch_rng"].clone(),
+            python_rng=copy.deepcopy(python_rng),
+            numpy_rng=copy.deepcopy(numpy_rng),
+            torch_rng=torch_rng.clone(),
             cuda_rng=(
                 None
-                if rng_payload.get("cuda_rng") is None
-                else [state.clone() for state in rng_payload["cuda_rng"]]
+                if cuda_rng is None
+                else [state.clone() for state in cuda_rng]
             ),
-            env_rng_states=copy.deepcopy(rng_payload.get("env_generators", {})),
+            env_rng_states=copy.deepcopy(env_generators),
             controller_state=controller_state,
             controller_hash=_controller_state_hash(controller_state),
             contact_hash=_contact_hash(self._unwrapped()),
@@ -1333,6 +1377,10 @@ class MobiPiPairedAdapter:
             base_velocities=np.asarray(trace.base_velocities),
             phases=np.asarray(trace.phases),
             observation_hashes=np.asarray(trace.observation_hashes),
+            manipulation_contacts=np.asarray(trace.manipulation_contacts),
+            fixture_progress=np.asarray(trace.fixture_progress),
+            manifold_errors_m=np.asarray(trace.manifold_errors_m),
+            solver_status=np.asarray(trace.solver_status),
         )
         np.savez_compressed(action_path, actions=np.asarray(trace.actions))
         event_path.write_text(
@@ -1374,6 +1422,7 @@ class MobiPiPairedAdapter:
                 frames,
                 fps=int(self.config.get("video_fps", 20)),
                 quality=7,
+                macro_block_size=1,
             )
             policy_frames = trace.policy_frames or [
                 self._capture_policy_frame(self._stacked_observation())
@@ -1383,6 +1432,7 @@ class MobiPiPairedAdapter:
                 policy_frames,
                 fps=int(self.config.get("video_fps", 20)),
                 quality=7,
+                macro_block_size=1,
             )
             rendered_video = str(video_path)
             instrumentation_path = directory / "instrumentation.json"
@@ -1635,6 +1685,153 @@ class MobiPiPairedAdapter:
                 "base_hold_controller": "mujoco-planar-joint-lock-v1",
                 "exact_zero_assist_replay": bool(nominal_chunk.e_actions),
                 "paired_semantics": "A(0)=E",
+            },
+            progress_before=payload.progress_before,
+        )
+
+    def execute_articulation_a(
+        self,
+        snapshot: SourceSnapshot,
+        *,
+        policy_seed: int,
+        route_seed: int,
+        repeat_index: int,
+        candidate_id: str = "a_articulation_v1",
+        base_target_net_m: float = 0.22,
+        travel_cap_m: float = 0.46,
+        stable_contact_steps: int = 3,
+    ) -> RouteRolloutRecord:
+        """Run a contact-gated task-space whole-body QP continuation."""
+
+        if not 0.20 <= base_target_net_m <= travel_cap_m <= 0.465:
+            raise ValueError("invalid articulation-A travel targets")
+        payload = snapshot.opaque_handle
+        trace = RolloutTrace()
+        trace.current_phase = "REACH_CONTACT"
+        trace.base_reference_xy = self._origin_pose()[:2, 3].copy()
+        self._seed_policy(policy_seed)
+        self.rollout_policy.start_episode(lang=self._language())
+        observation = self._stacked_observation()
+        base_lock = _capture_planar_base_lock(self._unwrapped())
+        stable = 0
+        steps = 0
+        horizon = int(self.config.get("horizon", 500))
+
+        while steps < horizon and stable < stable_contact_steps and not trace.collision:
+            macro = sample_verified_future_chunk(
+                self.rollout_policy, observation, atol=1e-6
+            )
+            trace.assist_query_count += 1
+            for nominal in macro.chunk:
+                action, observation = self._step_with_planar_base_lock(
+                    nominal, base_lock
+                )
+                self._record_step(trace, action, observation)
+                trace.solver_status.append("policy_reach_base_locked")
+                steps += 1
+                stable = stable + 1 if trace.manipulation_contacts[-1] else 0
+                if stable >= stable_contact_steps or trace.collision or steps >= horizon:
+                    break
+
+        if stable < stable_contact_steps:
+            trace.invalid_reason = "stable_manipulation_contact_not_established"
+        else:
+            trace.current_phase = "ARTICULATION_ASSIST"
+            start_origin = self._origin_pose()
+            handle = self._target_handle_position()
+            radial = start_origin[:2, 3] - handle[:2]
+            norm = float(np.linalg.norm(radial))
+            radial = radial / norm if norm > 1e-9 else np.array([1.0, 0.0])
+            direction = np.array([-radial[1], radial[0]])
+            move_steps = min(120, max(60, horizon - steps))
+            previous_origin = start_origin.copy()
+            dt = 1.0 / float(self._unwrapped().control_freq)
+            macro = sample_verified_future_chunk(
+                self.rollout_policy, observation, atol=1e-6
+            )
+            for move_index in range(move_steps):
+                if trace.collision or steps >= horizon:
+                    break
+                if move_index % len(macro.chunk) == 0:
+                    macro = sample_verified_future_chunk(
+                        self.rollout_policy, observation, atol=1e-6
+                    )
+                    trace.assist_query_count += 1
+                    trace.assist_chunk_count += 1
+                nominal = np.asarray(macro.chunk[move_index % len(macro.chunk)])
+                fraction = float(move_index + 1) / float(move_steps)
+                target_origin = start_origin.copy()
+                target_origin[:2, 3] = (
+                    start_origin[:2, 3] + direction * base_target_net_m * fraction
+                )
+                if float(np.linalg.norm(target_origin[:2, 3] - start_origin[:2, 3])) > travel_cap_m:
+                    trace.invalid_reason = "pre_action_travel_cap_guard"
+                    break
+                current_origin = self._origin_pose()
+                current_eef = self._eef_pose()
+                compensation = compensate_world_intent(
+                    nominal,
+                    nominal_origin_pose_world=current_origin,
+                    nominal_eef_pose_world=current_eef,
+                    assist_origin_pose_world_current=current_origin,
+                    assist_origin_pose_world_next=target_origin,
+                    assist_eef_pose_world_current=current_eef,
+                )
+                base_command = np.asarray(
+                    self._target_base_pose_to_action(
+                        target_origin,
+                        current_origin,
+                        previous_origin,
+                        dt,
+                        legacy=bool(self.config.get("legacy_navigation", False)),
+                    )
+                )
+                previous_origin = current_origin
+                desired = np.concatenate([base_command, compensation.action[:6]])
+                solution, solver = velocity_level_qp(
+                    np.eye(9), desired, np.full(9, -1.0), np.full(9, 1.0),
+                    base_weight=0.25, damping=1e-5,
+                )
+                action = nominal.copy()
+                action[:6] = solution[3:]
+                action[BASE] = solution[:3]
+                saturated = bool(compensation.saturated or np.any(np.abs(desired) > 1.0 + 1e-9))
+                trace.action_saturated = trace.action_saturated or saturated
+                trace.solver_status.append("qp_feasible" if solver["feasible"] else "qp_infeasible")
+                if saturated or not solver["feasible"]:
+                    trace.invalid_reason = "qp_or_action_saturation"
+                    break
+                observation, _, _, _ = self.env.step(action)
+                self._record_step(trace, action, observation)
+                steps += 1
+                if len(trace.base_positions) > 1:
+                    actual_path = float(np.linalg.norm(np.diff(np.asarray(trace.base_positions), axis=0), axis=1).sum())
+                    if actual_path > travel_cap_m + 0.005:
+                        trace.invalid_reason = "travel_cap_violation"
+                        break
+
+        monotonic = (
+            float(np.mean(np.diff(trace.fixture_progress) >= -1e-4))
+            if len(trace.fixture_progress) > 1 else 0.0
+        )
+        return self._record(
+            RouteType.ASSIST,
+            trace,
+            policy_seed=policy_seed,
+            route_seed=route_seed,
+            repeat_index=repeat_index,
+            candidate_id=candidate_id,
+            candidate_params={
+                "executor": "articulation-aware-task-space-QP-v1",
+                "stable_contact_steps_required": stable_contact_steps,
+                "stable_contact_established": stable >= stable_contact_steps,
+                "base_target_net_m": base_target_net_m,
+                "travel_cap_m": travel_cap_m,
+                "assist_query_count": trace.assist_query_count,
+                "assist_chunk_count": trace.assist_chunk_count,
+                "action_saturated": trace.action_saturated,
+                "joint_progress_monotonic_fraction": monotonic,
+                "manifold_error_p95_m": float(np.percentile(trace.manifold_errors_m, 95)) if trace.manifold_errors_m else None,
             },
             progress_before=payload.progress_before,
         )
