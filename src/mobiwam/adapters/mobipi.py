@@ -979,6 +979,13 @@ class MobiPiPairedAdapter:
         self._restore_generator_states(rng_payload.get("env_generators", {}))
         self._unwrapped().sim.forward()
         controller_state = _capture_controller_state(self._unwrapped())
+        # The parent SCENE-004 snapshots were serialized by a lower-level
+        # wrapper whose XML/metadata canonicalization differs from the route
+        # adapter's reset_to boundary. Bind the compatibility baseline to the
+        # post-restore canonical representation, while retaining the immutable
+        # parent file hashes in the source record and manifest.
+        canonical_state_hash = _state_hash(self.env.get_state())
+        canonical_observation_hash = _observation_hash(self._stacked_observation())
         payload = SnapshotPayload(
             env_state=copy.deepcopy(env_state),
             obs_history=copy.deepcopy(self.env.obs_history),
@@ -995,8 +1002,8 @@ class MobiPiPairedAdapter:
             controller_state=controller_state,
             controller_hash=_controller_state_hash(controller_state),
             contact_hash=_contact_hash(self._unwrapped()),
-            snapshot_hash=_state_hash(env_state),
-            observation_hash=_observation_hash(self._stacked_observation()),
+            snapshot_hash=canonical_state_hash,
+            observation_hash=canonical_observation_hash,
             progress_before=self._task_progress(),
         )
         self.environment_seed = int(environment_seed)
