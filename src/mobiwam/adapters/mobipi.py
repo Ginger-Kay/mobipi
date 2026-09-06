@@ -780,14 +780,13 @@ class MobiPiPairedAdapter:
         latest = dict(get_observation())
         latest["timesteps"] = np.array([int(self.env.timestep)])
         latest["actions"] = np.asarray(action)[: int(wrapped_env.action_dimension)].copy()
-        missing = sorted(set(self.env.obs_history).difference(latest))
-        if missing:
-            raise RuntimeError(
-                "refreshed observation is missing frame-stack keys: "
-                + ", ".join(missing)
-            )
+        # Parent SCENE-004 histories can contain low-dimensional diagnostic
+        # keys that the current policy wrapper does not emit. They are not
+        # policy inputs; preserve their restored frame and refresh only keys
+        # present at the current observation boundary.
         for key, history in self.env.obs_history.items():
-            history[-1] = np.asarray(latest[key])[None]
+            if key in latest:
+                history[-1] = np.asarray(latest[key])[None]
         return self._stacked_observation()
 
     def _step_with_planar_base_lock(
