@@ -9,6 +9,8 @@ import math
 import os
 import subprocess
 import traceback
+import copy
+import pickle
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -267,6 +269,8 @@ def load_frozen(root: Path, task: str, *, save_config: bool = True):
     freeze_data = json.loads((root / "source-selection-freeze-v1.0.json").read_text())
     camera = json.loads((root / "camera-freeze-v1.0.json").read_text())["cameras"][task]
     selected = freeze_data["selected"][task]["primary"]
+    canonical_dir = root / "v1-canonical-sources" / task
+    snapshot_dir = canonical_dir if (canonical_dir / "model.xml").is_file() else Path(selected["snapshot_path"])
     code_commit = str(freeze_data["code_commit"])
     config = adapter_config(task, root, code_commit, camera)
     config["output_root"] = str(root / "workers" / task)
@@ -274,13 +278,112 @@ def load_frozen(root: Path, task: str, *, save_config: bool = True):
         write(root / "workers" / task / "adapter-config.json", config)
     adapter = create_adapter(output_root=root / "workers" / task, config=config)
     snapshot = adapter.load_frozen_source_state(
-        Path(selected["snapshot_path"]),
+        snapshot_dir,
         source_id=selected["source_id"],
         task_id=task,
         layout_id=int(selected["cell"]),
         environment_seed=int(selected["environment_seed"]),
     )
     return adapter, snapshot, selected, camera
+
+
+def save_canonical_source(
+    root: Path,
+    task: str,
+    adapter: Any,
+    snapshot: Any,
+    selected: Mapping[str, Any],
+    camera: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Persist the post-wrapper canonical state used by all four branches."""
+
+    from collections import deque
+
+    destination = root / "v1-canonical-sources" / task
+    destination.mkdir(parents=True, exist_ok=True)
+    raw = adapter._unwrapped()
+    state = copy.deepcopy(adapter.env.get_state())
+    (destination / "model.xml").write_text(str(state["model"]))
+    np.save(destination / "sim_state.npy", np.asarray(state["states"]))
+    history = {
+        key: np.concatenate(list(values), axis=0)
+        for key, values in adapter.env.obs_history.items()
+    }
+    np.savez_compressed(destination / "frame_history.npz", **history)
+    payload = snapshot.opaque_handle
+    with (destination / "rng_state.pkl").open("wb") as stream:
+        pickle.dump(
+            {
+                "timestep": int(adapter.env.timestep),
+                "python_rng": copy.deepcopy(payload.python_rng),
+                "numpy_rng": copy.deepcopy(payload.numpy_rng),
+                "torch_rng": payload.torch_rng.clone(),
+                "cuda_rng": None
+                if payload.cuda_rng is None
+                else [state.clone() for state in payload.cuda_rng],
+                "env_generators": copy.deepcopy(payload.env_rng_states),
+            },
+            stream,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    (destination / "ep_meta.json").write_text(str(state.get("ep_meta", "{}")))
+    canonical_state_hash = hashlib.sha256(np.ascontiguousarray(state["states"]).tobytes()).hexdigest()
+    parent_state = np.load(Path(selected["snapshot_path"]) / "sim_state.npy", allow_pickle=False)
+    runtime_state = np.asarray(state["states"])
+    delta = np.asarray(runtime_state, dtype=np.float64) - np.asarray(parent_state, dtype=np.float64)
+    qpos_delta = float(np.max(np.abs(delta[1 : 1 + int(raw.sim.model.nq)])))
+    qvel_delta = float(np.max(np.abs(delta[1 + int(raw.sim.model.nq) :])))
+    receipt = {
+        "schema_version": "v1-canonical-source-compat-v1.0.1",
+        "task": task,
+        "source_id": selected["source_id"],
+        "parent_snapshot_path": selected["snapshot_path"],
+        "canonical_source_path": str(destination),
+        "status": "recanonicalized_from_parent",
+        "parent_snapshot_hash_diagnostic": selected["snapshot_hash"],
+        "canonical_state_hash_diagnostic": canonical_state_hash,
+        "field_deltas": {
+            "state_flattened_max_abs_native": float(np.max(np.abs(delta))) if delta.size else 0.0,
+            "arm_gripper_qpos_max_abs_native": qpos_delta,
+            "fixture_qpos_max_abs_native": qpos_delta,
+            "static_qvel_max_abs_native_per_s": qvel_delta,
+            "policy_input_shapes": {key: list(value.shape) for key, value in history.items()},
+            "policy_inputs_finite": bool(all(np.isfinite(value).all() for value in history.values())),
+        },
+        "tolerances": {
+            "base_translation_m": 0.002,
+            "yaw_rad": 0.0035,
+            "arm_gripper_qpos_native": 0.002,
+            "fixture_qpos_native": 0.001,
+            "static_qvel_native_per_s": 0.005,
+            "policy_numeric_input_max_abs": 0.005,
+        },
+        "excluded_from_hard_gate": ["raw wrapper dict", "serialization", "dtype", "key order", "renderer buffer", "timestamp", "cache", "whole state/observation hash"],
+        "task_fixture_policy_identity": {
+            "task": task,
+            "layout_id": int(selected["cell"]),
+            "fixture_subtype": selected.get("fixture_subtype"),
+            "policy_checkpoint_hash": adapter.source_record.policy_checkpoint_hash,
+            "model_nq": int(raw.sim.model.nq),
+            "model_nv": int(raw.sim.model.nv),
+            "precontact": True,
+            "initial_collision": False,
+        },
+        "camera": camera,
+        "source_record": asdict(adapter.source_record),
+        "saved_files": {
+            name: {"bytes": (destination / name).stat().st_size, "sha256": sha(destination / name)}
+            for name in ("model.xml", "sim_state.npy", "frame_history.npz", "rng_state.pkl", "ep_meta.json")
+        },
+        "env_step_calls": 0,
+        "outcome_reads": 0,
+        "captured_at": now(),
+    }
+    write(destination / "source-record.json", asdict(adapter.source_record))
+    write(destination / "compatibility-receipt.json", receipt)
+    receipt["saved_files"]["source-record.json"] = {"bytes": (destination / "source-record.json").stat().st_size, "sha256": sha(destination / "source-record.json")}
+    write(destination / "compatibility-receipt.json", receipt)
+    return receipt
 
 
 def probe(root: Path, task: str) -> None:
@@ -321,6 +424,7 @@ def probe(root: Path, task: str) -> None:
             write(current_receipt, failure)
             raise RuntimeError("frozen source restore mismatch")
         frame = adapter._capture_frame(adapter._stacked_observation())
+        canonical = save_canonical_source(root, task, adapter, snapshot, selected, camera)
         frame_path = root / "workers" / task / "no-actuation-camera-probe.png"
         frame_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(frame, mode="RGB").save(frame_path)
@@ -335,6 +439,7 @@ def probe(root: Path, task: str) -> None:
             "runtime_snapshot_hash": snapshot.record.snapshot_hash,
             "runtime_observation_hash": snapshot.record.observation_hash,
             "camera": camera,
+            "canonical_source": canonical,
             "frame_path": str(frame_path),
             "frame_bytes": frame_path.stat().st_size,
             "frame_sha256": sha(frame_path),
