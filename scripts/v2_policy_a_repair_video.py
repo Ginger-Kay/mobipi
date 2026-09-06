@@ -114,6 +114,7 @@ def qualify(root: Path, task: str, version: int) -> None:
             repeat_index=version - 1, candidate_id=f"a_articulation_v{version}",
             base_target_net_m=0.22 if version == 1 else 0.205,
             travel_cap_m=0.46, stable_contact_steps=3,
+            tangent_direction_sign=-1.0 if version == 2 and task == "CloseSingleDoor" else 1.0,
         )
         row = asdict(record); row["runtime_metrics"] = metrics(record)
         passed = bool(

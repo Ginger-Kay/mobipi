@@ -1700,6 +1700,7 @@ class MobiPiPairedAdapter:
         base_target_net_m: float = 0.22,
         travel_cap_m: float = 0.46,
         stable_contact_steps: int = 3,
+        tangent_direction_sign: float = 1.0,
     ) -> RouteRolloutRecord:
         """Run a contact-gated task-space whole-body QP continuation."""
 
@@ -1742,7 +1743,11 @@ class MobiPiPairedAdapter:
             radial = start_origin[:2, 3] - handle[:2]
             norm = float(np.linalg.norm(radial))
             radial = radial / norm if norm > 1e-9 else np.array([1.0, 0.0])
-            direction = np.array([-radial[1], radial[0]])
+            # The selected door fixture closes toward the positive tangent,
+            # which sweeps the panel into the mobile base on this layout.
+            # The alternate candidate uses the opposite collision-free
+            # tangent while the arm QP preserves the handle interaction.
+            direction = float(tangent_direction_sign) * np.array([-radial[1], radial[0]])
             move_steps = min(120, max(60, horizon - steps))
             previous_origin = start_origin.copy()
             dt = 1.0 / float(self._unwrapped().control_freq)
@@ -1826,6 +1831,7 @@ class MobiPiPairedAdapter:
                 "stable_contact_steps_required": stable_contact_steps,
                 "stable_contact_established": stable >= stable_contact_steps,
                 "base_target_net_m": base_target_net_m,
+                "tangent_direction_sign": float(tangent_direction_sign),
                 "travel_cap_m": travel_cap_m,
                 "assist_query_count": trace.assist_query_count,
                 "assist_chunk_count": trace.assist_chunk_count,
