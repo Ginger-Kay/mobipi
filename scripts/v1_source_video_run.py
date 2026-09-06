@@ -498,6 +498,10 @@ def run_task(root: Path, task: str) -> None:
     results = []
     try:
         for repeat_index, route in enumerate(order):
+            existing_path = worker_root / "route-records" / f"{route}.json"
+            if existing_path.is_file():
+                results.append(json.loads(existing_path.read_text()))
+                continue
             restore = adapter.restore_source_state(snapshot)
             if not restore.passed:
                 raise RuntimeError(f"restore failed before {route}")

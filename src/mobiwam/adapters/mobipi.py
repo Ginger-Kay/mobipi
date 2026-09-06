@@ -1006,6 +1006,16 @@ class MobiPiPairedAdapter:
             progress_before=self._task_progress(),
         )
         self.environment_seed = int(environment_seed)
+        current_root = _pose_from_xy_yaw(
+            float(self._unwrapped()._init_robot_pos[0]),
+            float(self._unwrapped()._init_robot_pos[1]),
+            float(self._unwrapped()._init_robot_ori[2]),
+            float(self._unwrapped()._init_robot_pos[2]),
+        )
+        default_root = _default_task_root_pose(self._unwrapped())
+        self.dock_origin_pose_world = (
+            default_root @ invert_pose(current_root) @ self._origin_pose()
+        )
         self.source_record = SourceStateRecord(
             source_state_id=source_id,
             task_id=task_id,
