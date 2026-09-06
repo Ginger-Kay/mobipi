@@ -111,6 +111,7 @@ class RolloutTrace:
     eef_poses: list[np.ndarray] = field(default_factory=list)
     desired_eef_poses: list[np.ndarray] = field(default_factory=list)
     frames: list[np.ndarray] = field(default_factory=list)
+    policy_frames: list[np.ndarray] = field(default_factory=list)
     base_positions: list[np.ndarray] = field(default_factory=list)
     manipulation_contacts: list[bool] = field(default_factory=list)
     base_reference_xy: np.ndarray | None = None
@@ -127,6 +128,7 @@ class RolloutTrace:
     base_velocities: list[np.ndarray] = field(default_factory=list)
     assist_query_count: int = 0
     assist_chunk_count: int = 0
+    observation_hashes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -700,6 +702,42 @@ class MobiPiPairedAdapter:
             image = np.clip(image * scale, 0.0, 255.0).astype(np.uint8)
         return image
 
+    def _capture_policy_frame(
+        self, observation: Mapping[str, np.ndarray]
+    ) -> np.ndarray:
+        key = str(
+            self.config.get(
+                "video_observation_key", "robot0_agentview_right_image"
+            )
+        )
+        image = np.asarray(observation[key])[-1]
+        if image.ndim == 3 and image.shape[0] in (1, 3, 4):
+            image = np.moveaxis(image, 0, -1)
+        if image.dtype != np.uint8:
+            scale = 255.0 if float(np.max(image)) <= 1.0 else 1.0
+            image = np.clip(image * scale, 0.0, 255.0).astype(np.uint8)
+        return image
+
+    def _apply_frozen_external_camera(self) -> None:
+        if not bool(self.config.get("external_world_camera", False)):
+            return
+        raw = self._unwrapped()
+        name = str(self.config.get("external_camera_name", "freeview"))
+        camera_id = raw.sim.model.camera_name2id(name)
+        if int(raw.sim.model.cam_bodyid[camera_id]) != 0:
+            raise RuntimeError("external evidence camera is not world-frame fixed")
+        raw.sim.model.cam_pos[camera_id] = np.asarray(
+            self.config["external_camera_position_world"], dtype=np.float64
+        )
+        raw.sim.model.cam_quat[camera_id] = np.asarray(
+            self.config.get("external_camera_quaternion", [1.0, 0.0, 0.0, 0.0]),
+            dtype=np.float64,
+        )
+        raw.sim.model.cam_fovy[camera_id] = float(
+            self.config.get("external_camera_fovy_deg", 60.0)
+        )
+        raw.sim.forward()
+
     def _record_step(
         self,
         trace: RolloutTrace,
@@ -719,8 +757,10 @@ class MobiPiPairedAdapter:
         trace.base_velocities.append(np.array([linear_speed, angular_speed], dtype=float))
         trace.phases.append(str(getattr(trace, "current_phase", "UNKNOWN")))
         trace.manipulation_contacts.append(_has_manipulation_contact(self._unwrapped()))
+        trace.observation_hashes.append(_observation_hash(observation))
         if bool(self.config.get("save_video", False)):
             trace.frames.append(self._capture_frame(observation))
+            trace.policy_frames.append(self._capture_policy_frame(observation))
         if desired is not None:
             trace.desired_eef_poses.append(desired.copy())
             delta_position = trace.eef_poses[-1][:3, 3] - desired[:3, 3]
@@ -848,6 +888,141 @@ class MobiPiPairedAdapter:
         )
         self.source_record = None
         self.source_snapshot = None
+
+    def load_frozen_source_state(
+        self,
+        snapshot_dir: Path,
+        *,
+        source_id: str,
+        task_id: str,
+        layout_id: int,
+        environment_seed: int,
+    ) -> SourceSnapshot:
+        """Load an existing SCENE-004 snapshot without resampling its source.
+
+        A task wrapper is constructed only to provide the frozen policy and
+        controller interface. The authoritative XML, state, observation
+        history and RNG payload are then restored from ``snapshot_dir``.
+        """
+
+        snapshot_dir = Path(snapshot_dir)
+        required = (
+            "model.xml",
+            "sim_state.npy",
+            "frame_history.npz",
+            "rng_state.pkl",
+            "ep_meta.json",
+        )
+        missing = [name for name in required if not (snapshot_dir / name).is_file()]
+        if missing:
+            raise FileNotFoundError(f"frozen source is missing files: {missing}")
+        if task_id != str(self.config.get("env_name")):
+            raise ValueError("frozen source task differs from adapter task")
+        if self.env is not None:
+            close = getattr(self.env, "close", None)
+            if callable(close):
+                close()
+            self.env = None
+        camera_names = list(self.checkpoint_env_meta["env_kwargs"]["camera_names"])
+        external_name = str(self.config.get("external_camera_name", "freeview"))
+        if external_name not in camera_names:
+            camera_names.append(external_name)
+        override = {
+            "layout_and_style_ids": [[int(layout_id), int(layout_id)]],
+            "camera_names": camera_names,
+            "seed": int(environment_seed),
+            "hard_reset": True,
+            "render_gpu_device_id": int(self.config.get("render_gpu_device_id", 0)),
+        }
+        self.env = create_env_from_checkpoint_metadata(
+            self.policy_config,
+            self.checkpoint_env_meta,
+            self.checkpoint_shape_meta,
+            override,
+        )
+        rng_payload = pickle.load((snapshot_dir / "rng_state.pkl").open("rb"))
+        env_state = {
+            "model": (snapshot_dir / "model.xml").read_text(),
+            "states": np.load(snapshot_dir / "sim_state.npy", allow_pickle=False),
+            "ep_meta": (snapshot_dir / "ep_meta.json").read_text(),
+        }
+        restored = self.env.reset_to(copy.deepcopy(env_state))
+        if restored is None:
+            raise RuntimeError("reset_to did not restore the frozen source")
+        episode_meta = json.loads(env_state["ep_meta"])
+        instruction = str(episode_meta.get("lang", ""))
+        _restore_episode_language(
+            self.env,
+            self._unwrapped(),
+            task_id=task_id,
+            instruction=instruction,
+        )
+        with np.load(snapshot_dir / "frame_history.npz", allow_pickle=False) as archive:
+            history_length = int(next(iter(archive.values())).shape[0])
+            self.env.obs_history = {
+                key: deque(
+                    [np.asarray(archive[key][index : index + 1]).copy() for index in range(history_length)],
+                    maxlen=history_length,
+                )
+                for key in archive.files
+            }
+        self.env.timestep = int(rng_payload["timestep"])
+        random.setstate(copy.deepcopy(rng_payload["python_rng"]))
+        np.random.set_state(copy.deepcopy(rng_payload["numpy_rng"]))
+        import torch
+
+        torch.set_rng_state(rng_payload["torch_rng"].clone())
+        if rng_payload.get("cuda_rng") is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(
+                [state.clone() for state in rng_payload["cuda_rng"]]
+            )
+        self._restore_generator_states(rng_payload.get("env_generators", {}))
+        self._unwrapped().sim.forward()
+        controller_state = _capture_controller_state(self._unwrapped())
+        payload = SnapshotPayload(
+            env_state=copy.deepcopy(env_state),
+            obs_history=copy.deepcopy(self.env.obs_history),
+            timestep=int(self.env.timestep),
+            python_rng=copy.deepcopy(rng_payload["python_rng"]),
+            numpy_rng=copy.deepcopy(rng_payload["numpy_rng"]),
+            torch_rng=rng_payload["torch_rng"].clone(),
+            cuda_rng=(
+                None
+                if rng_payload.get("cuda_rng") is None
+                else [state.clone() for state in rng_payload["cuda_rng"]]
+            ),
+            env_rng_states=copy.deepcopy(rng_payload.get("env_generators", {})),
+            controller_state=controller_state,
+            controller_hash=_controller_state_hash(controller_state),
+            contact_hash=_contact_hash(self._unwrapped()),
+            snapshot_hash=_state_hash(env_state),
+            observation_hash=_observation_hash(self._stacked_observation()),
+            progress_before=self._task_progress(),
+        )
+        self.environment_seed = int(environment_seed)
+        self.source_record = SourceStateRecord(
+            source_state_id=source_id,
+            task_id=task_id,
+            task_family="sustained_articulated_contact",
+            episode_id=source_id,
+            instruction=instruction,
+            stage=Stage.PRECONTACT,
+            split=DataSplit.TRAIN,
+            environment_seed=int(environment_seed),
+            policy_name=str(self.config.get("policy_name", "bc_xfmr")),
+            policy_checkpoint_hash=str(self.config["policy_checkpoint_hash"]),
+            simulator_version="robocasa==0.2.0",
+            code_commit=str(self.config["code_commit"]),
+            snapshot_hash=payload.snapshot_hash,
+            observation_hash=payload.observation_hash,
+            snapshot_path=str(snapshot_dir),
+            layout_id=int(layout_id),
+            collector_batch=0,
+            schedule_checksum=str(self.config.get("schedule_checksum", "")),
+        )
+        self.source_snapshot = SourceSnapshot(self.source_record, payload)
+        self._apply_frozen_external_camera()
+        return self.source_snapshot
 
     def _write_snapshot_artifacts(
         self,
@@ -1015,6 +1190,7 @@ class MobiPiPairedAdapter:
             and contact_hash == payload.contact_hash
         )
         self._last_restore_passed = passed
+        self._apply_frozen_external_camera()
         return RestoreEvidence(
             passed,
             state_hash,
@@ -1126,6 +1302,7 @@ class MobiPiPairedAdapter:
         state_path = directory / "state_trace.npz"
         action_path = directory / "action_trace.npz"
         video_path = directory / "rollout.mp4"
+        policy_video_path = directory / "policy-rollout.mp4"
         event_path = directory / "events.json"
         np.savez_compressed(
             state_path,
@@ -1139,6 +1316,7 @@ class MobiPiPairedAdapter:
             arm_commands=np.asarray(trace.arm_commands),
             base_velocities=np.asarray(trace.base_velocities),
             phases=np.asarray(trace.phases),
+            observation_hashes=np.asarray(trace.observation_hashes),
         )
         np.savez_compressed(action_path, actions=np.asarray(trace.actions))
         event_path.write_text(
@@ -1181,7 +1359,22 @@ class MobiPiPairedAdapter:
                 fps=int(self.config.get("video_fps", 20)),
                 quality=7,
             )
+            policy_frames = trace.policy_frames or [
+                self._capture_policy_frame(self._stacked_observation())
+            ]
+            imageio.mimwrite(
+                policy_video_path,
+                policy_frames,
+                fps=int(self.config.get("video_fps", 20)),
+                quality=7,
+            )
             rendered_video = str(video_path)
+            instrumentation_path = directory / "instrumentation.json"
+            instrumentation = json.loads(instrumentation_path.read_text())
+            instrumentation["policy_video_path"] = str(policy_video_path)
+            instrumentation_path.write_text(
+                json.dumps(instrumentation, indent=2, sort_keys=True) + "\n"
+            )
         return rendered_video, str(state_path), str(action_path), str(event_path)
 
     def _record(
@@ -1327,11 +1520,31 @@ class MobiPiPairedAdapter:
         progress_before = payload.progress_before
         trace = RolloutTrace()
         trace.current_phase = "MANIPULATE"
-        self._execute_stationary_nominal(
-            nominal_chunk,
-            trace,
-            record_reference_intents=True,
-        )
+        if nominal_chunk.e_actions:
+            base_lock = _capture_planar_base_lock(self._unwrapped())
+            trace.base_reference_xy = self._origin_pose()[:2, 3].copy()
+            observation = self._stacked_observation()
+            for index, reference_action in enumerate(nominal_chunk.e_actions):
+                if self._is_success():
+                    break
+                desired = (
+                    nominal_chunk.e_desired_eef_poses_world[index]
+                    if index < len(nominal_chunk.e_desired_eef_poses_world)
+                    else None
+                )
+                action, observation = self._step_with_planar_base_lock(
+                    reference_action, base_lock
+                )
+                self._record_step(trace, action, observation, desired)
+                if trace.collision:
+                    trace.invalid_reason = "base_collision_during_E_replay"
+                    break
+        else:
+            self._execute_stationary_nominal(
+                nominal_chunk,
+                trace,
+                record_reference_intents=True,
+            )
         nominal_chunk.e_actions = [action.copy() for action in trace.actions]
         nominal_chunk.e_desired_eef_poses_world = [
             pose.copy() for pose in trace.desired_eef_poses
@@ -1348,6 +1561,66 @@ class MobiPiPairedAdapter:
                 "base_joint_names": list(PLANAR_BASE_JOINT_NAMES),
             },
             progress_before=progress_before,
+        )
+
+    def execute_a0(
+        self,
+        snapshot: SourceSnapshot,
+        nominal_chunk: NominalMacro,
+        *,
+        policy_seed: int,
+        route_seed: int,
+        repeat_index: int,
+    ) -> RouteRolloutRecord:
+        """Execute the exact zero-base A branch paired with E."""
+
+        payload = snapshot.opaque_handle
+        trace = RolloutTrace()
+        trace.current_phase = "MANIPULATE"
+        if nominal_chunk.e_actions:
+            base_lock = _capture_planar_base_lock(self._unwrapped())
+            trace.base_reference_xy = self._origin_pose()[:2, 3].copy()
+            observation = self._stacked_observation()
+            for index, reference_action in enumerate(nominal_chunk.e_actions):
+                if self._is_success():
+                    break
+                desired = (
+                    nominal_chunk.e_desired_eef_poses_world[index]
+                    if index < len(nominal_chunk.e_desired_eef_poses_world)
+                    else None
+                )
+                action, observation = self._step_with_planar_base_lock(
+                    reference_action, base_lock
+                )
+                self._record_step(trace, action, observation, desired)
+                if trace.collision:
+                    trace.invalid_reason = "base_collision_during_A0_replay"
+                    break
+        else:
+            self._execute_stationary_nominal(
+                nominal_chunk,
+                trace,
+                record_reference_intents=True,
+            )
+            nominal_chunk.e_actions = [action.copy() for action in trace.actions]
+            nominal_chunk.e_desired_eef_poses_world = [
+                pose.copy() for pose in trace.desired_eef_poses
+            ]
+        return self._record(
+            RouteType.ASSIST,
+            trace,
+            policy_seed=policy_seed,
+            route_seed=route_seed,
+            repeat_index=repeat_index,
+            candidate_id="a0",
+            candidate_params={
+                "base_command_zeroed": True,
+                "base_locked": True,
+                "base_hold_controller": "mujoco-planar-joint-lock-v1",
+                "exact_zero_assist_replay": bool(nominal_chunk.e_actions),
+                "paired_semantics": "A(0)=E",
+            },
+            progress_before=payload.progress_before,
         )
 
     def run_vanilla(
@@ -1495,6 +1768,78 @@ class MobiPiPairedAdapter:
         }
         return observation, target_pose_world, realized
 
+    def _navigate_along_frozen_path(
+        self,
+        trace: RolloutTrace,
+        path_world_xy: Sequence[Sequence[float]],
+        *,
+        candidate_params: Mapping[str, Any] | None = None,
+    ) -> tuple[Mapping[str, np.ndarray], np.ndarray, dict[str, Any]]:
+        """Execute an outcome-blind, continuously validated planner path."""
+
+        params = dict(candidate_params or {})
+        path = np.asarray(path_world_xy, dtype=np.float64)
+        if path.ndim != 2 or path.shape[1] != 2 or len(path) < 2:
+            raise ValueError("frozen D path must have shape [N,2] with N>=2")
+        trace.current_phase = "NAVIGATE"
+        raw = self._unwrapped()
+        observation = self._stacked_observation()
+        previous = self._origin_pose()
+        target_pose = previous.copy()
+        joint_positions = raw.sim.data.qpos[
+            raw.robots[0]._ref_joint_pos_indexes
+        ].copy()
+        dt = 1.0 / raw.control_freq
+        max_steps = int(params.get("steps_per_waypoint", 40))
+        tolerance = float(params.get("position_tolerance_m", 0.015))
+        command_gain = float(params.get("command_gain", 1.0))
+        if max_steps <= 0 or tolerance <= 0.0 or command_gain <= 0.0:
+            raise ValueError("frozen-path runtime controls must be positive")
+        reached = 0
+        for waypoint_index, waypoint in enumerate(path[1:], start=1):
+            target_pose = self._origin_pose().copy()
+            target_pose[:2, 3] = waypoint
+            waypoint_reached = False
+            for _ in range(max_steps):
+                current = self._origin_pose()
+                if float(np.linalg.norm(waypoint - current[:2, 3])) <= tolerance:
+                    waypoint_reached = True
+                    break
+                command = self._target_base_pose_to_action(
+                    target_pose,
+                    current,
+                    previous,
+                    dt,
+                    legacy=bool(self.config.get("legacy_navigation", True)),
+                )
+                previous = current
+                action = with_base_command(np.zeros(12), np.asarray(command) * command_gain)
+                observation, _, _, _ = self.env.step(action)
+                raw.sim.data.qpos[raw.robots[0]._ref_joint_pos_indexes] = joint_positions
+                raw.sim.forward()
+                self._record_step(trace, action, observation)
+                if trace.collision:
+                    trace.invalid_reason = "base_collision_during_frozen_D_path"
+                    break
+            if trace.invalid_reason is not None:
+                break
+            if not waypoint_reached:
+                trace.invalid_reason = f"frozen_D_waypoint_{waypoint_index}_timeout"
+                break
+            reached += 1
+        realized = {
+            **params,
+            "navigation": "frozen_continuous_validated_occupancy_lattice_astar",
+            "planned_path_world_xy_m": path.tolist(),
+            "planned_waypoints": int(len(path)),
+            "reached_waypoints": int(reached),
+            "position_tolerance_m": tolerance,
+            "steps_per_waypoint": max_steps,
+            "target_pose_world_xy": target_pose[:2, 3].tolist(),
+            "dock_reached": trace.invalid_reason is None and reached == len(path) - 1,
+        }
+        return observation, target_pose, realized
+
     def execute_d(
         self,
         snapshot: SourceSnapshot,
@@ -1512,10 +1857,18 @@ class MobiPiPairedAdapter:
             "post_dock_policy_ready": False,
             "history_reset_protocol": HISTORY_PROTOCOL_ID,
         }
-        observation, dock_target_pose_world, realized_params = self._navigate_to_dock(
-            trace,
-            candidate_params=candidate_params,
-        )
+        frozen_path = dict(candidate_params or {}).get("planned_path_world_xy_m")
+        if frozen_path is None:
+            observation, dock_target_pose_world, realized_params = self._navigate_to_dock(
+                trace,
+                candidate_params=candidate_params,
+            )
+        else:
+            observation, dock_target_pose_world, realized_params = self._navigate_along_frozen_path(
+                trace,
+                frozen_path,
+                candidate_params=candidate_params,
+            )
         if trace.invalid_reason is None:
             self._seed_policy(policy_seed)
             try:
@@ -1699,6 +2052,21 @@ class MobiPiPairedAdapter:
             total_cap = float(params.get("total_travel_cap_m", self.config.get("assist_total_travel_cap_m", 0.45)))
             total_travel = 0.0
             assist_start_origin = self._origin_pose()
+            frozen_base_path_raw = params.get("planned_base_path_world_xy_m")
+            frozen_targets: np.ndarray | None = None
+            frozen_target_index = 0
+            if frozen_base_path_raw is not None:
+                frozen_path = np.asarray(frozen_base_path_raw, dtype=np.float64)
+                if frozen_path.ndim != 2 or frozen_path.shape[1] != 2 or len(frozen_path) < 2:
+                    raise ValueError("frozen A base path must have shape [N,2] with N>=2")
+                target_count = max(chunks * len(nominal_chunk.chunk), 2)
+                coordinates = np.linspace(0.0, len(frozen_path) - 1, target_count)
+                frozen_targets = np.column_stack(
+                    [
+                        np.interp(coordinates, np.arange(len(frozen_path)), frozen_path[:, axis])
+                        for axis in range(2)
+                    ]
+                )
             for chunk_index in range(chunks):
                 if self._is_success() or trace.collision:
                     break
@@ -1727,6 +2095,12 @@ class MobiPiPairedAdapter:
                         break
                     current_origin = self._origin_pose()
                     current_eef = self._eef_pose()
+                    if frozen_targets is not None:
+                        target = current_origin.copy()
+                        target[:2, 3] = frozen_targets[
+                            min(frozen_target_index, len(frozen_targets) - 1)
+                        ]
+                        frozen_target_index += 1
                     desired = nominal_world_intent(nominal_action, current_origin, current_eef)
                     compensation = compensate_world_intent(
                         nominal_action,
@@ -1779,6 +2153,7 @@ class MobiPiPairedAdapter:
             "assist_query_count": trace.assist_query_count,
             "assist_chunk_count": trace.assist_chunk_count,
             "total_travel_cap_m": params.get("total_travel_cap_m", self.config.get("assist_total_travel_cap_m", 0.45)),
+            "frozen_planner_base_path": frozen_base_path_raw is not None,
         }
         if assist_target_offset_local is not None:
             assist_realized_params["target_offset_local_xy_m"] = (
