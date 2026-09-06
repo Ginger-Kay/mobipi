@@ -299,9 +299,11 @@ def probe(root: Path, task: str) -> None:
     attempt = 1 + len(list(attempts_root.glob("no-actuation-probe-attempt-*.json")))
     attempt_path = attempts_root / f"no-actuation-probe-attempt-{attempt}.json"
     adapter = None
+    restore_details: dict[str, Any] | None = None
     try:
         adapter, snapshot, selected, camera = load_frozen(root, task)
         restore = adapter.restore_source_state(snapshot)
+        restore_details = asdict(restore)
         if not restore.passed:
             failure = {
                 "task": task,
@@ -344,7 +346,7 @@ def probe(root: Path, task: str) -> None:
         write(attempt_path, receipt)
         write(current_receipt, receipt)
     except Exception as error:
-        failure = {"task": task, "attempt": attempt, "started_at": started, "ended_at": now(), "status": "mechanical_failure", "error_type": type(error).__name__, "error": str(error), "traceback": traceback.format_exc(), "env_step_calls": 0, "outcome_reads": 0}
+        failure = {"task": task, "attempt": attempt, "started_at": started, "ended_at": now(), "status": "mechanical_failure", "error_type": type(error).__name__, "error": str(error), "traceback": traceback.format_exc(), "restore": restore_details, "env_step_calls": 0, "outcome_reads": 0}
         write(attempt_path, failure)
         write(current_receipt, failure)
         raise
