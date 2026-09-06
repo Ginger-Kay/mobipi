@@ -70,7 +70,7 @@ def make_adapter(root: Path, task: str, role: str, save_video: bool):
 
     v1 = load_v1()
     camera = json.loads((V1 / "camera-freeze-v1.0.json").read_text())["cameras"][task]
-    config = v1.adapter_config(task, root, code_commit(), camera)
+    config = v1.adapter_config(task, V1, code_commit(), camera)
     config["output_root"] = str(root / role / task)
     config["save_video"] = bool(save_video)
     config["external_camera_width"] = 1920
