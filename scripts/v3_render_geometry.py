@@ -24,7 +24,7 @@ def main(root):
         m.vis.global_.offwidth=1920;m.vis.global_.offheight=1080
         renderer=mujoco.Renderer(m,height=1080,width=1920)
         entries=[('original',q)]
-        folder=root/'pose-compiler'/task/'hard-constraint-repair'
+        folder=root/'pose-compiler'/task/'hard-feasibility-repair'
         entries.extend((p.stem,np.load(p)) for p in sorted(folder.glob('*-qpos.npy')))
         frames=[]
         for label,pose in entries:
