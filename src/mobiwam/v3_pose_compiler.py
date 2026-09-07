@@ -6,7 +6,7 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
 
 from mobiwam.mobipi_actions import axis_angle_to_matrix, matrix_to_axis_angle
 
@@ -53,8 +53,16 @@ def compile_candidates(control,root:Path,task:str):
             "ranking":["full E/D/A hard validity","minimum clearance","joint margin","policy view","path","stable ID"],
             "fixture_q_unchanged":float(original[qidx]),"outcome_reads":0}
     directory=root/"pose-compiler"/task
-    if (directory/"proposals-freeze.json").exists(): raise RuntimeError("five proposals already frozen")
-    write(directory/"proposals-freeze.json",freeze)
+    if (directory/"proposals-freeze.json").exists():
+        prior=json.loads((directory/"proposals-freeze.json").read_text())
+        if not np.allclose(prior["base_shift_m"],shifts) or not np.allclose(prior["base_outward_generalized_direction"],gradient):
+            raise RuntimeError("frozen proposals changed")
+        directory=directory/"hard-constraint-repair"
+        directory.mkdir(parents=True,exist_ok=True)
+        if (directory/"decision.json").exists():raise RuntimeError("repaired candidate computation already complete")
+        write(directory/"repair.json",{"reason":"soft collision penalty left submillimeter infeasible residuals; enforce hard inequalities with SLSQP", "proposal_freeze":"../proposals-freeze.json", "new_proposals":0,"outcome_reads":0})
+    else:
+        write(directory/"proposals-freeze.json",freeze)
     qarm=np.asarray(control.arm.qpos_index,int)
     joint_ids=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in qarm]
     lower=m.jnt_range[joint_ids,0]+.015; upper=m.jnt_range[joint_ids,1]-.015
@@ -84,6 +92,20 @@ def compile_candidates(control,root:Path,task:str):
             near_names={tuple(r["pair"]) for r in rows if r["signed_clearance_m"]<.02}
             pairs=[(g,h,margin) for g,h,margin in control.pairs if (control.names[g],control.names[h]) in near_names]
             initial=fit.x
+        if not (poserr<.01 and roterr<.15 and (not rows or rows[0]["signed_clearance_m"]>=-1e-6)):
+            near_names={tuple(r["pair"]) for r in rows if r["signed_clearance_m"]<.025}
+            pairs=[(g,h,margin) for g,h,margin in control.pairs if (control.names[g],control.names[h]) in near_names]
+            def constraints(q):
+                data.qpos[qarm]=q;mujoco.mj_forward(m,data)
+                return np.asarray([mujoco.mj_geomDistance(m,data,g,h,.12,np.zeros(6))-margin for g,h,margin in pairs])
+            hard=minimize(lambda q:float(np.sum(residual(q,[])**2)),fit.x,method="SLSQP",
+                          bounds=list(zip(lower,upper)),constraints=[{"type":"ineq","fun":constraints}] if pairs else [],
+                          options={"maxiter":120,"ftol":1e-11})
+            data.qpos[qarm]=hard.x;mujoco.mj_forward(m,data)
+            rows=control.clearance(data)
+            poserr=float(np.linalg.norm(data.site_xpos[control.site]-target))
+            roterr=float(np.linalg.norm(matrix_to_axis_angle(rotation@data.site_xmat[control.site].reshape(3,3).T)))
+            fit.x=hard.x
         return {"passed":poserr<.01 and roterr<.15 and (not rows or rows[0]["signed_clearance_m"]>=-1e-6),
                 "position_error_m":poserr,"orientation_error_rad":roterr,"nearest":rows[:3],
                 "joint_margin_rad":float(np.min(np.minimum(fit.x-lower,upper-fit.x))),"iterations":int(fit.nfev)}
