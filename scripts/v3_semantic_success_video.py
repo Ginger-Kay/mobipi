@@ -18,11 +18,15 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def control_audit(root, task):
+def control_audit(root, task, construct=False):
     from mobiwam.v3_control import LiveControl
     adapter, snapshot, source = make_adapter(root / "control-audit", task, "qualification", False)
     adapter.restore_source_state(snapshot)
     control=LiveControl(adapter)
+    if construct:
+        from mobiwam.v3_pose_compiler import compile_candidates
+        print(compile_candidates(control,root,task),flush=True)
+        return
     rows=control.clearance()
     velocity,solver=control.allocate(np.zeros(6),np.zeros(3),np.zeros(10))
     result={"at":now(),"code_commit":code_commit(),"source":source,
@@ -111,11 +115,11 @@ def probe(root, task, supplemental=False, friction=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["probe", "probe-base", "probe-friction", "control-audit"])
+    parser.add_argument("command", choices=["probe", "probe-base", "probe-friction", "control-audit", "construct"])
     parser.add_argument("--artifact-root", required=True, type=Path)
     parser.add_argument("--task", required=True, choices=["CloseDrawer", "CloseSingleDoor"])
     args = parser.parse_args()
-    if args.command == "control-audit":
-        control_audit(args.artifact_root,args.task)
+    if args.command in ("control-audit","construct"):
+        control_audit(args.artifact_root,args.task,args.command=="construct")
     else:
         probe(args.artifact_root, args.task, args.command == "probe-base", args.command == "probe-friction")

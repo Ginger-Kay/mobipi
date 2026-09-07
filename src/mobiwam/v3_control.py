@@ -41,6 +41,8 @@ class LiveControl:
             for h in world_geoms:
                 if g in fingers and h in handles:
                     continue
+                if not (self.model.geom_contype[g] & self.model.geom_conaffinity[h] or self.model.geom_contype[h] & self.model.geom_conaffinity[g]):
+                    continue
                 self.pairs.append((g, h, .05 if self.names[g].startswith("mobilebase0") else .002))
         # Ignore same-link / neighboring-link structural geometry. Nonadjacent
         # arm self collision remains constrained; mobilebase support duplicates
