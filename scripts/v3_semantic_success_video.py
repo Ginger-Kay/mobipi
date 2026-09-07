@@ -18,6 +18,21 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def control_audit(root, task):
+    from mobiwam.v3_control import LiveControl
+    adapter, snapshot, source = make_adapter(root / "control-audit", task, "qualification", False)
+    adapter.restore_source_state(snapshot)
+    control=LiveControl(adapter)
+    rows=control.clearance()
+    velocity,solver=control.allocate(np.zeros(6),np.zeros(3),np.zeros(10))
+    result={"at":now(),"code_commit":code_commit(),"source":source,
+            "nearest":rows[:20],"solver":solver,"velocity":velocity.tolist(),
+            "mapped_action":control.mapped_action(velocity,np.zeros(12)).tolist(),
+            "swept":control.swept(velocity),"env_step_calls":0,"outcome_reads":0}
+    write(root / f"control-audit-{task}.json",result)
+    print(json.dumps(result,indent=2),flush=True)
+
+
 def probe(root, task, supplemental=False, friction=False):
     from mobiwam.adapters.mobipi import _capture_planar_base_lock
     directory = root / ("mapping-friction" if friction else "mapping-supplement" if supplemental else "probes") / task
@@ -96,8 +111,11 @@ def probe(root, task, supplemental=False, friction=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["probe", "probe-base", "probe-friction"])
+    parser.add_argument("command", choices=["probe", "probe-base", "probe-friction", "control-audit"])
     parser.add_argument("--artifact-root", required=True, type=Path)
     parser.add_argument("--task", required=True, choices=["CloseDrawer", "CloseSingleDoor"])
     args = parser.parse_args()
-    probe(args.artifact_root, args.task, args.command == "probe-base", args.command == "probe-friction")
+    if args.command == "control-audit":
+        control_audit(args.artifact_root,args.task)
+    else:
+        probe(args.artifact_root, args.task, args.command == "probe-base", args.command == "probe-friction")
