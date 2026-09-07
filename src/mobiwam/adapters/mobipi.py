@@ -1835,6 +1835,9 @@ class MobiPiPairedAdapter:
                     break
                 current_origin = self._origin_pose()
                 current_eef = self._eef_pose()
+                # Re-read the live handle after every simulator step; fixture
+                # geometry moves with q and is the authoritative manifold.
+                handle = self._target_handle_position()
                 jacobian, live_jacobian_receipt = self._live_eef_jacobian(articulation_context)
                 jacobian_receipt["minimum_rank"] = min(jacobian_receipt["rank"], live_jacobian_receipt["rank"])
                 # Receding target follows the actual fixture joint manifold.
@@ -1868,9 +1871,12 @@ class MobiPiPairedAdapter:
                 solution, solver = velocity_level_qp(jacobian, desired_twist, lower, upper, base_weight=0.25, damping=1e-3)
                 action = nominal.copy()
                 realized_twist = jacobian[:, 3:] @ solution[3:]
-                action[:3] = realized_twist[:3] * dt / ARM_POSITION_LIMIT_M
-                action[3:6] = realized_twist[3:] * dt / ARM_ROTATION_LIMIT_RAD
-                action[BASE] = np.clip(solution[:3], -1.0, 1.0)
+                action[:3] = np.clip(nominal[:3] + realized_twist[:3] * dt / ARM_POSITION_LIMIT_M, -1.0, 1.0)
+                action[3:6] = np.clip(nominal[3:6] + realized_twist[3:] * dt / ARM_ROTATION_LIMIT_RAD, -1.0, 1.0)
+                # Keep the coupled base component requested by the live
+                # manifold target; the Jacobian solution supplies the arm
+                # correction and its receipt remains authoritative.
+                action[BASE] = np.clip(base_command, -1.0, 1.0)
                 scale = min(1.0, 1.0 / max(float(np.max(np.abs(action))), 1.0))
                 action[:10] *= scale
                 saturated = False
