@@ -1841,17 +1841,10 @@ class MobiPiPairedAdapter:
                 jacobian, live_jacobian_receipt = self._live_eef_jacobian(articulation_context)
                 jacobian_receipt["minimum_rank"] = min(jacobian_receipt["rank"], live_jacobian_receipt["rank"])
                 # Receding target follows the actual fixture joint manifold.
-                q_now = float(self._unwrapped().sim.data.qpos[articulation_context["qpos_index"]])
-                q_goal = articulation_context["q_goal"]
-                q_next = q_now + 0.05 * (q_goal - q_now)
-                axis = articulation_context["axis"]
-                if articulation_context["joint_type"] == "hinge":
-                    rot = axis_angle_to_matrix(axis * (q_next - articulation_context["q_start"]))
-                    target_xyz = articulation_context["origin"] + rot @ (handle - articulation_context["origin"]) + grasp_offset
-                    target_rot = rot @ current_eef[:3, :3]
-                else:
-                    target_xyz = handle + axis * (q_next - articulation_context["q_start"]) + grasp_offset
-                    target_rot = current_eef[:3, :3]
+                # Live handle coordinates already include the current joint
+                # value; do not apply the articulation transform a second time.
+                target_xyz = handle + grasp_offset
+                target_rot = current_eef[:3, :3]
                 desired_pose = np.eye(4); desired_pose[:3, :3] = target_rot; desired_pose[:3, 3] = target_xyz
                 pose_error = np.r_[target_xyz - current_eef[:3, 3], matrix_to_axis_angle(target_rot.T @ current_eef[:3, :3])]
                 base_command = np.asarray(
@@ -1865,7 +1858,7 @@ class MobiPiPairedAdapter:
                 )
                 previous_origin = current_origin
                 desired_twist = np.r_[np.clip(pose_error[:3] / max(dt, 1e-6), -0.20, 0.20), np.clip(pose_error[3:] / max(dt, 1e-6), -0.5, 0.5)]
-                desired_twist[:3] += np.asarray(base_command[:3]) * 0.05
+                desired_twist[:3] += np.asarray(base_command[:3]) * 0.15
                 lower = np.r_[np.full(3, -0.20), np.full(7, -0.35)]
                 upper = np.r_[np.full(3, 0.20), np.full(7, 0.35)]
                 solution, solver = velocity_level_qp(jacobian, desired_twist, lower, upper, base_weight=0.25, damping=1e-3)
@@ -1876,7 +1869,7 @@ class MobiPiPairedAdapter:
                 # Keep the coupled base component requested by the live
                 # manifold target; the Jacobian solution supplies the arm
                 # correction and its receipt remains authoritative.
-                action[BASE] = np.clip(base_command, -1.0, 1.0)
+                action[BASE] = np.clip(base_command * 3.0, -1.0, 1.0)
                 scale = min(1.0, 1.0 / max(float(np.max(np.abs(action))), 1.0))
                 action[:10] *= scale
                 saturated = False
