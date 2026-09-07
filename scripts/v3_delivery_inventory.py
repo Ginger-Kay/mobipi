@@ -53,7 +53,7 @@ def main(root):
                           'attribution':'V2.1 inherited diagnostic raw A, not a V3 route or eligible video'})
     write(root/'video-inventory.json',{'at':now,'v3_raw_videos':0,'v3_final_comparison_videos':0,
           'inherited_diagnostic_raw':inherited,'visual_gate':'not_run_no_eligible_routes',
-          'static_geometry_frames':'geometry-frames/inventory.json'})
+          'static_geometry_frames':'geometry-frames-v2/inventory.json'})
     counters={'probe_episodes':probes,'probe_env_steps':steps,'development_outcomes':0,'qualified_A':0,
               'final_comparison_records':0,'final_comparison_videos':0,'pose_proposals':10,
               'geometry_compiler_passes_per_task':3,'training_runs':0,'validation_reads':0,'test_reads':0}
@@ -74,7 +74,7 @@ def main(root):
                        'final videos and timed video self-check unavailable because no route became eligible']}
     write(root/'run-manifest.json',manifest)
     files=[root/'movement-profile-v1.json',root/'geometry-failure-summary.json',root/'video-inventory.json',root/'run-manifest.json']
-    files.extend(sorted((root/'geometry-frames').glob('*')))
+    files.extend(sorted((root/'geometry-frames-v2').glob('*')))
     write(root/'artifact-inventory.json',{'at':now,'files':[{'path':str(p),'bytes':p.stat().st_size,'sha256':sha(p)} for p in files if p.is_file()]})
     print(json.dumps(counters),flush=True)
 

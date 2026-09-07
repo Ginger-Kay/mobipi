@@ -13,7 +13,7 @@ from PIL import Image,ImageDraw
 def main(root):
     camera_root=Path('/share/jhk/MobiWAM/artifacts/MMWAM-OBC-002/v1-source-video-v1.0.1/20260906T060000Z-v1-video-compat-v1.0.1')
     cameras=json.loads((camera_root/'camera-freeze-v1.0.json').read_text())['cameras']
-    destination=root/'geometry-frames';destination.mkdir(exist_ok=True)
+    destination=root/'geometry-frames-v2';destination.mkdir(exist_ok=True)
     inventory=[]
     for task in ('CloseDrawer','CloseSingleDoor'):
         binding=json.loads((root/'probes'/task/'binding.json').read_text())
@@ -22,10 +22,21 @@ def main(root):
         camera=cameras[task];cid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_CAMERA,camera['name'])
         m.cam_pos[cid]=camera['position_world'];m.cam_quat[cid]=camera['quaternion_wxyz'];m.cam_fovy[cid]=camera['fovy_deg']
         m.vis.global_.offwidth=1920;m.vis.global_.offheight=1080
-        renderer=mujoco.Renderer(m,height=1080,width=1920)
         entries=[('original',q)]
         folder=root/'pose-compiler'/task/'hard-feasibility-repair'
         entries.extend((p.stem,np.load(p)) for p in sorted(folder.glob('*-qpos.npy')))
+        robot_ids=[i for i in range(m.ngeom) if (mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '').startswith(('robot0','mobilebase0','gripper0'))]
+        envelope=[]
+        for _,pose in entries:
+            d.qpos[:]=pose;mujoco.mj_forward(m,d);envelope.extend(d.geom_xpos[robot_ids].copy())
+        points=np.asarray(envelope);low=points.min(0)-.35;high=points.max(0)+.35
+        center=(low+high)/2;span=high-low
+        height=max(1.6,span[1]/(2*np.tan(np.pi/6)),span[0]/(2*np.tan(np.pi/6)*16/9))
+        m.cam_pos[cid]=[center[0],center[1],high[2]+height];m.cam_quat[cid]=[1,0,0,0];m.cam_fovy[cid]=60
+        (destination/f'{task}-camera.json').write_text(json.dumps({'position':m.cam_pos[cid].tolist(),'quaternion':[1,0,0,0],
+             'fovy':60,'geometry_envelope_lower':low.tolist(),'geometry_envelope_upper':high.tolist(),
+             'lineage':'static geometry rerender; parent V1 camera cropped these V3 sources; no env.step or policy query'},indent=2)+'\n')
+        renderer=mujoco.Renderer(m,height=1080,width=1920)
         frames=[]
         for label,pose in entries:
             d.qpos[:]=pose;mujoco.mj_forward(m,d);renderer.update_scene(d,camera=camera['name'])
