@@ -18,9 +18,9 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def probe(root, task):
+def probe(root, task, supplemental=False):
     from mobiwam.adapters.mobipi import _capture_planar_base_lock
-    directory = root / "probes" / task
+    directory = root / ("mapping-supplement" if supplemental else "probes") / task
     if (directory / "probe.json").exists():
         raise RuntimeError("immutable probe already exists")
     adapter, snapshot, source = make_adapter(root / "probes", task, "qualification", False)
@@ -54,7 +54,7 @@ def probe(root, task):
               "base_geoms": initial_geoms, "model_nq": raw.sim.model.nq, "model_nv": raw.sim.model.nv})
         rows = []
         for label, axis, sign in [("lock", None, 0)] + [
-            (f"axis-{axis}-{sign:+}", axis, sign) for axis in (7, 8, 9, 0, 1, 2, 3, 4, 5) for sign in (1, -1)
+            (f"axis-{axis}-{sign:+}", axis, sign) for axis in ((7, 8, 9) if supplemental else (7, 8, 9, 0, 1, 2, 3, 4, 5)) for sign in (1, -1)
         ]:
             if not adapter.restore_source_state(snapshot).passed:
                 raise RuntimeError("probe restore failed")
@@ -64,7 +64,7 @@ def probe(root, task):
             action = np.zeros(12)
             action[-1] = -1
             if axis is not None:
-                action[axis] = sign * 0.02
+                action[axis] = sign * (0.1 if supplemental else 0.02)
             positions, eefs, qvels, goals = [], [], [], []
             for step in range(40 if axis is None else 10):
                 if axis is None or axis < 7:
@@ -74,7 +74,11 @@ def probe(root, task):
                 positions.append(adapter._origin_pose().tolist())
                 eefs.append(adapter._eef_pose().tolist())
                 qvels.append(raw.sim.data.qvel[lock.qvel_indices].tolist())
-                goals.append(np.asarray(controllers["base"].goal_qvel).tolist())
+                live_controller = adapter._unwrapped().robots[0].part_controllers["base"]
+                goals.append({"goal_qvel": np.asarray(live_controller.goal_qvel).tolist(),
+                              "actuator_min": np.asarray(live_controller.actuator_min).tolist(),
+                              "actuator_max": np.asarray(live_controller.actuator_max).tolist(),
+                              "ctrl": raw.sim.data.ctrl.tolist()})
                 if adapter._base_collision():
                     raise RuntimeError(f"base contact during mapping {label} step {step}")
             rows.append({"label": label, "axis": axis, "action": action.tolist(),
@@ -85,13 +89,15 @@ def probe(root, task):
         write(directory / "probe.json", {"at": now(), "rows": rows, "task_success_reads": 0,
               "dt": 1 / raw.control_freq, "source": source, "code_commit": code_commit()})
     finally:
-        adapter.env.close()
+        close = getattr(adapter.env, "close", None)
+        if callable(close):
+            close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["probe"])
+    parser.add_argument("command", choices=["probe", "probe-base"])
     parser.add_argument("--artifact-root", required=True, type=Path)
     parser.add_argument("--task", required=True, choices=["CloseDrawer", "CloseSingleDoor"])
     args = parser.parse_args()
-    probe(args.artifact_root, args.task)
+    probe(args.artifact_root, args.task, args.command == "probe-base")
