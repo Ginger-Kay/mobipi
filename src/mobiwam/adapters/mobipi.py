@@ -1776,6 +1776,13 @@ class MobiPiPairedAdapter:
         articulation_context = self._live_articulation_context()
         steps = 0
         horizon = int(self.config.get("horizon", 500))
+        # V3.1 uses the live base+arm allocator for every assist step. Keep a
+        # compact receipt beside the rollout trace so action provenance is
+        # auditable without reconstructing solver inputs from pixels.
+        from mobiwam.v3_control import LiveControl
+        live_control = LiveControl(self)
+        previous_velocity = np.zeros(10, dtype=float)
+        allocation_receipts = []
 
         while steps < horizon and stable < stable_contact_steps and not trace.collision:
             macro = sample_verified_future_chunk(
@@ -1847,36 +1854,46 @@ class MobiPiPairedAdapter:
                 target_rot = current_eef[:3, :3]
                 desired_pose = np.eye(4); desired_pose[:3, :3] = target_rot; desired_pose[:3, 3] = target_xyz
                 pose_error = np.r_[target_xyz - current_eef[:3, 3], matrix_to_axis_angle(target_rot.T @ current_eef[:3, :3])]
-                base_command = np.asarray(
-                    self._target_base_pose_to_action(
-                        target_origin,
-                        current_origin,
-                        previous_origin,
-                        dt,
-                        legacy=bool(self.config.get("legacy_navigation", False)),
-                    )
-                )
                 previous_origin = current_origin
-                desired_twist = np.r_[np.clip(pose_error[:3] / max(dt, 1e-6), -0.20, 0.20), np.clip(pose_error[3:] / max(dt, 1e-6), -0.5, 0.5)]
-                desired_twist[:3] += np.asarray(base_command[:3]) * 0.15
-                lower = np.r_[np.full(3, -0.20), np.full(7, -0.35)]
-                upper = np.r_[np.full(3, 0.20), np.full(7, 0.35)]
-                solution, solver = velocity_level_qp(jacobian, desired_twist, lower, upper, base_weight=0.25, damping=1e-3)
-                action = nominal.copy()
-                realized_twist = jacobian[:, 3:] @ solution[3:]
-                action[:3] = np.clip(nominal[:3] + realized_twist[:3] * dt / ARM_POSITION_LIMIT_M, -1.0, 1.0)
-                action[3:6] = np.clip(nominal[3:6] + realized_twist[3:] * dt / ARM_ROTATION_LIMIT_RAD, -1.0, 1.0)
-                # Keep the coupled base component requested by the live
-                # manifold target; the Jacobian solution supplies the arm
-                # correction and its receipt remains authoritative.
-                action[BASE] = np.clip(base_command * 8.0, -1.0, 1.0)
-                scale = min(1.0, 1.0 / max(float(np.max(np.abs(action))), 1.0))
-                action[:10] *= scale
-                saturated = False
+                desired_twist = np.r_[
+                    np.clip(pose_error[:3] / max(dt, 1e-6), -0.20, 0.20),
+                    np.clip(pose_error[3:] / max(dt, 1e-6), -0.5, 0.5),
+                ]
+                base_reference = np.zeros(3, dtype=float)
+                base_reference[:2] = np.clip(
+                    (target_origin[:2, 3] - current_origin[:2, 3]) / max(dt, 1e-6),
+                    -0.20,
+                    0.20,
+                )
+                solution, solver = live_control.allocate(
+                    desired_twist,
+                    base_reference,
+                    previous_velocity,
+                    fixture_qvel=0.0,
+                )
+                previous_velocity = solution.copy()
+                swept = live_control.swept(solution, fixture_qvel=0.0)
+                action = live_control.mapped_action(solution, nominal)
+                action = np.asarray(action, dtype=float)
+                saturated = bool(np.any(np.abs(action[:10]) > 1.0 + 1e-8))
+                if saturated:
+                    action[:10] = np.clip(action[:10], -1.0, 1.0)
                 trace.action_saturated = trace.action_saturated or saturated
-                trace.solver_status.append("qp_feasible" if solver["feasible"] else "qp_infeasible")
-                if saturated or not solver["feasible"]:
+                trace.solver_status.append("v31_qp_feasible" if solver.get("feasible", False) else "v31_qp_infeasible")
+                allocation_receipts.append({
+                    "step": steps,
+                    "nominal_action": np.asarray(nominal).tolist(),
+                    "solution_velocity": solution.tolist(),
+                    "mapped_action": action.tolist(),
+                    "solver": solver,
+                    "swept": swept,
+                    "base_reference": base_reference.tolist(),
+                    "desired_twist": desired_twist.tolist(),
+                })
+                if saturated or not solver.get("feasible", False) or not swept.get("passed", False):
                     trace.invalid_reason = "qp_or_action_saturation"
+                    if not swept.get("passed", False):
+                        trace.invalid_reason = "predictive_swept_clearance_failure"
                     break
                 observation, _, _, _ = self.env.step(action)
                 self._record_step(trace, action, observation, desired_pose)
@@ -1919,6 +1936,8 @@ class MobiPiPairedAdapter:
                 "jacobian_receipt": jacobian_receipt,
                 "handle_contact_binding": {"handle_geom_ids": articulation_context["handle_geom_ids"], "finger_geom_ids": articulation_context["robot_handle_geom_ids"]},
                 "time_scaling": "coupled_action_scale",
+                "allocation": "LiveControl.allocate + mapped_action",
+                "allocation_receipts": allocation_receipts,
             },
             progress_before=payload.progress_before,
         )
