@@ -57,10 +57,10 @@ def compile_candidates(control,root:Path,task:str):
         prior=json.loads((directory/"proposals-freeze.json").read_text())
         if not np.allclose(prior["base_shift_m"],shifts) or not np.allclose(prior["base_outward_generalized_direction"],gradient):
             raise RuntimeError("frozen proposals changed")
-        directory=directory/"hard-constraint-repair"
+        directory=directory/"hard-feasibility-repair"
         directory.mkdir(parents=True,exist_ok=True)
         if (directory/"decision.json").exists():raise RuntimeError("repaired candidate computation already complete")
-        write(directory/"repair.json",{"reason":"soft collision penalty left submillimeter infeasible residuals; enforce hard inequalities with SLSQP", "proposal_freeze":"../proposals-freeze.json", "new_proposals":0,"outcome_reads":0})
+        write(directory/"repair.json",{"reason":"pose/collision merit tradeoff rejected near-feasible knots; impose pose tolerance and collision as joint hard constraints", "proposal_freeze":"../proposals-freeze.json", "new_proposals":0,"outcome_reads":0})
     else:
         write(directory/"proposals-freeze.json",freeze)
     qarm=np.asarray(control.arm.qpos_index,int)
@@ -97,10 +97,12 @@ def compile_candidates(control,root:Path,task:str):
             pairs=[(g,h,margin) for g,h,margin in control.pairs if (control.names[g],control.names[h]) in near_names]
             def constraints(q):
                 data.qpos[qarm]=q;mujoco.mj_forward(m,data)
-                return np.asarray([mujoco.mj_geomDistance(m,data,g,h,.12,np.zeros(6))-margin for g,h,margin in pairs])
-            hard=minimize(lambda q:float(np.sum(residual(q,[])**2)),fit.x,method="SLSQP",
-                          bounds=list(zip(lower,upper)),constraints=[{"type":"ineq","fun":constraints}] if pairs else [],
-                          options={"maxiter":120,"ftol":1e-11})
+                pos=np.linalg.norm(data.site_xpos[control.site]-target)
+                rot=np.linalg.norm(matrix_to_axis_angle(rotation@data.site_xmat[control.site].reshape(3,3).T))
+                return np.asarray([*[mujoco.mj_geomDistance(m,data,g,h,.12,np.zeros(6))-margin for g,h,margin in pairs],.00999-pos,.1499-rot])
+            hard=minimize(lambda q:float(np.sum((q-initial)**2))*.0001,fit.x,method="SLSQP",
+                          bounds=list(zip(lower,upper)),constraints=[{"type":"ineq","fun":constraints}],
+                          options={"maxiter":160,"ftol":1e-11})
             data.qpos[qarm]=hard.x;mujoco.mj_forward(m,data)
             rows=control.clearance(data)
             poserr=float(np.linalg.norm(data.site_xpos[control.site]-target))
