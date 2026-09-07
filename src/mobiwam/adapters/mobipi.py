@@ -1808,7 +1808,7 @@ class MobiPiPairedAdapter:
             else:
                 closed_handle = handle + articulation_context["axis"] * (articulation_context["q_goal"] - articulation_context["q_start"])
             manifold_motion = closed_handle[:2] - handle[:2]
-            direction = manifold_motion / max(float(np.linalg.norm(manifold_motion)), 1e-9)
+            direction = float(tangent_direction_sign) * manifold_motion / max(float(np.linalg.norm(manifold_motion)), 1e-9)
             move_steps = min(120, max(60, horizon - steps))
             previous_origin = start_origin.copy()
             dt = 1.0 / float(self._unwrapped().control_freq)
@@ -1869,7 +1869,7 @@ class MobiPiPairedAdapter:
                 # Keep the coupled base component requested by the live
                 # manifold target; the Jacobian solution supplies the arm
                 # correction and its receipt remains authoritative.
-                action[BASE] = np.clip(base_command * 3.0, -1.0, 1.0)
+                action[BASE] = np.clip(base_command * 8.0, -1.0, 1.0)
                 scale = min(1.0, 1.0 / max(float(np.max(np.abs(action))), 1.0))
                 action[:10] *= scale
                 saturated = False
