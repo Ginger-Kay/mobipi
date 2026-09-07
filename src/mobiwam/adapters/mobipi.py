@@ -792,14 +792,15 @@ class MobiPiPairedAdapter:
     def _live_eef_jacobian(self, context: Mapping[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
         raw = self._unwrapped(); robot = raw.robots[0]
         site_id = int(robot.eef_site_id["right"])
-        jacp = np.zeros((3, raw.sim.model.nv)); jacr = np.zeros((3, raw.sim.model.nv))
-        mujoco.mj_jacSite(raw.sim.model, raw.sim.data, jacp, jacr, site_id)
+        site_name = str(raw.sim.model.site_id2name(site_id))
+        jacp = np.asarray(raw.sim.data.get_site_jacp(site_name), dtype=float)
+        jacr = np.asarray(raw.sim.data.get_site_jacr(site_name), dtype=float)
         base_idx = np.asarray([_joint_scalar_address(raw.sim.model, "get_joint_qvel_addr", n) for n in PLANAR_BASE_JOINT_NAMES], dtype=int)
         arm_idx = np.asarray(getattr(robot, "_ref_joint_vel_indexes"), dtype=int).reshape(-1)
         if arm_idx.size < 7: raise RuntimeError("PandaOmron arm qvel mapping is incomplete")
         dofs = np.r_[base_idx, arm_idx[:7]]
         jac = np.vstack((jacp[:, dofs], jacr[:, dofs]))
-        return jac, {"site_id": site_id, "base_qvel_indices": base_idx.tolist(), "arm_qvel_indices": arm_idx[:7].tolist(), "shape": list(jac.shape), "rank": int(np.linalg.matrix_rank(jac))}
+        return jac, {"site_id": site_id, "site_name": site_name, "base_qvel_indices": base_idx.tolist(), "arm_qvel_indices": arm_idx[:7].tolist(), "shape": list(jac.shape), "rank": int(np.linalg.matrix_rank(jac))}
 
     def _apply_frozen_external_camera(self) -> None:
         if not bool(self.config.get("external_world_camera", False)):
