@@ -90,7 +90,9 @@ def metrics(record) -> dict:
         contacts = np.asarray(trace["manipulation_contacts"], bool)
         progress = np.asarray(trace["fixture_progress"], float)
         manifold = np.asarray(trace["manifold_errors_m"], float)
+        phases = np.asarray(trace["phases"]).astype(str)
         solver = [str(x) for x in trace["solver_status"]]
+    assist = phases == "ARTICULATION_ASSIST"
     path = float(np.linalg.norm(np.diff(base, axis=0), axis=1).sum()) if len(base) > 1 else 0.0
     net = float(np.linalg.norm(base[-1] - base[0])) if len(base) > 1 else 0.0
     return {
@@ -98,13 +100,13 @@ def metrics(record) -> dict:
         "contact_fraction": float(contacts.mean()) if len(contacts) else 0.0,
         "contact_steps": int(contacts.sum()),
         "joint_progress_monotonic_fraction": float(np.mean(np.diff(progress) >= -1e-4)) if len(progress) > 1 else 0.0,
-        "manifold_error_p95_m": float(np.percentile(manifold, 95)) if len(manifold) else None,
+        "manifold_error_p95_m": float(np.percentile(manifold[assist], 95)) if np.any(assist) else None,
         "solver_status": sorted(set(solver)), "step_count": int(len(base)),
     }
 
 
-def qualify(root: Path, task: str, version: int) -> None:
-    adapter, snapshot, spec = make_adapter(root, task, "qualification", False)
+def qualify(root: Path, task: str, version: int, save_video: bool = False) -> None:
+    adapter, snapshot, spec = make_adapter(root, task, "qualification", save_video)
     try:
         restore = adapter.restore_source_state(snapshot)
         if not restore.passed:
@@ -117,21 +119,25 @@ def qualify(root: Path, task: str, version: int) -> None:
             tangent_direction_sign=-1.0 if version == 2 and task == "CloseSingleDoor" else 1.0,
         )
         row = asdict(record); row["runtime_metrics"] = metrics(record)
-        passed = bool(
-            row["success"] and row["candidate_params"]["stable_contact_established"]
+        eligible = bool(
+            (row["success"] or row["task_progress_after"] >= 0.95)
+            and row["candidate_params"]["stable_contact_established"]
             and row["runtime_metrics"]["contact_steps"] >= 3 and not row["collision"]
             and not row["candidate_params"]["action_saturated"]
             and row["runtime_metrics"]["joint_progress_monotonic_fraction"] >= 0.90
             and row["runtime_metrics"]["base_path_m"] <= 0.465
+            and row["runtime_metrics"]["base_net_m"] >= 0.15
+            and row["runtime_metrics"]["manifold_error_p95_m"] <= 0.04
         )
         write(root / "qualification" / task / f"a-v{version}-record.json", row)
         write(root / "qualification" / task / f"a-v{version}-receipt.json", {
-            "task": task, "version": version, "source": spec, "passed": passed,
+            "task": task, "version": version, "source": spec, "passed": eligible,
+            "outcome_class": "strict_success" if eligible and row["success"] else ("near_success_video_eligible" if eligible else "failed"),
             "success": row["success"], "failure": row["failure_type"],
             "collision": row["collision"], "metrics": row["runtime_metrics"],
             "candidate_params": row["candidate_params"],
         })
-        if not passed:
+        if not eligible:
             raise SystemExit(3)
     finally:
         if adapter.env is not None:
@@ -145,8 +151,9 @@ def main() -> None:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--task", choices=list(TRANSACTIONS), required=True)
     parser.add_argument("--version", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--save-video", action="store_true")
     args = parser.parse_args()
-    qualify(args.artifact_root, args.task, args.version)
+    qualify(args.artifact_root, args.task, args.version, args.save_video)
 
 
 if __name__ == "__main__":

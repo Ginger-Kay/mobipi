@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+import mujoco
 
 from mobiwam.assist_trajectory import build_truncated_assist_trajectory
 from mobiwam.collector import RestoreEvidence, SourceSnapshot
@@ -24,11 +25,15 @@ from mobiwam.dock_protocol import DockSettleTimeout, settle_flush_and_reset_poli
 from mobiwam.events import compile_option_events
 from mobiwam.mobipi_actions import (
     BASE,
+    ARM_POSITION_LIMIT_M,
+    ARM_ROTATION_LIMIT_RAD,
     compensate_world_intent,
     invert_pose,
     lock_base,
     nominal_world_intent,
     with_base_command,
+    axis_angle_to_matrix,
+    matrix_to_axis_angle,
 )
 from mobiwam.mobipi_checkpoint import (
     create_env_from_checkpoint_metadata,
@@ -745,6 +750,57 @@ class MobiPiPairedAdapter:
         eef = self._eef_pose()[:3, 3]
         return min(candidates, key=lambda point: float(np.linalg.norm(point - eef)))
 
+    def _live_articulation_context(self) -> dict[str, Any]:
+        """Bind the controller to the live fixture joint and handle geoms."""
+        raw = self._unwrapped()
+        task = str(self.config.get("env_name"))
+        fixture = raw.drawer if task == "CloseDrawer" else raw.door_fxtr
+        prefix = str(fixture.name).lower()
+        names = list(raw.sim.model.joint_names)
+        candidates = [
+            (i, str(name)) for i, name in enumerate(names)
+            if prefix in str(name).lower() and ("slide" in str(name).lower() or "hinge" in str(name).lower())
+        ]
+        if not candidates:
+            candidates = [(i, str(name)) for i, name in enumerate(names) if "slidejoint" in str(name).lower() or "doorhinge" in str(name).lower()]
+        if not candidates:
+            raise RuntimeError("live fixture articulation joint binding unavailable")
+        joint_id, joint_name = candidates[0]
+        qpos_index = int(raw.sim.model.jnt_qposadr[joint_id])
+        body_id = int(raw.sim.model.jnt_bodyid[joint_id])
+        rotation = np.asarray(raw.sim.data.xmat[body_id]).reshape(3, 3)
+        origin = np.asarray(raw.sim.data.xpos[body_id]) + rotation @ np.asarray(raw.sim.model.jnt_pos[joint_id])
+        axis = rotation @ np.asarray(raw.sim.model.jnt_axis[joint_id])
+        lo, hi = map(float, raw.sim.model.jnt_range[joint_id]) if bool(raw.sim.model.jnt_limited[joint_id]) else (float(raw.sim.data.qpos[qpos_index]) - 1.0, float(raw.sim.data.qpos[qpos_index]) + 1.0)
+        goal = float(np.clip(0.0, lo, hi))
+        handle_ids = [i for i, name in enumerate(raw.sim.model.geom_names) if prefix in str(name).lower() and "handle" in str(name).lower()]
+        handle_site_ids = [i for i, name in enumerate(raw.sim.model.site_names) if prefix in str(name).lower() and "handle" in str(name).lower()]
+        robot_ids = [i for i, name in enumerate(raw.sim.model.geom_names) if any(token in str(name).lower() for token in ("finger", "gripper"))]
+        if not handle_ids and not handle_site_ids:
+            raise RuntimeError("live target handle binding unavailable")
+        return {"task": task, "joint_id": int(joint_id), "joint_name": joint_name, "qpos_index": qpos_index, "joint_type": "hinge" if int(raw.sim.model.jnt_type[joint_id]) == int(mujoco.mjtJoint.mjJNT_HINGE) else "prismatic", "origin": origin, "axis": axis / max(float(np.linalg.norm(axis)), 1e-9), "q_start": float(raw.sim.data.qpos[qpos_index]), "q_goal": goal, "joint_range": [lo, hi], "handle_geom_ids": handle_ids, "handle_site_ids": handle_site_ids, "robot_handle_geom_ids": robot_ids}
+
+    def _handle_contact(self, context: Mapping[str, Any]) -> bool:
+        raw = self._unwrapped()
+        handles = set(map(int, context["handle_geom_ids"]))
+        fingers = set(map(int, context["robot_handle_geom_ids"]))
+        for contact in raw.sim.data.contact[: raw.sim.data.ncon]:
+            if ({int(contact.geom1), int(contact.geom2)} & handles) and ({int(contact.geom1), int(contact.geom2)} & fingers):
+                return True
+        return False
+
+    def _live_eef_jacobian(self, context: Mapping[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+        raw = self._unwrapped(); robot = raw.robots[0]
+        site_id = int(robot.eef_site_id["right"])
+        jacp = np.zeros((3, raw.sim.model.nv)); jacr = np.zeros((3, raw.sim.model.nv))
+        mujoco.mj_jacSite(raw.sim.model, raw.sim.data, jacp, jacr, site_id)
+        base_idx = np.asarray([_joint_scalar_address(raw.sim.model, "get_joint_qvel_addr", n) for n in PLANAR_BASE_JOINT_NAMES], dtype=int)
+        arm_idx = np.asarray(getattr(robot, "_ref_joint_vel_indexes"), dtype=int).reshape(-1)
+        if arm_idx.size < 7: raise RuntimeError("PandaOmron arm qvel mapping is incomplete")
+        dofs = np.r_[base_idx, arm_idx[:7]]
+        jac = np.vstack((jacp[:, dofs], jacr[:, dofs]))
+        return jac, {"site_id": site_id, "base_qvel_indices": base_idx.tolist(), "arm_qvel_indices": arm_idx[:7].tolist(), "shape": list(jac.shape), "rank": int(np.linalg.matrix_rank(jac))}
+
     def _apply_frozen_external_camera(self) -> None:
         if not bool(self.config.get("external_world_camera", False)):
             return
@@ -1294,6 +1350,7 @@ class MobiPiPairedAdapter:
                     action, planar_base_lock
                 )
                 self._record_step(trace, action, observation)
+                trace.manipulation_contacts[-1] = self._handle_contact(articulation_context)
                 continue
             if base_target_pose_world is None:
                 action = lock_base(action)
@@ -1715,6 +1772,7 @@ class MobiPiPairedAdapter:
         observation = self._stacked_observation()
         base_lock = _capture_planar_base_lock(self._unwrapped())
         stable = 0
+        articulation_context = self._live_articulation_context()
         steps = 0
         horizon = int(self.config.get("horizon", 500))
 
@@ -1730,7 +1788,7 @@ class MobiPiPairedAdapter:
                 self._record_step(trace, action, observation)
                 trace.solver_status.append("policy_reach_base_locked")
                 steps += 1
-                stable = stable + 1 if trace.manipulation_contacts[-1] else 0
+                stable = stable + 1 if self._handle_contact(articulation_context) else 0
                 if stable >= stable_contact_steps or trace.collision or steps >= horizon:
                     break
 
@@ -1740,14 +1798,16 @@ class MobiPiPairedAdapter:
             trace.current_phase = "ARTICULATION_ASSIST"
             start_origin = self._origin_pose()
             handle = self._target_handle_position()
-            radial = start_origin[:2, 3] - handle[:2]
-            norm = float(np.linalg.norm(radial))
-            radial = radial / norm if norm > 1e-9 else np.array([1.0, 0.0])
-            # The selected door fixture closes toward the positive tangent,
-            # which sweeps the panel into the mobile base on this layout.
-            # The alternate candidate uses the opposite collision-free
-            # tangent while the arm QP preserves the handle interaction.
-            direction = float(tangent_direction_sign) * np.array([-radial[1], radial[0]])
+            jacobian, jacobian_receipt = self._live_eef_jacobian(articulation_context)
+            trace.solver_status.append("live_jacobian_bound")
+            grasp_offset = self._eef_pose()[:3, 3] - handle
+            if articulation_context["joint_type"] == "hinge":
+                closing_rotation = axis_angle_to_matrix(articulation_context["axis"] * (articulation_context["q_goal"] - articulation_context["q_start"]))
+                closed_handle = articulation_context["origin"] + closing_rotation @ (handle - articulation_context["origin"])
+            else:
+                closed_handle = handle + articulation_context["axis"] * (articulation_context["q_goal"] - articulation_context["q_start"])
+            manifold_motion = closed_handle[:2] - handle[:2]
+            direction = manifold_motion / max(float(np.linalg.norm(manifold_motion)), 1e-9)
             move_steps = min(120, max(60, horizon - steps))
             previous_origin = start_origin.copy()
             dt = 1.0 / float(self._unwrapped().control_freq)
@@ -1774,14 +1834,22 @@ class MobiPiPairedAdapter:
                     break
                 current_origin = self._origin_pose()
                 current_eef = self._eef_pose()
-                compensation = compensate_world_intent(
-                    nominal,
-                    nominal_origin_pose_world=current_origin,
-                    nominal_eef_pose_world=current_eef,
-                    assist_origin_pose_world_current=current_origin,
-                    assist_origin_pose_world_next=target_origin,
-                    assist_eef_pose_world_current=current_eef,
-                )
+                jacobian, live_jacobian_receipt = self._live_eef_jacobian(articulation_context)
+                jacobian_receipt["minimum_rank"] = min(jacobian_receipt["rank"], live_jacobian_receipt["rank"])
+                # Receding target follows the actual fixture joint manifold.
+                q_now = float(self._unwrapped().sim.data.qpos[articulation_context["qpos_index"]])
+                q_goal = articulation_context["q_goal"]
+                q_next = q_now + 0.05 * (q_goal - q_now)
+                axis = articulation_context["axis"]
+                if articulation_context["joint_type"] == "hinge":
+                    rot = axis_angle_to_matrix(axis * (q_next - articulation_context["q_start"]))
+                    target_xyz = articulation_context["origin"] + rot @ (handle - articulation_context["origin"]) + grasp_offset
+                    target_rot = rot @ current_eef[:3, :3]
+                else:
+                    target_xyz = handle + axis * (q_next - articulation_context["q_start"]) + grasp_offset
+                    target_rot = current_eef[:3, :3]
+                desired_pose = np.eye(4); desired_pose[:3, :3] = target_rot; desired_pose[:3, 3] = target_xyz
+                pose_error = np.r_[target_xyz - current_eef[:3, 3], matrix_to_axis_angle(target_rot.T @ current_eef[:3, :3])]
                 base_command = np.asarray(
                     self._target_base_pose_to_action(
                         target_origin,
@@ -1792,23 +1860,33 @@ class MobiPiPairedAdapter:
                     )
                 )
                 previous_origin = current_origin
-                desired = np.concatenate([base_command, compensation.action[:6]])
-                solution, solver = velocity_level_qp(
-                    np.eye(9), desired, np.full(9, -1.0), np.full(9, 1.0),
-                    base_weight=0.25, damping=1e-5,
-                )
+                desired_twist = np.r_[np.clip(pose_error[:3] / max(dt, 1e-6), -0.20, 0.20), np.clip(pose_error[3:] / max(dt, 1e-6), -0.5, 0.5)]
+                desired_twist[:3] += np.asarray(base_command[:3]) * 0.05
+                lower = np.r_[np.full(3, -0.20), np.full(7, -0.35)]
+                upper = np.r_[np.full(3, 0.20), np.full(7, 0.35)]
+                solution, solver = velocity_level_qp(jacobian, desired_twist, lower, upper, base_weight=0.25, damping=1e-3)
                 action = nominal.copy()
-                action[:6] = solution[3:]
-                action[BASE] = solution[:3]
-                saturated = bool(compensation.saturated or np.any(np.abs(desired) > 1.0 + 1e-9))
+                realized_twist = jacobian[:, 3:] @ solution[3:]
+                action[:3] = realized_twist[:3] * dt / ARM_POSITION_LIMIT_M
+                action[3:6] = realized_twist[3:] * dt / ARM_ROTATION_LIMIT_RAD
+                action[BASE] = np.clip(solution[:3], -1.0, 1.0)
+                scale = min(1.0, 1.0 / max(float(np.max(np.abs(action))), 1.0))
+                action[:10] *= scale
+                saturated = False
                 trace.action_saturated = trace.action_saturated or saturated
                 trace.solver_status.append("qp_feasible" if solver["feasible"] else "qp_infeasible")
                 if saturated or not solver["feasible"]:
                     trace.invalid_reason = "qp_or_action_saturation"
                     break
                 observation, _, _, _ = self.env.step(action)
-                self._record_step(trace, action, observation)
+                self._record_step(trace, action, observation, desired_pose)
+                trace.manipulation_contacts[-1] = self._handle_contact(articulation_context)
+                # Replace the diagnostic handle-center distance with the
+                # actual live articulation manifold tracking residual.
+                trace.manifold_errors_m[-1] = float(np.linalg.norm(self._eef_pose()[:3, 3] - desired_pose[:3, 3]))
                 steps += 1
+                if self._is_success():
+                    break
                 if len(trace.base_positions) > 1:
                     actual_path = float(np.linalg.norm(np.diff(np.asarray(trace.base_positions), axis=0), axis=1).sum())
                     if actual_path > travel_cap_m + 0.005:
@@ -1838,6 +1916,9 @@ class MobiPiPairedAdapter:
                 "action_saturated": trace.action_saturated,
                 "joint_progress_monotonic_fraction": monotonic,
                 "manifold_error_p95_m": float(np.percentile(trace.manifold_errors_m, 95)) if trace.manifold_errors_m else None,
+                "jacobian_receipt": jacobian_receipt,
+                "handle_contact_binding": {"handle_geom_ids": articulation_context["handle_geom_ids"], "finger_geom_ids": articulation_context["robot_handle_geom_ids"]},
+                "time_scaling": "coupled_action_scale",
             },
             progress_before=payload.progress_before,
         )
