@@ -129,6 +129,8 @@ class Reference:
         self.route = 'A'
         self.docked = False
         self.renderer = None
+        self.render_options = mujoco.MjvOption()
+        self.render_options.geomgroup[0] = 0  # match viewer: hide collision meshes
         self.capture_camera = mujoco.MjvCamera()
         self.capture_camera.lookat[:] = [0, 0, 1]
         self.capture_camera.distance = 4.3
@@ -276,7 +278,7 @@ class Reference:
             self.capture_camera.lookat[:] = c.lookat
             for attr in ['distance', 'azimuth', 'elevation']:
                 setattr(self.capture_camera, attr, getattr(c, attr))
-        self.renderer.update_scene(d, camera=self.capture_camera)
+        self.renderer.update_scene(d, camera=self.capture_camera, scene_option=self.render_options)
         return self.renderer.render()
 
     def begin(self):
