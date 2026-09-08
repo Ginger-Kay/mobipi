@@ -34,7 +34,8 @@ released when the application exits. No recording occurs in practice.
    successes automatically finish recording; this alone does not qualify A.
 4. Replay last attempt. It restores the recorded source and feeds actions with
    no keyboard listener influence; the live viewer is detached during replay
-   so mouse perturbations cannot influence physics. Replay video is separate.
+   so mouse perturbations cannot influence physics. A view-only preview shows
+   the rendered frames and step progress. Replay video is saved separately.
 5. Inspect original/replay, contact traces and base/arm/target progression.
    Only after review label a successful A reference. Prioritize Drawer, then
    Door, then same-source E/D. E commands zero base velocity; D does so after
@@ -92,6 +93,10 @@ Add `--source /absolute/source-directory` to resume a saved source, or
 keyboard device. Saved source env_config overrides task/layout/controller
 defaults. For a new Door run use `--task CloseSingleDoor`, then inspect the
 selected target fixture before freezing a source.
+
+Use `--resume-attempt /absolute/source/A/attempt-directory` to reopen the
+interactive interface paused at that source, with F9 pointing to the saved
+attempt. Existing recordings remain untouched.
 
 `--self-test` is an explicitly labelled engineering diagnostic: short mixed
 commands, actual base/arm movement, HDF5/video and action replay. It does not

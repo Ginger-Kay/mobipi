@@ -94,6 +94,29 @@ class Keyboard:
             return key_actions(keys, self.grasp, locked), sorted(keys)
 
 
+class ReplayPreview:
+    """Display rendered replay frames without exposing a physics viewer."""
+
+    def __init__(self, panel):
+        import tkinter as tk
+        self.window = tk.Toplevel(panel)
+        self.window.title('MobiWAM replay (view only)')
+        self.window.geometry('1200x900+0+0')
+        self.window.protocol('WM_DELETE_WINDOW', lambda: None)
+        self.label = tk.Label(self.window, bg='black')
+        self.label.pack(fill='both', expand=True)
+
+    def show(self, frame):
+        from PIL import Image, ImageTk
+        img = Image.fromarray(frame)
+        img.thumbnail((1200, 900))
+        self.image = ImageTk.PhotoImage(img, master=self.window)
+        self.label.configure(image=self.image)
+
+    def close(self):
+        self.window.destroy()
+
+
 class Reference:
     def __init__(self, args):
         self.args = args
@@ -113,6 +136,8 @@ class Reference:
         requested_source = Path(args.source) if args.source else None
         if args.replay_attempt:
             requested_source = Path(args.replay_attempt).resolve().parent.parent
+        elif args.resume_attempt:
+            requested_source = Path(args.resume_attempt).resolve().parent.parent
         if requested_source:
             self.config = json.loads((requested_source.parent / 'env_config.json').read_text())
             self.config['has_renderer'] = not (args.self_test or args.replay_attempt)
@@ -125,7 +150,8 @@ class Reference:
         assert self.robot.part_controllers['right'].input_type == 'delta'
         self.source = requested_source
         self.recording = None
-        self.last_attempt = Path(args.replay_attempt) if args.replay_attempt else None
+        last_attempt = args.replay_attempt or args.resume_attempt
+        self.last_attempt = Path(last_attempt) if last_attempt else None
         self.route = 'A'
         self.docked = False
         self.renderer = None
@@ -146,7 +172,7 @@ class Reference:
         self.env.renderer_config = {'cam_config': camera}
         self.apply_camera(camera)
         self.keyboard = None if (args.self_test or args.replay_attempt) else Keyboard()
-        self.paused = False
+        self.paused = bool(requested_source)
         self.panel = None
         self.message = 'Practice only. No data is being recorded.'
         self.base_body = self.robot.robot_model.base.root_body
@@ -378,14 +404,28 @@ class Reference:
         self.env.viewer = None
         self.env.has_renderer = False
         errors = []
+        preview = None
         try:
+            if self.panel:
+                preview = ReplayPreview(self.panel)
             for i, action in enumerate(actions):
+                tick = time.monotonic()
                 self.env.step(action)
                 errors.append(float(np.max(np.abs(self.env.sim.get_state().flatten() - states[i+1]))))
-                video.append_data(self.frame(cameras[i]))
-                time.sleep(.05)
+                frame = self.frame(cameras[i])
+                video.append_data(frame)
+                if preview:
+                    preview.show(frame)
+                    self.message = f'Replaying {i+1}/{len(actions)}. Robot input disabled.'
+                    self.update_panel('REPLAY')
+                    self.keyboard.clear()
+                    while not self.keyboard.commands.empty():
+                        self.keyboard.commands.get_nowait()
+                time.sleep(max(0, .05 - (time.monotonic() - tick)))
         finally:
             video.close()
+            if preview:
+                preview.close()
             self.env.has_renderer = had_renderer
             self.env.viewer = live_viewer
             if live_viewer:
@@ -444,8 +484,12 @@ class Reference:
         while self.keyboard_display.pending_events():
             self.keyboard_display.next_event()
         mode = mode or ('PAUSED' if self.paused else 'RECORDING' if self.recording else 'PRACTICE')
-        steps = self.recording['n'] if self.recording else 0
-        self.status_label.config(text=f'{mode} | human {self.route}\nSteps: {steps}\n{self.message}')
+        steps = self.recording['n'] if self.recording else '-'
+        target_status = ''
+        if self.args.task == 'CloseDrawer':
+            opening = max(self.env.drawer.get_door_state(env=self.env).values())
+            target_status = f'\nTarget drawer: {opening:.1%} open (goal <=5%)'
+        self.status_label.config(text=f'{mode} | human {self.route}\nSteps: {steps}{target_status}\n{self.message}')
         self.panel.update()
         if not self.panel_ready and self.env.viewer and self.env.viewer.viewer:
             from Xlib import display
@@ -549,6 +593,7 @@ def main():
     p.add_argument('--self-test', action='store_true')
     p.add_argument('--source', help='Resume practice/collection from an existing source directory')
     p.add_argument('--replay-attempt', help='Replay an existing attempt with no input device')
+    p.add_argument('--resume-attempt', help='Resume paused interactive UI with an existing attempt available for F9')
     args = p.parse_args()
     ref = Reference(args)
     try:
