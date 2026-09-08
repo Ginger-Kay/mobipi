@@ -425,7 +425,24 @@ class Reference:
                  fg='white', bg='#243447', font=('sans', 12), justify='left').pack(padx=12, pady=12)
         self.panel_ready = False
 
+        # This application owns a dedicated X desktop. Route keyboard events
+        # away from MuJoCo's built-in shortcuts (W toggles wireframe, etc.).
+        # pynput's XRecord listener still receives the events; mouse events
+        # remain ungrabbed for camera navigation and the control panel.
+        from Xlib import X, display
+        self.panel.update()
+        self.keyboard_display = display.Display()
+        status = self.keyboard_display.screen().root.grab_keyboard(
+            False, X.GrabModeAsync, X.GrabModeAsync, X.CurrentTime)
+        self.keyboard_display.sync()
+        if status != X.GrabSuccess:
+            self.keyboard_display.close()
+            raise RuntimeError(f'Cannot isolate teleoperation keyboard: X grab status {status}')
+        print('KEYBOARD ISOLATED: viewer shortcuts disabled; mouse camera active', flush=True)
+
     def update_panel(self, mode=None):
+        while self.keyboard_display.pending_events():
+            self.keyboard_display.next_event()
         mode = mode or ('PAUSED' if self.paused else 'RECORDING' if self.recording else 'PRACTICE')
         steps = self.recording['n'] if self.recording else 0
         self.status_label.config(text=f'{mode} | human {self.route}\nSteps: {steps}\n{self.message}')
@@ -514,6 +531,9 @@ class Reference:
         finally:
             self.finish('process_exit')
             self.keyboard.listener.stop()
+            from Xlib import X
+            self.keyboard_display.ungrab_keyboard(X.CurrentTime)
+            self.keyboard_display.close()
             self.panel.destroy()
 
 

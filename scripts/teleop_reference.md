@@ -13,8 +13,11 @@ Mouse operations are for observing the scene, not applying physical perturbation
 The panel provides practice, pause, save source, record, finish, contact/dock
 markers, route selection, restore, and replay. Equivalent shortcuts are
 F1/F2/F3/F4/F5/F6/F8/F9; Esc pauses/resumes. Browser shortcuts may intercept
-function keys, so the panel is preferred. After using the panel, click the
-viewer before sending keyboard input. No recording occurs in practice.
+function keys, so the panel is preferred. The application must run on its own
+dedicated X desktop: it grabs keyboard delivery while pynput observes input,
+preventing MuJoCo display shortcuts from also reacting to control keys.
+Mouse camera navigation and panel buttons remain available. The grab is
+released when the application exits. No recording occurs in practice.
 
 ## Operator sequence
 
