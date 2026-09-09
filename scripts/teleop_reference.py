@@ -386,6 +386,8 @@ class Reference:
         group = h.create_group('data/demo_0')
         group.attrs['model_file'] = (self.source / 'model.xml').read_text()
         group.attrs['env_info'] = json.dumps(self.config)
+        group.attrs['ep_meta'] = (self.source / 'ep_meta.json').read_text()
+        group.attrs['target_binding'] = (self.root / 'target-binding.json').read_text()
         group.create_dataset('initial_integration', data=self.integration())
         state = self.env.sim.get_state().flatten()
         for name, shape in [('actions', (self.env.action_dim,)), ('states', (len(state),))]:
