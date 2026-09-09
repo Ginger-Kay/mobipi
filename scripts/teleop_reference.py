@@ -133,6 +133,9 @@ class Reference:
                            render_camera=None, ignore_done=True,
                            renderer_config={'cam_config': {'lookat': [0, 0, 1],
                                'distance': 4.3, 'azimuth': 180, 'elevation': -20}})
+        if args.task == 'CloseSingleDoor':
+            from robocasa.models.fixtures import FixtureType
+            self.config['door_id'] = int(FixtureType.MICROWAVE)
         requested_source = Path(args.source) if args.source else None
         if args.replay_attempt:
             requested_source = Path(args.replay_attempt).resolve().parent.parent
@@ -155,6 +158,8 @@ class Reference:
         self.route = 'A'
         self.docked = False
         self.renderer = None
+        self.observation_renderer = None
+        self.policy_cameras = ['robot0_agentview_left', 'robot0_agentview_right', 'robot0_eye_in_hand']
         self.render_options = mujoco.MjvOption()
         self.render_options.geomgroup[0] = 0  # match viewer: hide collision meshes
         self.capture_camera = mujoco.MjvCamera()
@@ -190,6 +195,67 @@ class Reference:
             'control_dt': .05, 'label': self.label,
             'formal_obc_split': 'excluded', 'code_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'versions': {'robocasa': robocasa.__version__, 'robosuite': robosuite.__version__, 'mujoco': mujoco.__version__}})
+        self.verify_target()
+
+    def verify_target(self):
+        fixture = self.env.drawer if self.args.task == 'CloseDrawer' else self.env.door_fxtr
+        if self.args.task == 'CloseSingleDoor':
+            from robocasa.models.fixtures import Microwave
+            assert isinstance(fixture, Microwave), 'CloseSingleDoor must target the microwave for this collection'
+        m, d = self.model_data()
+        joints = []
+        for i in range(m.njnt):
+            name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, i) or ''
+            if name.startswith(fixture.name + '_'):
+                joints.append({'name': name, 'joint_id': i, 'qpos_address': int(m.jnt_qposadr[i]),
+                               'qpos': float(d.qpos[m.jnt_qposadr[i]]), 'range': m.jnt_range[i].copy()})
+        assert joints, 'No target joint found'
+        if self.args.task == 'CloseSingleDoor':
+            # This pinned fork indexes qpos by joint id in Microwave.get_door_state.
+            # Fail closed if the model ordering would make that read another joint.
+            hinge = next(j for j in joints if j['name'].endswith('_microjoint'))
+            assert hinge['joint_id'] == hinge['qpos_address'], 'Microwave checker joint indexing mismatch'
+        write_json(self.root / 'target-binding.json', {'verified_at': stamp(),
+            'task': self.args.task, 'fixture_name': fixture.name, 'fixture_class': type(fixture).__name__,
+            'language': self.env.get_ep_meta()['lang'], 'joints': joints,
+            'opening': fixture.get_door_state(env=self.env), 'checker_success': bool(self.env._check_success()),
+            'formal_train_ready': False, 'scope': 'development human references'})
+        self.target_name = 'DRAWER' if self.args.task == 'CloseDrawer' else 'MICROWAVE DOOR'
+
+    def append_observation(self, group):
+        """State-aligned raw observations, independent of the free viewing camera."""
+        values = dict(self.env._get_observations(force_update=True))
+        m, d = self.model_data()
+        if self.observation_renderer is None:
+            self.observation_renderer = mujoco.Renderer(m, height=256, width=256)
+        poses = []
+        for camera in self.policy_cameras:
+            cid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, camera)
+            assert cid >= 0, f'Missing policy camera {camera}'
+            self.observation_renderer.update_scene(d, camera=camera, scene_option=self.render_options)
+            values[camera + '_image'] = self.observation_renderer.render().copy()
+            pose = np.eye(4)
+            pose[:3, :3] = d.cam_xmat[cid].reshape(3, 3)
+            pose[:3, 3] = d.cam_xpos[cid]
+            poses.append(pose)
+        values['camera_to_world'] = np.asarray(poses)
+        values['sim_time'] = np.asarray(d.time)
+        obs = group.require_group('obs')
+        for key, value in values.items():
+            value = np.asarray(value)
+            if value.dtype.kind not in 'buif':
+                continue
+            if key not in obs:
+                obs.create_dataset(key, shape=(0,) + value.shape, maxshape=(None,) + value.shape,
+                    chunks=(1,) + value.shape, dtype=value.dtype, compression='lzf')
+            ds = obs[key]
+            ds.resize(ds.shape[0] + 1, axis=0)
+            ds[-1] = value
+        obs.attrs['alignment'] = 'obs[t] and states[t] precede actions[t]; includes final obs[T]'
+        obs.attrs['image_convention'] = 'RGB uint8 HWC top-left origin; native mujoco.Renderer'
+        obs.attrs['camera_names'] = json.dumps(self.policy_cameras)
+        obs.attrs['camera_fovy_degrees'] = [float(m.cam_fovy[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, c)]) for c in self.policy_cameras]
+        obs.attrs['history'] = 'contiguous 20Hz observations; no free-view camera inputs'
 
     def model_data(self):
         return self.env.sim.model._model, self.env.sim.data._data
@@ -237,6 +303,7 @@ class Reference:
         source = self.root / ('source-' + identifier())
         source.mkdir()
         (source / 'model.xml').write_text(self.env.sim.model.get_xml())
+        (source / 'target-binding.json').write_text((self.root / 'target-binding.json').read_text())
         np.save(source / 'integration.npy', self.integration())
         write_json(source / 'ep_meta.json', self.env.get_ep_meta())
         write_json(source / 'rng.json', self.env.rng.bit_generator.state)
@@ -251,6 +318,9 @@ class Reference:
         return source
 
     def restore(self):
+        if self.observation_renderer is not None:
+            self.observation_renderer.close()
+            self.observation_renderer = None
         assert self.source is not None, 'Press F1 to save a source first.'
         if self.renderer is not None:
             self.renderer.close()
@@ -283,6 +353,7 @@ class Reference:
             self.panel_ready = False
         source_info = json.loads((self.source / 'source.json').read_text())
         self.apply_camera(source_info.get('camera', self.camera_state()))
+        self.verify_target()
         if self.env.viewer is not None:
             self.env.viewer.update()
 
@@ -321,11 +392,13 @@ class Reference:
             group.create_dataset(name, shape=(0,) + shape, maxshape=(None,) + shape, dtype='f8')
         group['states'].resize(1, axis=0)
         group['states'][0] = state
+        self.append_observation(group)
         video = imageio.get_writer(path / 'original.mp4', fps=20, codec='libx264',
                                    quality=7, macro_block_size=None)
         self.recording = {'path': path, 'h': h, 'group': group, 'video': video,
                           'trace': (path / 'trace.jsonl').open('w'),
                           'n': 0, 'started': stamp(), 'events': [], 'success_streak': 0}
+        self.recording['camera'] = self.camera_state()
         self.paused = False
         self.message = 'Recording. Stop saves this attempt, including failures.'
         write_json(path / 'status.json', {'status': 'recording', 'route': self.route,
@@ -343,8 +416,9 @@ class Reference:
             g['actions'][n] = action
             g['states'].resize(n + 2, axis=0)
             g['states'][n + 1] = self.env.sim.get_state().flatten()
+            self.append_observation(g)
             after = self.trace()
-            frame = self.frame()
+            frame = self.frame(r['camera'])
             r['trace'].write(json.dumps({'step': n, 'wall_time': stamp(), 'keys': keys,
                 'before': before, 'after': after, 'camera': {
                     'lookat': self.capture_camera.lookat.copy(),
@@ -371,6 +445,9 @@ class Reference:
                   'collision_and_A_qualification': 'not_verified', 'replay': 'pending',
                   'state_alignment': 'states[0] before actions[0]; states[t+1] after actions[t]',
                   'video_alignment': 'frame[t] after actions[t], 20 simulation Hz; wall clock may be slower'}
+        r['group'].attrs['num_samples'] = r['n']
+        r['h']['data'].attrs['total'] = r['n']
+        r['h']['data'].attrs['env_args'] = json.dumps({'env_name': self.args.task, 'type': 1, 'env_kwargs': self.config})
         r['h'].close()
         r['trace'].close()
         r['video'].close()
@@ -486,9 +563,9 @@ class Reference:
         mode = mode or ('PAUSED' if self.paused else 'RECORDING' if self.recording else 'PRACTICE')
         steps = self.recording['n'] if self.recording else '-'
         target_status = ''
-        if self.args.task == 'CloseDrawer':
-            opening = max(self.env.drawer.get_door_state(env=self.env).values())
-            target_status = f'\nTarget drawer: {opening:.1%} open (goal <=5%)'
+        fixture = self.env.drawer if self.args.task == 'CloseDrawer' else self.env.door_fxtr
+        opening = max(fixture.get_door_state(env=self.env).values())
+        target_status = f'\n{self.target_name}: {opening:.1%} open (goal <=5%)'
         self.status_label.config(text=f'{mode} | human {self.route}\nSteps: {steps}{target_status}\n{self.message}')
         self.panel.update()
         if not self.panel_ready and self.env.viewer and self.env.viewer.viewer:
@@ -503,6 +580,23 @@ class Reference:
         self.panel.lift()
 
     def self_test(self):
+        if self.args.task == 'CloseSingleDoor':
+            m, d = self.model_data()
+            state = self.integration()
+            jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, self.env.door_fxtr.name + '_microjoint')
+            checks = []
+            try:
+                for angle, expected in [(-np.pi/2, False), (0., True)]:
+                    d.qpos[m.jnt_qposadr[jid]] = angle
+                    mujoco.mj_forward(m, d)
+                    observed = bool(self.env._check_success())
+                    checks.append({'angle': angle, 'expected': expected, 'observed': observed})
+                    assert observed == expected, 'Checker does not follow the bound microwave door'
+            finally:
+                mujoco.mj_setState(m, d, state, self.kind)
+                mujoco.mj_forward(m, d)
+            write_json(self.root / 'checker-binding-test.json', {'checks': checks,
+                'engineering_only': True, 'initial_state_restored': True})
         self.freeze()
         self.begin()
         before = self.trace()
@@ -604,6 +698,7 @@ def main():
         else:
             ref.run()
     finally:
+        if ref.observation_renderer is not None: ref.observation_renderer.close()
         if ref.renderer is not None: ref.renderer.close()
         ref.env.close()
 

@@ -44,6 +44,22 @@ released when the application exits. No recording occurs in practice.
 
 ## Artifacts and limits
 
+For new CloseSingleDoor references the task explicitly selects FixtureType.MICROWAVE
+and verifies the actual fixture class and door joint/checker indexing. Target name,
+opening and threshold are displayed; target-binding.json accompanies the source.
+Old Drawer episodes are never relabelled. These remain development references,
+not approved formal training data.
+
+New episodes additionally save obs[t] aligned to states[t], including the final
+observation after the last action. Numeric environment observations and three
+fixed model cameras (robot0_agentview_left, robot0_agentview_right,
+robot0_eye_in_hand) are saved at 256x256 RGB uint8 HWC, top-left image origin,
+with camera-to-world transforms and vertical FOV. Consecutive observations
+provide history; downstream preprocessing must honor these recorded conventions.
+The free-view video camera is frozen at recording start. Model cameras are
+independent of mouse viewing controls. Raw sequence reading does not establish
+formal OBC feature/schema readiness or approve a train/validation/test split.
+
 Every source has model XML, full MuJoCo integration state, episode metadata,
 RNG state and an initial trace. Restoration reloads XML, installs state,
 refreshes controller origins/state and initializes OSC achieved goals in its
@@ -59,8 +75,9 @@ checker result. Exact replay is a diagnostic, not scientific source identity.
 
 Recorded frame rate is 20 simulation Hz, default 1920x1080. Wall-clock speed
 depends on hardware; trace wall times distinguish slow execution from realtime.
-Policy observations are reconstructible from recorded state/model/config;
-this entry does not directly export a policy-ready observation dataset.
+Older episodes without obs remain reconstructible from state/model/config;
+their files are retained unchanged. New raw obs sequences require the target
+training pipeline's preprocessing and feature checks before training.
 Contact pairs are recorded without automatically classifying allowed contacts.
 Neither collision safety, same-source fairness nor the 5 cm / 40% / 80% A
 criteria is inferred merely from task success. Those remain post-record review.
