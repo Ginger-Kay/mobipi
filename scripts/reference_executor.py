@@ -117,6 +117,20 @@ def run_route(ref, route, points, horizon):
                 log.flush();print(route,step,stage,index,'errors',round(pe,4),round(be,4),flush=True)
             if not ref.recording:
                 reason='checker_success_10_steps';break
+            # Stop on observed non-finger environmental contact. This is a
+            # post-step development guard, not continuous collision certification.
+            contacts=ref.trace()['contacts']
+            unsafe=[]
+            for contact in contacts:
+                names=[contact['geom1'] or '',contact['geom2'] or '']
+                robot=[n for n in names if n.startswith(('robot0_','gripper0_','mobilebase0_'))]
+                world=[n for n in names if n not in robot]
+                if len(robot)!=1 or not world or 'floor' in world[0]:continue
+                if 'finger' in robot[0] and world[0].startswith(('microwave_main_group','stack_4_main_group_2')):continue
+                unsafe.append(contact)
+            if unsafe:
+                write_json(path/'contact-stop.json',dict(step=step,contacts=unsafe))
+                reason='nonfinger_environment_contact';break
             # Treat stalled geometry as a valid development outcome, not mechanical retry.
             if stuck>=180:
                 reason='tracking_stall';break
