@@ -68,7 +68,7 @@ def plan_dock(ref,points):
                 for j in range(m.njnt):
                     name=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) or ''
                     if name.startswith('gripper0_') and m.jnt_limited[j]:
-                        scratch.qpos[m.jnt_qposadr[j]]=m.jnt_range[j,1]
+                        scratch.qpos[m.jnt_qposadr[j]]=m.jnt_range[j,np.argmax(np.abs(m.jnt_range[j]))]
                 scratch.qpos[base.qpos_index]=(1-f)*d.qpos[base.qpos_index]+f*dock
                 mujoco.mj_forward(m,scratch)
                 for c in scratch.contact:
