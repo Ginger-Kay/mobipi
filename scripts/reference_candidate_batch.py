@@ -11,6 +11,7 @@ from mobiwam.reference_feature_interface import assemble_input
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True)
     p.add_argument('--contexts',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--planning-stage',default='safety-refresh',help='Planning subdirectory within run; default retains v17 compatibility')
     args=p.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     plan=json.loads((args.run/'plan.json').read_text())
     context_manifest=json.loads((args.contexts/'manifest.json').read_text())
@@ -23,7 +24,7 @@ def main():
         for filename in ('model.xml','integration.npy'):
             if sha256_file(context_source/filename)!=sha256_file(Path(cfg['source'])/filename):
                 raise ValueError('Source identity differs from frozen context: '+label)
-        candidate_path=args.run/'safety-refresh'/label/'run/planning/candidate-features.json'
+        candidate_path=args.run/args.planning_stage/label/'run/planning/candidate-features.json'
         candidates=json.loads(candidate_path.read_text());context=np.load(path,allow_pickle=False)
         for row in candidates['records']:
             vector=assemble_input(context,row['features']);arrays.append(vector)

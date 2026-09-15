@@ -17,6 +17,7 @@ from scipy.spatial.transform import Rotation
 from teleop_reference import Reference, write_json, stamp
 from reference_control_diagnostics import capture
 from reference_planning import compile_candidates
+from mobiwam.reference_dispatch import rejection_reason
 from reference_geometry import plan_dock, PalmClearance, adjust_reference, translation_limit
 
 
@@ -220,6 +221,7 @@ def run_route(ref, route, points, horizon):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--reference',required=True);p.add_argument('--output',required=True)
     p.add_argument('--source');p.add_argument('--plan-only',action='store_true')
+    p.add_argument('--require-full-plan',action='store_true',help='Reject any requested route without a hard-valid complete geometric plan')
     p.add_argument('--routes',default='A,E,D');p.add_argument('--horizon',type=int,default=2400)
     args=p.parse_args();out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=True)
     attempt=Path(args.reference).resolve();original_source=attempt.parent.parent
@@ -232,7 +234,7 @@ def main():
         shutil.copy2(source/name,dest/name)
     shutil.copy2(source.parent/'env_config.json',out/'env_config.json')
     write_json(out/'executor-spec.json',dict(created_at=stamp(),version='reference-feedback-v17',reference=str(attempt),
-        source=str(source),routes=args.routes,horizon=args.horizon,source_sha256=hashlib.sha256((source/'integration.npy').read_bytes()).hexdigest(),
+        source=str(source),routes=args.routes,horizon=args.horizon,require_full_plan=args.require_full_plan,source_sha256=hashlib.sha256((source/'integration.npy').read_bytes()).hexdigest(),
         scope='development_only',policy_replacement=True,base_speed_caps=dict(CloseDrawer=.015,CloseSingleDoor=.09),translation_action_caps=dict(CloseDrawer=.10,CloseSingleDoor=.20,CloseSingleDoor_locked_base_bilateral_handle_contact=.40),contact_model='slide-joint co-motion only under bilateral pad contact; other fixtures retain static guard',feedback='achieved OSC pose deltas; measured waypoint advancement; generalized-base position servo',
         limitations=['same-source prototype','palm local linear guard, not full swept collision validator','development 21D planning feature export; formal binding pending','D checks Source-to-stow-to-dock geometric swept path; OSC execution can deviate'],
         inputs='live simulator robot kinematics, current target joint and contact plus frozen demonstration geometry; no new-route future outcome input'))
@@ -249,8 +251,9 @@ def main():
         results=[]
         for route in ([] if args.plan_only else args.routes.split(',')):
             if route not in ('A','E','D'):raise ValueError(route)
-            if route=='D' and not preflight['D_prefix_executable']:
-                write_json(out/'D-planning-rejected.json',dict(reason='no_ik_and_swept_prefix_valid_dock',new_route_outcome=False));continue
+            rejection=rejection_reason(preflight,route,args.require_full_plan)
+            if rejection:
+                write_json(out/f'{route}-planning-rejected.json',dict(reason=rejection,new_route_outcome=False));continue
             results.append(run_route(ref,route,points,args.horizon))
         write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results))
     except BaseException:
