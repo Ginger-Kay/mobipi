@@ -16,7 +16,9 @@ from mobiwam.scene004 import candidate_feature_vector
 from reference_prefix_preview import preview_prefix
 
 
-SPEC=dict(version='reference-geometric-candidate-v2',collision_margin_m=.0005,
+SPEC=dict(version='reference-geometric-candidate-v3',collision_margin_m=.0005,
+          distance_backend='MuJoCo 3.2.6 native GJK/EPA on private model copy; live physics unchanged',
+          distance_tolerance_m=1e-9,distance_max_iterations=1000,
           manipulation_solver='bounded sequential collision-constrained pose IK',solver_clearance_buffer_m=.001,
           manipulation_refinement_max_depth=6,
           swept_max_depth=12,pose_spacing_m=.015,rotation_spacing_rad=.08,

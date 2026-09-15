@@ -16,7 +16,7 @@ def distance_rows(check, q, phase, dofs, activation=.02):
     rotational = jac_a.copy(); rows = []
     for i in active:
         a, b = map(int, pairs[i]); segment = np.zeros(6)
-        distance = mujoco.mj_geomDistance(check.m, check.d, a, b, .10, segment)
+        distance = check.geom_distance(a, b, .10, segment)
         normal = segment[3:] - segment[:3]
         length = np.linalg.norm(normal)
         if length < 1e-12:

@@ -4,13 +4,22 @@ No environment step, controller update, outcome or future recording is read.
 Certification applies to the supplied geometric path, not an OSC rollout.
 """
 from __future__ import annotations
+import copy
 import numpy as np
 import mujoco
 
 
 class SweptGeometry:
     def __init__(self, model, *, target_prefix='', margin=0.0005, max_depth=12):
-        self.m=model; self.d=mujoco.MjData(model); self.margin=margin
+        # 3.2.6's legacy libccd distance path uses distmax as an inflation
+        # margin and can report cap-dependent signed distances for mesh pairs.
+        # Use native GJK/EPA only on an independent geometry model: never
+        # change live simulation/contact solver flags or physical parameters.
+        self.m=copy.copy(model)
+        self.m.opt.enableflags |= int(mujoco.mjtEnableBit.mjENBL_NATIVECCD)
+        self.m.opt.ccd_tolerance=1e-9
+        self.m.opt.ccd_iterations=1000
+        self.d=mujoco.MjData(self.m); self.margin=margin
         if model.npair:
             raise ValueError('explicit geom-pair overrides need an adapter; fail closed')
         self.max_depth=max_depth; self.target_prefix=target_prefix
@@ -69,6 +78,20 @@ class SweptGeometry:
                 reach+=float(np.linalg.norm(model.body_pos[body]))+extra
         self.evaluations=0
 
+    def geom_distance(self,a,b,ceiling=.10,segment=None):
+        # NativeCCD in 3.2.6 returns before mj_geomDistance restores the input
+        # geom order. Call with canonical type order and restore witnesses
+        # ourselves, so signed-distance Jacobians use the correct two bodies.
+        flip=self.m.geom_type[a]>self.m.geom_type[b]
+        first,second=(b,a) if flip else (a,b)
+        value=mujoco.mj_geomDistance(self.m,self.d,int(first),int(second),ceiling,segment)
+        if flip and segment is not None:
+            segment[:]=np.r_[segment[3:].copy(),segment[:3].copy()]
+        if not np.isfinite(value):raise ValueError('non-finite geometry distance; fail closed')
+        # NativeCCD returns mjMAXVAL when separation exceeds dist_cutoff.
+        # Keep the advertised finite ceiling as a lower bound, not 1e10.
+        return min(float(value),ceiling)
+
     def motion_bounds(self,q0,q1):
         """Per-geometry point displacement upper bounds along q-linear paths.
 
@@ -99,7 +122,7 @@ class SweptGeometry:
         lower[plane]=-np.inf
         near=np.flatnonzero(lower<.10)
         values=np.minimum(lower,.10)
-        for i in near:values[i]=mujoco.mj_geomDistance(m,d,int(a[i]),int(b[i]),.10,None)
+        for i in near:values[i]=self.geom_distance(a[i],b[i])
         return pairs,values
 
     def segment(self,q0,q1,phase,depth=0):
