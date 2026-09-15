@@ -15,7 +15,7 @@ import mujoco
 import h5py
 from scipy.spatial.transform import Rotation
 from teleop_reference import Reference, write_json, stamp
-from reference_geometry import plan_dock, PalmClearance
+from reference_geometry_v5 import plan_dock, PalmClearance
 
 
 def orientation_error(target, current):
