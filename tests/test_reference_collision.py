@@ -35,3 +35,39 @@ def test_scratch_check_does_not_mutate_model_or_live_data():
     SweptGeometry(model).path([[-.4],[-.2]],['navigate'])
     np.testing.assert_array_equal(before,live.qpos)
     np.testing.assert_array_equal(mask,model.geom_contype)
+
+
+def test_thin_obstacle_between_initial_midpoint_and_endpoint_is_detected():
+    model=mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+      <geom name="obstacle" type="sphere" size=".005" pos=".15 0 0"/>
+      <body><joint type="slide" axis="1 0 0"/>
+        <geom name="robot0_collision" type="sphere" size=".01" mass="1"/>
+      </body></worldbody></mujoco>''')
+    result=SweptGeometry(model).path([[-.3],[.3]],['navigate'])
+    assert not result['valid'] and result['kind']=='collision'
+
+
+def test_unresolved_interval_never_becomes_safe_at_depth_limit():
+    model=slider_model()
+    result=SweptGeometry(model,max_depth=0).path([[-.5],[-.2]],['navigate'])
+    assert not result['valid'] and result['kind']=='clearance_unresolved'
+
+
+def test_hinge_and_slider_motion_bound_covers_geometry_surface():
+    model=mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+      <body pos=".2 0 0"><joint type="hinge" axis="0 0 1" pos=".05 0 0"/>
+      <geom name="robot0_link" size=".03" mass="1"/>
+      <body pos=".4 0 0"><joint type="slide" axis="1 0 0"/>
+      <geom name="robot0_tip" type="box" size=".08 .02 .03" pos=".1 0 0" mass="1"/>
+      </body></body></worldbody></mujoco>''')
+    check=SweptGeometry(model);data=mujoco.MjData(model)
+    q0=np.array([-.7,-.1]);q1=np.array([.9,.2]);bound=check.motion_bounds(q0,q1)
+    points=np.array([[1.,0,0],[-1.,0,0],[0,1.,0],[0,0,1.]])
+    def surface(q):
+        data.qpos[:]=q;mujoco.mj_forward(model,data)
+        return np.array([data.geom_xpos[g]+points@data.geom_xmat[g].reshape(3,3).T*model.geom_rbound[g]
+                         for g in range(model.ngeom)])
+    start=surface(q0)
+    for t in np.linspace(.05,1,21):
+        actual=np.linalg.norm(surface((1-t)*q0+t*q1)-start,axis=2).max(axis=1)
+        assert np.all(actual<=t*bound+1e-12)
