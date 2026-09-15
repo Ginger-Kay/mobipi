@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 from teleop_reference import Reference, write_json, stamp
 import numpy as np
+import h5py
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--attempt',required=True);p.add_argument('--output',required=True);args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--attempt',required=True);p.add_argument('--output',required=True)
+    p.add_argument('--state-only',action='store_true',help='Verify dynamics without generating another video')
+    args=p.parse_args()
     attempt=Path(args.attempt).resolve()
     result=json.loads((attempt/'result.json').read_text())
     events=result['events']
@@ -34,9 +37,22 @@ def main():
         return original_step(action)
     ref.env.step=step
     try:
-        errors=ref.replay()
+        if args.state_only:
+            ref.restore()
+            with h5py.File(attempt/'demo.hdf5') as h:
+                actions=h['data/demo_0/actions'][:];states=h['data/demo_0/states'][:]
+            if len(states)!=len(actions)+1 or not np.isfinite(states).all() or not np.isfinite(actions).all():
+                raise ValueError('invalid replay state/action alignment')
+            initial_error=float(np.max(abs(ref.env.sim.get_state().flatten()-states[0])))
+            if initial_error>1e-10:raise ValueError('replay Source differs from recorded initial state')
+            errors=[]
+            for i,action in enumerate(actions):
+                ref.env.step(action)
+                errors.append(float(np.max(abs(ref.env.sim.get_state().flatten()-states[i+1]))))
+            write_json(Path(args.output)/'state-errors.json',dict(initial_error=initial_error,state_errors=errors))
+        else:errors=ref.replay()
         if set(applied)!=resets:raise AssertionError('Not all recorded events applied')
-        write_json(Path(args.output)/'completed.json',dict(ended_at=stamp(),attempt=str(attempt),steps=count,applied_reset_steps=applied,max_state_abs_error=max(errors),checker_success=bool(ref.env._check_success()),scope='protocol-aware action replay; no trajectory correction or state injection'))
+        write_json(Path(args.output)/'completed.json',dict(ended_at=stamp(),attempt=str(attempt),steps=count,applied_reset_steps=applied,max_state_abs_error=max(errors),checker_success=bool(ref.env._check_success()),video_generated=not args.state_only,scope='protocol-aware action replay; no trajectory correction or state injection'))
     finally:
         ref.env.step=original_step
         if ref.observation_renderer is not None:ref.observation_renderer.close()
