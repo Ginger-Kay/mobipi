@@ -1,7 +1,7 @@
 import mujoco
 import numpy as np
 from mobiwam.reference_collision import SweptGeometry
-from mobiwam.reference_ik import constrained_pose_ik, distance_rows
+from mobiwam.reference_ik import constrained_pose_ik, distance_rows, swept_pose_segment
 
 
 def model_and_data():
@@ -44,3 +44,20 @@ def test_conflicting_pose_does_not_relax_collision_constraint():
     assert pe > .05  # target is impossible without penetrating the wall
     assert receipt['minimum_endpoint_distance_m'] >= .000999
     assert not receipt['collision_gate_relaxed']
+
+
+def test_refinement_removes_between_waypoint_collision_without_moving_obstacle():
+    model = mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+      <geom name="obstacle" type="sphere" size=".005"/>
+      <body><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>
+      <joint type="slide" axis="0 0 1"/><geom name="robot0_hand" size=".005" mass="1"/>
+      <site name="eef"/></body></worldbody></mujoco>''')
+    data = mujoco.MjData(model); check = SweptGeometry(model)
+    start = np.array([-.03,.009,0.]); end = np.array([.03,.009,0.])
+    assert not check.path([start, end], ['manipulate'])['valid']
+    states, errors, receipts = swept_pose_segment(model, data, 0, np.arange(3), np.arange(3),
+        dict(pos=end, rot=np.eye(3)), start, end, np.array([[-1.,1.]]*3), check)
+    assert len(states) > 1
+    assert check.path([start]+states, ['manipulate']*len(states))['valid']
+    assert max(e[0] for e in errors) < .009
+    np.testing.assert_array_equal(model.geom_pos[0], np.zeros(3))

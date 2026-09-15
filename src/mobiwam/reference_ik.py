@@ -6,7 +6,7 @@ same pair set as SweptGeometry; acceptance still requires its swept validator.
 import mujoco
 import numpy as np
 from scipy.optimize import minimize
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 
 def distance_rows(check, q, phase, dofs, activation=.02):
@@ -79,3 +79,33 @@ def constrained_pose_ik(model, data, site, qids, dofs, target, seed, limits,
                    rotation_error_rad=re, minimum_endpoint_distance_m=float(min(distances, default=.10)),
                    solver_buffer_m=buffer, collision_gate_relaxed=False)
     return data.qpos[qids].copy(), pe, re, receipt
+
+
+def swept_pose_segment(model, data, site, qids, dofs, target, start, external,
+                       limits, check, depth=0, max_depth=6, buffer=.001):
+    """Refine a colliding chord into constrained midpoint pose segments.
+
+    Base, fixture and finger coordinates follow the same interpolation as the
+    nominal plan. Only robot arm IK is solved; free objects are never moved to
+    make a failed check pass. Return unresolved chords as invalid evidence.
+    """
+    data.qpos[:] = external
+    q, pe, re, receipt = constrained_pose_ik(model, data, site, qids, dofs,
+        target, start[qids], limits, check, buffer=buffer)
+    end = data.qpos.copy()
+    collision = check.path([start, end], ['manipulate'])
+    receipt.update(refinement_depth=depth, chord_valid=collision['valid'])
+    if collision['valid'] or depth >= max_depth or pe > .02 or collision.get('kind') == 'endpoint_clearance':
+        return [end], [[pe, re]], [receipt]
+    data.qpos[:] = start; mujoco.mj_forward(model, data)
+    midpoint = dict(pos=(data.site_xpos[site] + target['pos']) / 2,
+                    rot=Slerp([0, 1], Rotation.from_matrix([
+                        data.site_xmat[site].reshape(3, 3), target['rot']]))(.5).as_matrix())
+    middle_external = (start + external) / 2
+    left, le, lr = swept_pose_segment(model, data, site, qids, dofs, midpoint,
+        start, middle_external, limits, check, depth+1, max_depth, buffer)
+    # The right half starts at the achieved constrained midpoint, not at the
+    # old uncorrected IK state; this preserves a continuous qpos chain.
+    right, re_errors, rr = swept_pose_segment(model, data, site, qids, dofs,
+        target, left[-1], external, limits, check, depth+1, max_depth, buffer)
+    return left + right, le + re_errors, lr + rr

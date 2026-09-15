@@ -11,13 +11,14 @@ import mujoco
 from scipy.spatial.transform import Rotation, Slerp
 from reference_geometry_v16 import pose_ik
 from mobiwam.reference_collision import SweptGeometry
-from mobiwam.reference_ik import constrained_pose_ik
+from mobiwam.reference_ik import swept_pose_segment
 from mobiwam.scene004 import candidate_feature_vector
 from reference_prefix_preview import preview_prefix
 
 
 SPEC=dict(version='reference-geometric-candidate-v2',collision_margin_m=.0005,
           manipulation_solver='bounded sequential collision-constrained pose IK',solver_clearance_buffer_m=.001,
+          manipulation_refinement_max_depth=6,
           swept_max_depth=12,pose_spacing_m=.015,rotation_spacing_rad=.08,
           arm_velocity_rad_s=1.,arm_acceleration_rad_s2=2.,base_acceleration_m_s2=.2,
           time_horizon_s=120.,clearance_ceiling_m=.10,
@@ -67,13 +68,15 @@ class Compiler:
                 self.d.qpos[adr]=(1-f)*start[adr]+f*goal
             goal=dict(pos=(1-f)*pos+f*target['pos'],rot=slerp(f).as_matrix())
             if phase=='manipulate':
-                q,pe,re,receipt=constrained_pose_ik(self.m,self.d,self.site,self.qids,self.dofs,
-                    goal,states[-1][self.qids],self.limits,self.check,
+                added,added_errors,receipts=swept_pose_segment(self.m,self.d,self.site,self.qids,self.dofs,
+                    goal,states[-1],self.d.qpos.copy(),self.limits,self.check,
+                    max_depth=SPEC['manipulation_refinement_max_depth'],
                     buffer=SPEC['solver_clearance_buffer_m'])
-                self.solver_receipts.append(receipt)
+                states.extend(added);errors.extend(added_errors);phases.extend([phase]*len(added))
+                self.solver_receipts.extend(receipts)
             else:
                 q,pe,re=pose_ik(self.m,self.d,self.site,self.qids,self.dofs,goal,states[-1][self.qids],self.limits)
-            states.append(self.d.qpos.copy());phases.append(phase);errors.append([pe,re])
+                states.append(self.d.qpos.copy());phases.append(phase);errors.append([pe,re])
 
     def prefix(self,dock):
         states=[self.initial.copy()];phases=[];errors=[]
