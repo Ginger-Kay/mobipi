@@ -28,11 +28,20 @@ def audit_attempt(p):
     replays=[]
     for f in p.glob('replay-*/result.json'):
         rr=json.loads(f.read_text());replays.append({k:rr[k] for k in ['steps','checker_success','max_state_abs_error']})
+    stop_path=p/'contact-stop.json'
+    stopped=json.loads(stop_path.read_text()) if stop_path.exists() else None
+    nonfinger=False
+    if stopped:
+        for contact in stopped['contacts']:
+            names=[contact.get('geom1') or '',contact.get('geom2') or '']
+            robot=[n for n in names if n.startswith(('robot0_','gripper0_','mobilebase0_'))]
+            if len(robot)==1 and 'finger' not in robot[0]:nonfinger=True
+    predock=bool(stopped and p.parent.name=='D' and feedback[stopped['step']]['stage']!='manipulate')
     return dict(path=str(p.resolve()),route=p.parent.name,steps=len(trace),checker_success=result['checker_success'],reason=result['reason'],
         opening_start=opening,opening_end=end['target']['door'],
-        outcomes=dict(success=float(result['checker_success']),progress=float(np.clip((opening-end['target']['door'])/max(opening,1e-6),0,1)),base_path_m=float(sum(base_step)),elapsed_sim_s=len(trace)*.05,observed_nonfinger_contact_stop=result['reason']=='nonfinger_environment_contact'),
+        outcomes=dict(success=float(result['checker_success']),progress=float(np.clip((opening-end['target']['door'])/max(opening,1e-6),0,1)),base_path_m=float(sum(base_step)),elapsed_sim_s=len(trace)*.05,observed_nonfinger_contact_stop=nonfinger,observed_pre_dock_contact_stop=predock,observed_environment_contact_stop=bool(stopped)),
         label_masks=dict(success=True,progress=True,base_path=True,completion_time=bool(result['checker_success']),irreversible_collision=False),
-        note='Collision/irreversibility definition not closed. Failed duration is elapsed time, not a completed-task time label. No encoder/candidate features; not a train-ready batch.',
+        note='Collision/irreversibility definition not closed. Failed duration is elapsed time, not a completed-task time label. Outcomes only; feature association and planning validity require separate verification, not a train-ready batch.',
         contact_closing_steps=int(sum(manipulation)),actual_base_arm_overlap_during_contact_closing=float(np.mean((base_step[manipulation]>1e-5)&(arm_step[manipulation]>1e-4))) if any(manipulation) else None,
         max_base_translation_m=float(max(np.linalg.norm(np.array(t['after']['base_pos'])[:2]-np.array(before['base_pos'])[:2]) for t in trace)),
         navigation_target_opening_change=nav_change,D_navigation_manipulated_target=bool(nav_change>1e-3) if p.parent.name=='D' else None,
