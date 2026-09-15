@@ -14,6 +14,7 @@ def main():
     if any(e['event']!='dock_settled_reobserve_feedback_reset' for e in events):
         raise ValueError('Unknown control event; do not silently omit it')
     resets={e['step'] for e in events}
+    reset_payloads={e['step']:e for e in events}
     ref=Reference(argparse.Namespace(output=args.output,task='CloseDrawer',layout=0,style=0,seed=7,self_test=True,source=None,replay_attempt=str(attempt),resume_attempt=None,width=1920,height=1080))
     original_step=ref.env.step
     count=0;applied=[]
@@ -24,6 +25,10 @@ def main():
             ref.robot.composite_controller.update_state()
             ref.robot.part_controllers['right'].set_goal_update_mode('achieved')
             ref.robot.part_controllers['right'].set_goal(np.zeros(6))
+            if 'arm_nullspace_goal' in reset_payloads[count]:
+                goal=np.asarray(reset_payloads[count]['arm_nullspace_goal'],float)
+                if goal.shape!=(7,) or not np.isfinite(goal).all():raise ValueError('Invalid nullspace event')
+                ref.robot.part_controllers['right'].initial_joint=goal.copy()
             applied.append(count)
         count+=1
         return original_step(action)
