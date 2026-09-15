@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation, Slerp
 from reference_geometry_v16 import pose_ik
 from mobiwam.reference_collision import SweptGeometry
 from mobiwam.scene004 import candidate_feature_vector
+from reference_prefix_preview import preview_prefix
 
 
 SPEC=dict(version='reference-geometric-candidate-v1',collision_margin_m=.0005,
@@ -159,18 +160,39 @@ def compile_candidates(ref,points,dock_plan,output):
         prefixes[candidate['id']]=(states,phases,errors)
         print('D prefix',candidate['id'],candidate['prefix_validation']['valid'],collision.get('kind','certified'),flush=True)
     ranked=sorted(dock_plan['candidates'],key=lambda c:(not(c['sampled_ik_valid'] and c['prefix_validation']['valid']),c['score'],c['id']))
-    dock_plan['selected']=ranked[0];selected=ranked[0]
+    selected=ranked[0]
+    for candidate in ranked:
+        candidate['prefix_executable']=False
+        if not (candidate['sampled_ik_valid'] and candidate['prefix_validation']['valid']):continue
+        prediction=preview_prefix(ref,candidate,output/f"D-prefix-{candidate['id']}")
+        candidate['controller_prefix_preview']=prediction
+        candidate['prefix_executable']=prediction['valid']
+        print('D controller preview',candidate['id'],prediction['valid'],prediction.get('failure'),flush=True)
+        if prediction['valid']:
+            selected=candidate;break
+        if prediction['failure'].get('phase')=='stow':
+            # All nine candidates share exactly the same controller commands
+            # before stow ends, regardless of the destination dock.
+            for other in ranked:
+                other['prefix_executable']=False
+                other['shared_stow_rejection_from_candidate']=candidate['id']
+            break
+    dock_plan['selected']=selected
     records=[]
     for route in ('E','D','A'):
         states,phases,errors=compiler.route(route,points,np.asarray(selected['dock']),prefixes[selected['id']] if route=='D' else None)
         collision=compiler.check.path(states,phases)
         row=compiler.metrics(route,states,phases,errors,selected['id'],collision);row['route']=route
+        if route=='D' and not selected.get('prefix_executable',False):
+            row['hard_valid']=False;row['features']['hard_valid']=0.
+            row['prefix_prediction_rejected']=True
         row['source_qpos_unchanged']=bool(np.array_equal(snapshot,ref.integration()))
         np.savez_compressed(output/f'{route}-path.npz',qpos=states,phases=np.asarray(phases),ik_errors=errors)
         records.append(row);print('candidate',route,'features21','hard_valid',row['hard_valid'],flush=True)
     if not np.array_equal(snapshot,ref.integration()):raise RuntimeError('preflight mutated live state')
     payload=dict(spec=SPEC,records=records,source=str(ref.source),selected_dock_id=selected['id'],
         source_integration_unchanged=True,environment_step_calls=0,formal_train_ready=False,
-        D_prefix_executable=bool(selected['sampled_ik_valid'] and selected['prefix_validation']['valid']))
+        planning_physics_substeps=sum(c.get('controller_prefix_preview',{}).get('physics_substeps',0) for c in ranked),
+        D_prefix_executable=bool(selected.get('prefix_executable',False)))
     (output/'candidate-features.json').write_text(json.dumps(payload,indent=2,allow_nan=False))
     return payload
