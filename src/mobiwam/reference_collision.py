@@ -77,7 +77,7 @@ class SweptGeometry:
         inequalities make the bound conservative even when axes move.
         """
         m=self.m
-        for j in np.flatnonzero(m.jnt_type<mujoco.mjtJoint.mjJNT_SLIDE):
+        for j in np.flatnonzero(m.jnt_type<int(mujoco.mjtJoint.mjJNT_SLIDE)):
             adr=int(m.jnt_qposadr[j]);width=7 if m.jnt_type[j]==mujoco.mjtJoint.mjJNT_FREE else 4
             if not np.array_equal(q0[adr:adr+width],q1[adr:adr+width]):
                 raise ValueError('changed free/ball joint unsupported; fail closed')
