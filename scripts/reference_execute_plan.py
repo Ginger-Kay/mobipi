@@ -61,6 +61,7 @@ def main():
     cfg = json.loads((out/'env_config.json').read_text())
     ref = Reference(argparse.Namespace(output=str(out),task=cfg['env_name'],layout=0,style=0,seed=7,
         self_test=True,source=str(dest),replay_attempt=None,resume_attempt=None,width=1920,height=1080))
+    ref.label = 'autonomous_development_reference_feedback_v18'
     try:
         ref.restore(); points = compile_path(ref,Path(spec['reference']))
         fresh = json.loads(json.dumps(points,default=lambda x:x.tolist()))
