@@ -11,11 +11,13 @@ import mujoco
 from scipy.spatial.transform import Rotation, Slerp
 from reference_geometry_v16 import pose_ik
 from mobiwam.reference_collision import SweptGeometry
+from mobiwam.reference_ik import constrained_pose_ik
 from mobiwam.scene004 import candidate_feature_vector
 from reference_prefix_preview import preview_prefix
 
 
-SPEC=dict(version='reference-geometric-candidate-v1',collision_margin_m=.0005,
+SPEC=dict(version='reference-geometric-candidate-v2',collision_margin_m=.0005,
+          manipulation_solver='bounded sequential collision-constrained pose IK',solver_clearance_buffer_m=.001,
           swept_max_depth=12,pose_spacing_m=.015,rotation_spacing_rad=.08,
           arm_velocity_rad_s=1.,arm_acceleration_rad_s2=2.,base_acceleration_m_s2=.2,
           time_horizon_s=120.,clearance_ceiling_m=.10,
@@ -38,6 +40,7 @@ class Compiler:
                       ('robot0_agentview_left','robot0_agentview_right','robot0_eye_in_hand')]
         if not self.handles or min(self.cameras)<0:raise ValueError('target/policy cameras missing')
         self.initial=self.live.qpos.copy()
+        self.solver_receipts=[]
         self.gripper=[]
         for j in range(self.m.njnt):
             name=mujoco.mj_id2name(self.m,mujoco.mjtObj.mjOBJ_JOINT,j) or ''
@@ -63,7 +66,13 @@ class Compiler:
                 goal=opened if grasp<0 else np.sign(opened)*.012
                 self.d.qpos[adr]=(1-f)*start[adr]+f*goal
             goal=dict(pos=(1-f)*pos+f*target['pos'],rot=slerp(f).as_matrix())
-            q,pe,re=pose_ik(self.m,self.d,self.site,self.qids,self.dofs,goal,states[-1][self.qids],self.limits)
+            if phase=='manipulate':
+                q,pe,re,receipt=constrained_pose_ik(self.m,self.d,self.site,self.qids,self.dofs,
+                    goal,states[-1][self.qids],self.limits,self.check,
+                    buffer=SPEC['solver_clearance_buffer_m'])
+                self.solver_receipts.append(receipt)
+            else:
+                q,pe,re=pose_ik(self.m,self.d,self.site,self.qids,self.dofs,goal,states[-1][self.qids],self.limits)
             states.append(self.d.qpos.copy());phases.append(phase);errors.append([pe,re])
 
     def prefix(self,dock):
@@ -180,9 +189,11 @@ def compile_candidates(ref,points,dock_plan,output):
     dock_plan['selected']=selected
     records=[]
     for route in ('E','D','A'):
+        compiler.solver_receipts=[]
         states,phases,errors=compiler.route(route,points,np.asarray(selected['dock']),prefixes[selected['id']] if route=='D' else None)
         collision=compiler.check.path(states,phases)
         row=compiler.metrics(route,states,phases,errors,selected['id'],collision);row['route']=route
+        row['manipulation_solver_receipts']=compiler.solver_receipts
         if route=='D' and not selected.get('prefix_executable',False):
             row['hard_valid']=False;row['features']['hard_valid']=0.
             row['prefix_prediction_rejected']=True
