@@ -34,9 +34,9 @@ def preview_prefix(ref,candidate,output,horizon=1200):
     guard=PalmClearance(preview);watch=ProgressWatch();phase='stow';settled=0
     states=[d.qpos.copy()];actions=[];trace=[];substeps=0;failure=None;ended=False
     names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]
-    def contacts():
+    def contacts(data):
         forbidden=[]
-        for c in d.contact:
+        for c in data.contact:
             a,b=names[c.geom1],names[c.geom2]
             ra=a.startswith(('robot0_','gripper0_','mobilebase0_'));rb=b.startswith(('robot0_','gripper0_','mobilebase0_'))
             if not (ra or rb):continue
@@ -69,7 +69,7 @@ def preview_prefix(ref,candidate,output,horizon=1200):
             for substep in range(int(env.control_timestep/env.model_timestep)):
                 if env.lite_physics:env.sim.step1()
                 else:env.sim.forward()
-                bad=contacts()
+                bad=contacts(d)
                 if bad:
                     failure=dict(kind='predicted_contact',step=step,substep=substep,phase=phase,contacts=bad);break
                 env._pre_action(action,policy)
@@ -81,7 +81,16 @@ def preview_prefix(ref,candidate,output,horizon=1200):
             states.append(d.qpos.copy());actions.append(action.copy())
             trace.append(dict(step=step,phase=phase,pos_error_m=pe,rotation_error_rad=re,base_error=be))
             if failure:break
-            if finished:ended=True;break
+            if finished:
+                # The last integration result has no following step1/forward.
+                # Check its contact geometry on scratch data, preserving exact
+                # controller/physics state and avoiding an unchecked endpoint.
+                terminal=mujoco.MjData(m);terminal.qpos[:]=d.qpos
+                terminal.mocap_pos[:]=d.mocap_pos;terminal.mocap_quat[:]=d.mocap_quat
+                mujoco.mj_fwdPosition(m,terminal);bad=contacts(terminal)
+                if bad:failure=dict(kind='predicted_terminal_contact',step=step,phase='settle',contacts=bad)
+                else:ended=True
+                break
             if idle>=180:
                 failure=dict(kind='predicted_tracking_stall',step=step,phase=phase);break
         if not ended and failure is None:failure=dict(kind='prefix_prediction_horizon',horizon=horizon)
@@ -89,7 +98,7 @@ def preview_prefix(ref,candidate,output,horizon=1200):
             control_steps=len(actions),physics_substeps=substeps,failure=failure,
             scope='independent native-physics planning preview through settled controller reset; no task outcome query',
             outcome_queries_during_prediction=0,environment_step_calls=0,initial_source_validation_may_query_checker=True,
-            collision_sampling='every native physics substep before integration; includes self and forbidden pre-dock finger contacts',
+            collision_sampling='every native physics substep plus terminal configuration on scratch data; includes self and forbidden pre-dock finger contacts',
             theoretical_continuous_dynamics_certificate=False)
         np.savez_compressed(output/'prefix-prediction.npz',qpos=np.asarray(states),actions=np.asarray(actions))
         (output/'trace.json').write_text(json.dumps(trace,indent=2))
