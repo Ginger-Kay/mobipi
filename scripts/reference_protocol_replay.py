@@ -5,6 +5,7 @@ from pathlib import Path
 from teleop_reference import Reference, write_json, stamp
 import numpy as np
 import h5py
+from mobiwam.replay_diagnostics import state_fields, summarize_drift
 
 
 def main():
@@ -46,9 +47,16 @@ def main():
             initial_error=float(np.max(abs(ref.env.sim.get_state().flatten()-states[0])))
             if initial_error>1e-10:raise ValueError('replay Source differs from recorded initial state')
             errors=[]
+            replayed=[ref.env.sim.get_state().flatten().copy()]
             for i,action in enumerate(actions):
                 ref.env.step(action)
-                errors.append(float(np.max(abs(ref.env.sim.get_state().flatten()-states[i+1]))))
+                actual=ref.env.sim.get_state().flatten().copy()
+                replayed.append(actual)
+                errors.append(float(np.max(abs(actual-states[i+1]))))
+            model,_=ref.model_data()
+            np.savez_compressed(Path(args.output)/'replayed-states.npz',states=np.asarray(replayed))
+            write_json(Path(args.output)/'field-errors.json',
+                       summarize_drift(states,np.asarray(replayed),state_fields(model)))
             write_json(Path(args.output)/'state-errors.json',dict(initial_error=initial_error,state_errors=errors))
         else:errors=ref.replay()
         if set(applied)!=resets:raise AssertionError('Not all recorded events applied')
