@@ -17,7 +17,7 @@ from scipy.spatial.transform import Rotation
 from teleop_reference import Reference, write_json, stamp
 from reference_control_diagnostics import capture
 from reference_planning import compile_candidates
-from mobiwam.reference_dispatch import rejection_reason
+from mobiwam.reference_dispatch import rejection_reason, target_finger_contact
 from reference_geometry import plan_dock, PalmClearance, adjust_reference, translation_limit
 
 
@@ -103,11 +103,16 @@ def mapped_action(ref, point, base_target, arm_enabled=True):
 
 
 def run_route(ref, route, points, horizon):
+    fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
+    target_name=fixture.name
+    binding=json.loads((ref.source/'target-binding.json').read_text())
+    if binding['fixture_name']!=target_name:
+        raise ValueError('Source target binding differs from live fixture')
     ref.route=route
     ref.base_locked=route in ('E','D')
     ref.begin()
     path=ref.recording['path']
-    if ref.args.task=='CloseDrawer':
+    if ref.args.task=='CloseDrawer' and target_name=='stack_4_main_group_2':
         camera=dict(lookat=[3.8,-1.0,.65],distance=2.4,azimuth=90.,elevation=-15.)
         ref.apply_camera(camera);ref.recording['camera']=camera
     clearance= PalmClearance(ref)
@@ -164,13 +169,13 @@ def run_route(ref, route, points, horizon):
                     stuck=0
             elif stage=='manipulate':
                 live=ref.trace()
-                target_contact=any('finger' in str(c) and any(n in str(c) for n in ('microwave_main_group','stack_4_main_group_2')) for c in live['contacts'])
+                target_contact=any(target_finger_contact(c,target_name) for c in live['contacts'])
                 articulation_reached=(index>0 and point['grasp']>0 and points[index-1]['grasp']>0 and
                     float(live['target']['door']) <= point['opening']+.005 and target_contact)
                 handle_fingers=set()
                 for contact in live['contacts']:
                     names=[contact.get('geom1') or '',contact.get('geom2') or '']
-                    if not any('handle' in n and n.startswith(('microwave_main_group','stack_4_main_group_2')) for n in names):continue
+                    if not target_finger_contact(contact,target_name,handle_only=True):continue
                     for finger in (1,2):
                         if any('gripper0_right_finger'+str(finger) in n for n in names):handle_fingers.add(finger)
                 is_grasp_waypoint=index>0 and point['grasp']>0 and points[index-1]['grasp']<0
@@ -199,7 +204,7 @@ def run_route(ref, route, points, horizon):
                 robot=[n for n in names if n.startswith(('robot0_','gripper0_','mobilebase0_'))]
                 world=[n for n in names if n not in robot]
                 if len(robot)!=1 or not world or 'floor' in world[0]:continue
-                if stage=='manipulate' and 'finger' in robot[0] and world[0].startswith(('microwave_main_group','stack_4_main_group_2')):continue
+                if stage=='manipulate' and target_finger_contact(contact,target_name):continue
                 unsafe.append(contact)
             if unsafe:
                 write_json(path/'contact-stop.json',dict(step=step,contacts=unsafe))
