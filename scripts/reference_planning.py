@@ -164,6 +164,10 @@ class Compiler:
 def compile_candidates(ref,points,dock_plan,output):
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     compiler=Compiler(ref);snapshot=ref.integration().copy();prefixes={}
+    # Restore calls mj_forward and canonical controller initialization, which
+    # can refresh solver warm-start values. Seal exactly the state planned
+    # here rather than comparing execution against a pre-restore cache.
+    np.save(output/'restored-source-integration.npy',snapshot,allow_pickle=False)
     # Check every candidate including the full Source -> stow transition.
     for candidate in dock_plan['candidates']:
         states,phases,errors=compiler.prefix(candidate['dock'])
@@ -208,6 +212,7 @@ def compile_candidates(ref,points,dock_plan,output):
     if not np.array_equal(snapshot,ref.integration()):raise RuntimeError('preflight mutated live state')
     payload=dict(spec=SPEC,records=records,source=str(ref.source),selected_dock_id=selected['id'],
         source_integration_unchanged=True,environment_step_calls=0,formal_train_ready=False,
+        restored_source_integration='planning/restored-source-integration.npy',
         planning_physics_substeps=sum(c.get('controller_prefix_preview',{}).get('physics_substeps',0) for c in ranked),
         D_prefix_executable=bool(selected.get('prefix_executable',False)))
     (output/'candidate-features.json').write_text(json.dumps(payload,indent=2,allow_nan=False))

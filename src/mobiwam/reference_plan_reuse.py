@@ -9,6 +9,11 @@ def verify_plan_seal(prior, source_name):
         'model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json')}
     required |= {'env_config.json','executor-spec.json','waypoints.json','dock-plan.json',
                  'planning/candidate-features.json'}
+    restored = seal.get('restored_source_integration')
+    if restored is not None:
+        if restored != 'planning/restored-source-integration.npy':
+            raise ValueError('invalid restored Source state path')
+        required.add(restored)
     hashes = seal['sha256']
     if not required.issubset(hashes): raise ValueError('incomplete preflight input seal')
     for name in required:

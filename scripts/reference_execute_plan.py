@@ -24,6 +24,7 @@ DEPENDENCIES = (
     'scripts/reference_control_diagnostics.py', 'src/mobiwam/reference_collision.py',
     'src/mobiwam/reference_ik.py', 'src/mobiwam/reference_dispatch.py',
     'src/mobiwam/scene004.py',
+    'src/mobiwam/reference_plan_reuse.py',
 )
 
 
@@ -46,6 +47,9 @@ def main():
     source = Path(preflight['source']).resolve()
     if source.parent != prior: raise ValueError('plan Source is not local to the supplied plan')
     seal = verify_plan_seal(prior, source.name)
+    restored = preflight.get('restored_source_integration')
+    if restored != seal.get('restored_source_integration'):
+        raise ValueError('restored Source state is not sealed consistently')
     if seal['planning_code_commit'] != manifest['code_commit']:
         raise ValueError('input seal and planning provenance disagree')
     routes = args.routes.split(',')
@@ -70,7 +74,9 @@ def main():
         ref.dock_plan = json.loads((prior/'dock-plan.json').read_text())
         if ref.dock_plan['selected']['id'] != preflight['selected_dock_id']:
             raise ValueError('selected dock changed since preflight')
-        expected = np.load(source/'integration.npy')
+        expected = np.load(prior/restored if restored else source/'integration.npy',allow_pickle=False)
+        if expected.shape!=ref.integration().shape or not np.isfinite(expected).all():
+            raise ValueError('invalid planned Source integration state')
         error = float(np.max(abs(ref.integration()-expected)))
         if error > 1e-10: raise ValueError('Source restore differs from planned state')
         files = [source/name for name in ('model.xml','integration.npy','ep_meta.json','rng.json')]
@@ -78,6 +84,8 @@ def main():
         write_json(out/'plan-reuse-receipt.json',dict(created_at=stamp(),plan_run=str(prior),
             planning_code=manifest['code_commit'],production_dependencies_identical=True,
             reference_geometry_identical=True,source_restore_max_error=error,require_full_plan=True,
+            source_restore_comparison='sealed post-restore full integration' if restored else 'legacy saved Source integration',
+            raw_source_restore_max_error=float(np.max(abs(ref.integration()-np.load(source/'integration.npy',allow_pickle=False)))),
             formal_train_ready=False,inputs=[dict(path=str(f),sha256=hashlib.sha256(f.read_bytes()).hexdigest()) for f in files]))
         write_json(out/'recording-provenance.json',dict(data_kind='autonomous_development',
             planner='reference-geometric-candidate-v3',formal_train_ready=False))
