@@ -100,7 +100,7 @@ def translation_limit(ref):
 
 
 class PalmClearance:
-    """Project the next OSC translation away from a nearby palm/handle pair.
+    """Project the next OSC translation away from nearby hand/fixture geometry.
 
     Local linear distance guard; does not replace post-step collision detection.
     No model parameters or collision masks are changed.
@@ -112,7 +112,7 @@ class PalmClearance:
         names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]
         self.palms=[i for i,n in enumerate(names) if 'gripper0_' in n and 'hand_collision' in n]
         fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
-        self.handles=[i for i,n in enumerate(names) if n.startswith(fixture.name) and 'handle' in n and (m.geom_contype[i] or m.geom_conaffinity[i])]
+        self.fixture_geoms=[i for i,n in enumerate(names) if n.startswith(fixture.name) and (m.geom_contype[i] or m.geom_conaffinity[i])]
     def apply(self,action):
         m,d=self.ref.model_data();arm=self.ref.robot.part_controllers['right']
         site=self.ref.robot.eef_site_id['right'];R=np.asarray(arm.origin_ori)
@@ -123,8 +123,8 @@ class PalmClearance:
         base=self.ref.robot.part_controllers['base']
         jp=np.zeros((3,m.nv));jr=jp.copy()
         for palm in self.palms:
-            for handle in self.handles:
-                segment=np.zeros(6);distance=float(mujoco.mj_geomDistance(m,d,palm,handle,.03,segment))
+            for fixture_geom in self.fixture_geoms:
+                segment=np.zeros(6);distance=float(mujoco.mj_geomDistance(m,d,palm,fixture_geom,.03,segment))
                 if distance>=.03:continue
                 normal=segment[:3]-segment[3:];length=np.linalg.norm(normal)
                 if length<1e-9:continue
@@ -138,20 +138,20 @@ class PalmClearance:
                 # its physical slide joint. Actual post-step contacts still guard failure.
                 pads=set()
                 for c in d.contact:
-                    other=int(c.geom2) if c.geom1==handle else (int(c.geom1) if c.geom2==handle else -1)
+                    other=int(c.geom2) if c.geom1==fixture_geom else (int(c.geom1) if c.geom2==fixture_geom else -1)
                     if other>=0:
                         name=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,other) or ''
                         if 'gripper0_' in name and 'pad_collision' in name:pads.add(other)
                 co_motion=np.zeros(3)
                 if len(pads)>=2 and fixture_dofs:
                     hj=np.zeros((3,m.nv));hr=hj.copy()
-                    mujoco.mj_jac(m,d,hj,hr,segment[3:],int(m.geom_bodyid[handle]))
+                    mujoco.mj_jac(m,d,hj,hr,segment[3:],int(m.geom_bodyid[fixture_geom]))
                     J=hj[:,fixture_dofs]
                     co_motion=J@np.linalg.pinv(J)@motion
                 correction=max(0.,self.margin-distance-float(normal@(motion-co_motion)))
                 if correction:
                     translation+=normal*min(correction,.005)
-                receipt.append(dict(palm=palm,handle=handle,distance_m=distance,correction_m=correction,pad_contacts=len(pads),predicted_handle_motion=co_motion.tolist()))
+                receipt.append(dict(palm=palm,fixture_geom=fixture_geom,distance_m=distance,correction_m=correction,pad_contacts=len(pads),predicted_fixture_motion=co_motion.tolist()))
         action[:3]=np.clip((R.T@translation)/np.asarray(arm.output_max)[:3],-translation_limit(self.ref),translation_limit(self.ref))
         return action,receipt
 
@@ -166,9 +166,9 @@ def adjust_reference(ref,scratch,point,margin=.004):
     m,_=ref.model_data();shift=np.zeros(3)
     for _ in range(3):
         for palm in guard.palms:
-            for handle in guard.handles:
+            for fixture_geom in guard.fixture_geoms:
                 segment=np.zeros(6)
-                distance=float(mujoco.mj_geomDistance(m,scratch,palm,handle,.05,segment))
+                distance=float(mujoco.mj_geomDistance(m,scratch,palm,fixture_geom,.05,segment))
                 if distance>=.05:continue
                 normal=segment[:3]-segment[3:];length=np.linalg.norm(normal)
                 if length<1e-9:continue
