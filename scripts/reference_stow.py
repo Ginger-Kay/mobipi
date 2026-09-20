@@ -2,7 +2,8 @@
 import hashlib
 import mujoco
 import numpy as np
-from reference_geometry_v16 import pose_ik
+from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
 
 VERSION = 'bounded-stow-fk-v1'
 SOLVER_MARGIN = .05
@@ -28,15 +29,26 @@ def build_stow(ref):
     offset = data.site_xpos[site] - data.xpos[body]
     offset[:2] *= max(0., 1. - .25 / max(np.linalg.norm(offset[:2]), 1e-6))
     preferred = dict(pos=data.xpos[body] + offset, rot=data.site_xmat[site].reshape(3, 3).copy())
-    q, pe, re = pose_ik(model, data, site, qids, arm.qvel_index, preferred,
-                       live.qpos[qids], limits, joint_margin=SOLVER_MARGIN)
+    lower,upper=limits[:,0]+SOLVER_MARGIN,limits[:,1]-SOLVER_MARGIN
+    def residual(q):
+        data.qpos[qids]=q
+        mujoco.mj_forward(model,data)
+        ep=preferred['pos']-data.site_xpos[site]
+        er=Rotation.from_matrix(preferred['rot']@data.site_xmat[site].reshape(3,3).T).as_rotvec()
+        return np.r_[ep,.2*er]
+    solution=least_squares(residual,np.clip(live.qpos[qids],lower,upper),
+        bounds=(lower,upper),max_nfev=100,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+    q=solution.x
+    error=residual(q)
+    pe=float(np.linalg.norm(error[:3]));re=float(np.linalg.norm(error[3:])/.2)
     # A bounded solution must remain close to the fixed preferred target.
     if not np.isfinite(q).all() or pe >= .012 or re >= .10:
-        raise ValueError('bounded stow cannot meet preferred pose tolerance')
+        raise ValueError(f'bounded stow cannot meet preferred pose tolerance: position={pe}, rotation={re}')
     rotation = data.xmat[body].reshape(3, 3)
     return dict(version=VERSION, source_qpos_sha256=source_digest(model, live),
         arm_limits=limits.tolist(),
         solver_margin_rad=SOLVER_MARGIN, preferred_error_m=pe, preferred_error_rad=re,
+        solver='scipy least_squares bounded TRF',solver_nfev=int(solution.nfev),
         local_pos=(rotation.T @ (data.site_xpos[site] - data.xpos[body])).tolist(),
         local_rot=(rotation.T @ data.site_xmat[site].reshape(3, 3)).tolist(), arm_qpos=q.tolist())
 
