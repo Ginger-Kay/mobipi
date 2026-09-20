@@ -1,5 +1,6 @@
 import mujoco
 import numpy as np
+import pytest
 from mobiwam.reference_collision import SweptGeometry
 
 
@@ -91,3 +92,58 @@ def test_hinge_and_slider_motion_bound_covers_geometry_surface():
     for t in np.linspace(.05,1,21):
         actual=np.linalg.norm(surface((1-t)*q0+t*q1)-start,axis=2).max(axis=1)
         assert np.all(actual<=t*bound+1e-12)
+
+
+def floating_model(kind='free'):
+    joint='<freejoint/>' if kind=='free' else '<joint type="ball"/>'
+    return mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+      <geom name="obstacle" type="sphere" size=".03" pos="0 .4 0"/>
+      <body>'''+joint+'''<geom name="robot0_tip" type="sphere" size=".03" mass="1" pos=".4 0 0"/>
+      </body></worldbody></mujoco>''')
+
+
+@pytest.mark.parametrize('kind',['free','ball'])
+def test_quaternion_arc_collision_between_clear_endpoints(kind):
+    model=floating_model(kind);check=SweptGeometry(model)
+    q0=model.qpos0.copy();q1=q0.copy();start=3 if kind=='free' else 0
+    q1[start:start+4]=[0,0,0,1]
+    result=check.path([q0,q1],['navigate'])
+    assert not result['valid'] and result['kind']=='collision'
+
+
+@pytest.mark.parametrize('kind',['free','ball'])
+def test_rigid_motion_bound_covers_native_geodesic_surface(kind):
+    model=floating_model(kind);check=SweptGeometry(model);data=mujoco.MjData(model)
+    q0=model.qpos0.copy();q1=q0.copy();start=3 if kind=='free' else 0
+    q1[start:start+4]=[np.cos(.6),0,0,np.sin(.6)]
+    if kind=='free':q1[:3]=[.2,-.1,.05]
+    bounds=check.motion_bounds(q0,q1)
+    velocity=np.zeros(model.nv);mujoco.mj_differentiatePos(model,velocity,1.,q0,q1)
+    def surface(q):
+        data.qpos[:]=q;mujoco.mj_forward(model,data)
+        axes=np.r_[np.eye(3),-np.eye(3)]
+        return np.array([data.geom_xpos[g]+axes@data.geom_xmat[g].reshape(3,3).T*model.geom_rbound[g] for g in range(model.ngeom)])
+    initial=surface(q0)
+    for t in np.linspace(0,1,21):
+        qt=q0.copy();mujoco.mj_integratePos(model,qt,velocity,t)
+        displacement=np.linalg.norm(surface(qt)-initial,axis=2).max(axis=1)
+        assert np.all(displacement<=t*bounds+1e-12)
+
+
+def test_antipodal_quaternions_are_same_rotation():
+    model=floating_model();check=SweptGeometry(model)
+    q0=model.qpos0.copy();q1=q0.copy();q1[3:]*=-1
+    np.testing.assert_allclose(check.motion_bounds(q0,q1),0.,atol=1e-12)
+    np.testing.assert_allclose(check.midpoint(q0,q1),q0,atol=1e-12)
+
+
+def test_nonunit_quaternion_and_articulated_floating_motion_rejected():
+    model=floating_model();check=SweptGeometry(model)
+    q0=model.qpos0.copy();bad=q0.copy();bad[3:]=0
+    with pytest.raises(ValueError,match='quaternion'):check.path([q0,bad],['stow'])
+    model=mujoco.MjModel.from_xml_string('''<mujoco><worldbody><body><freejoint/>
+    <geom name="robot0_root" type="sphere" size=".03" mass="1"/>
+    <body pos=".2 0 0"><joint/><geom name="robot0_child" type="sphere" size=".03" mass="1"/></body>
+    </body></worldbody></mujoco>''')
+    check=SweptGeometry(model);q0=model.qpos0.copy();q1=q0.copy();q1[0]=.1
+    with pytest.raises(ValueError,match='articulated'):check.motion_bounds(q0,q1)

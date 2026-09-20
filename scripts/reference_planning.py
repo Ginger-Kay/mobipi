@@ -136,7 +136,7 @@ class Compiler:
         if collision['valid']:clearance=collision['lower_bound_m']
         else:
             for q0,q1,phase in zip(states,states[1:],phases):
-                pairs,dist=self.check.distances((q0+q1)/2,phase);bound=self.check.motion_bounds(q0,q1)
+                pairs,dist=self.check.distances(self.check.midpoint(q0,q1),phase);bound=self.check.motion_bounds(q0,q1)
                 if len(pairs):coarse_lower.append(float(np.min(dist-.5*(bound[pairs[:,0]]+bound[pairs[:,1]]))))
             clearance=min(coarse_lower,default=.10)
         robot_ids=np.r_[self.bids,self.qids];deltas=np.diff(states[:,robot_ids],axis=0)

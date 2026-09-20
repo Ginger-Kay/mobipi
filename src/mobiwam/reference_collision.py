@@ -1,4 +1,4 @@
-"""Conservative joint-linear swept geometry checks on a scratch MuJoCo state.
+"""Conservative joint-linear / rigid quaternion-geodesic swept geometry checks.
 
 No environment step, controller update, outcome or future recording is read.
 Certification applies to the supplied geometric path, not an OSC rollout.
@@ -77,6 +77,19 @@ class SweptGeometry:
                     elif j in smap:self.slide_motion[geom,smap[j]]=1
                 reach+=float(np.linalg.norm(model.body_pos[body]))+extra
         self.evaluations=0
+        self.floating=np.flatnonzero(model.jnt_type<int(mujoco.mjtJoint.mjJNT_SLIDE))
+        self.floating_radius=np.zeros((model.ngeom,len(self.floating)))
+        self.floating_motion=np.zeros_like(self.floating_radius)
+        self.floating_articulated=np.zeros(len(self.floating),dtype=bool)
+        for column,j in enumerate(self.floating):
+            body=int(model.jnt_bodyid[j])
+            for geom,chain in enumerate(self.chains):
+                if body not in chain:continue
+                below=chain[:chain.index(body)]
+                self.floating_articulated[column] |= bool(model.body_jntnum[body]>1 or any(model.body_jntnum[b] for b in below))
+                self.floating_motion[geom,column]=1.
+                self.floating_radius[geom,column]=(np.linalg.norm(model.geom_pos[geom])+model.geom_rbound[geom]
+                    +sum(np.linalg.norm(model.body_pos[b]) for b in below)+2*np.linalg.norm(model.jnt_pos[j]))
 
     def geom_distance(self,a,b,ceiling=.10,segment=None):
         # NativeCCD in 3.2.6 returns before mj_geomDistance restores the input
@@ -93,24 +106,56 @@ class SweptGeometry:
         return min(float(value),ceiling)
 
     def motion_bounds(self,q0,q1):
-        """Per-geometry point displacement upper bounds along q-linear paths.
+        """Per-geometry displacement bounds on scalar-linear / quaternion-geodesic paths.
 
         Revolute radius is bounded by summed descendant link/joint offsets,
         geometry radius, and maximal descendant slider excursions. Triangle
         inequalities make the bound conservative even when axes move.
+        Moving rigid floating subtrees add translation plus radius times angle;
+        articulated floating subtrees remain unsupported and fail closed.
         """
         m=self.m
-        for j in np.flatnonzero(m.jnt_type<int(mujoco.mjtJoint.mjJNT_SLIDE)):
+        floating_bound=np.zeros(m.ngeom)
+        velocity=np.zeros(m.nv)
+        if len(self.floating):
+            self._validate_quaternions(q0);self._validate_quaternions(q1)
+            mujoco.mj_differentiatePos(m,velocity,1.,np.asarray(q0,float),np.asarray(q1,float))
+        for column,j in enumerate(self.floating):
             adr=int(m.jnt_qposadr[j]);width=7 if m.jnt_type[j]==mujoco.mjtJoint.mjJNT_FREE else 4
             if not np.array_equal(q0[adr:adr+width],q1[adr:adr+width]):
-                raise ValueError('changed free/ball joint unsupported; fail closed')
+                if self.floating_articulated[column]:
+                    raise ValueError('changed articulated free/ball subtree unsupported; fail closed')
+                dof=int(m.jnt_dofadr[j]);free=width==7
+                angle=float(np.linalg.norm(velocity[dof+3:dof+6] if free else velocity[dof:dof+3]))
+                translation=float(np.linalg.norm(np.asarray(q1)[adr:adr+3]-np.asarray(q0)[adr:adr+3])) if free else 0.
+                # Rigid-point path length <= translation + radius * angle.
+                floating_bound+=self.floating_motion[:,column]*translation+self.floating_radius[:,column]*angle
         h=m.jnt_qposadr[self.hinges];s=m.jnt_qposadr[self.slides]
         excursions=np.maximum(abs(q0[s]),abs(q1[s]))
         radii=self.rigid_radius+np.einsum('ghs,s->gh',self.slide_radius,excursions)
-        return radii@abs(q1[h]-q0[h])+self.slide_motion@abs(q1[s]-q0[s])
+        return radii@abs(q1[h]-q0[h])+self.slide_motion@abs(q1[s]-q0[s])+floating_bound
+
+    def _validate_quaternions(self,q):
+        for j in self.floating:
+            adr=int(self.m.jnt_qposadr[j])+(3 if self.m.jnt_type[j]==mujoco.mjtJoint.mjJNT_FREE else 0)
+            quat=np.asarray(q)[adr:adr+4]
+            if not np.isfinite(quat).all() or abs(np.linalg.norm(quat)-1.)>1e-10:
+                raise ValueError('invalid free/ball quaternion')
+
+    def midpoint(self,q0,q1):
+        if not len(self.floating):return (q0+q1)/2
+        self._validate_quaternions(q0);self._validate_quaternions(q1)
+        velocity=np.zeros(self.m.nv)
+        mujoco.mj_differentiatePos(self.m,velocity,1.,q0,q1)
+        mid=np.asarray(q0,float).copy()
+        mujoco.mj_integratePos(self.m,mid,velocity,.5)
+        return mid
 
     def distances(self,q,phase):
-        m,d=self.m,self.d;d.qpos[:]=q;d.qvel[:]=0;mujoco.mj_forward(m,d)
+        self._validate_quaternions(q)
+        m,d=self.m,self.d;d.qpos[:]=q
+        mujoco.mj_normalizeQuat(m,d.qpos)
+        d.qvel[:]=0;mujoco.mj_forward(m,d)
         self.evaluations+=1
         active=np.ones(len(self.pairs),dtype=bool)
         if phase=='manipulate':active &= ~self.allowed_manipulation
@@ -127,7 +172,8 @@ class SweptGeometry:
 
     def segment(self,q0,q1,phase,depth=0):
         bounds=self.motion_bounds(q0,q1)
-        pairs,dist=self.distances((q0+q1)/2,phase)
+        mid=self.midpoint(q0,q1)
+        pairs,dist=self.distances(mid,phase)
         if not len(pairs):return dict(valid=True,lower_bound_m=.10,leaves=1)
         lower=dist-.5*(bounds[pairs[:,0]]+bounds[pairs[:,1]])
         worst=int(np.argmin(lower)); minimum=float(lower[worst])
@@ -138,7 +184,6 @@ class SweptGeometry:
         if depth>=self.max_depth:
             return dict(valid=False,kind='clearance_unresolved',lower_bound_m=minimum,
                         pair=[self.names[x] for x in pairs[worst]],depth=depth,leaves=1)
-        mid=(q0+q1)/2
         left=self.segment(q0,mid,phase,depth+1)
         if not left['valid']:return left
         right=self.segment(mid,q1,phase,depth+1)
@@ -166,4 +211,4 @@ class SweptGeometry:
             if not r['valid']:return dict(**r,evaluations=self.evaluations-initial,completed_segments=index)
         return dict(valid=True,lower_bound_m=minimum,segments=len(receipts),
                     leaf_intervals=sum(r['leaves'] for r in receipts),evaluations=self.evaluations-initial,
-                    scope='conservative q-linear swept bound; configured contact rules; not actual rollout certification')
+                    scope='conservative joint-linear and rigid free/ball geodesic swept bound; configured contact rules; not actual rollout certification')

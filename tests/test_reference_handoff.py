@@ -98,3 +98,32 @@ def test_native_mujoco_integration_unchanged_when_safe(lite):
     np.testing.assert_array_equal(data.qpos,baseline.qpos)
     np.testing.assert_array_equal(data.qvel,baseline.qvel)
     assert data.time==baseline.time and guard.completed_substeps==3
+
+
+def test_preview_and_execution_reset_have_identical_controller_effects():
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace as NS
+    scripts=Path(__file__).resolve().parents[1]/'scripts'
+    target=np.arange(7,dtype=float)/10
+    effects=[]
+    for filename in ('reference_prefix_preview.py','reference_executor.py'):
+        calls=[]
+        arm=NS(set_goal_update_mode=lambda mode:calls.append(('mode',mode)),
+               set_goal=lambda goal:calls.append(('goal',np.asarray(goal).tolist())))
+        env=NS(_get_observations=lambda **kw:calls.append(('observe',kw)))
+        robot=NS(composite_controller=NS(update_state=lambda:calls.append(('update',))),
+                 part_controllers={'right':arm})
+        candidate=dict(arm_nullspace_goal=target.tolist())
+        ref=NS(env=env,robot=robot,dock_plan={'selected':candidate},recording={'events':[]})
+        tree=ast.parse((scripts/filename).read_text())
+        blocks=[node for node in ast.walk(tree) if isinstance(node,ast.If)
+            and isinstance(node.test,ast.Compare) and isinstance(node.test.left,ast.Name)
+            and node.test.left.id=='settled']
+        assert len(blocks)==1
+        namespace=dict(np=np,env=env,preview=ref,ref=ref,candidate=candidate,step=216)
+        exec(compile(ast.Module(body=blocks[0].body,type_ignores=[]),filename,'exec'),namespace)
+        effects.append((calls,arm.initial_joint.tolist()))
+    assert effects[0]==effects[1]
+    assert effects[0][0]==[('observe',{'force_update':True}),('update',),('mode','achieved'),('goal',[0.]*6)]
+    assert effects[0][1]==target.tolist()
