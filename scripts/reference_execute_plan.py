@@ -25,6 +25,7 @@ DEPENDENCIES = (
     'src/mobiwam/reference_ik.py', 'src/mobiwam/reference_dispatch.py',
     'src/mobiwam/scene004.py',
     'src/mobiwam/reference_plan_reuse.py',
+    'scripts/reference_stow.py', 'src/mobiwam/reference_prefix_safety.py',
 )
 
 
