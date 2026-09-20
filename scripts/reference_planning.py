@@ -82,13 +82,18 @@ class Compiler:
                     joint_margin=SPEC['prefix_solver_joint_margin_rad'])
                 states.append(self.d.qpos.copy());phases.append(phase);errors.append([pe,re])
 
-    def prefix(self,dock):
+    def prefix(self,dock,stow_target=None):
         states=[self.initial.copy()];phases=[];errors=[]
         pos,rot=self.pose(self.initial)
         body=mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_BODY,self.ref.base_body)
         basepos=self.d.xpos[body].copy();offset=pos-basepos
         offset[:2]*=max(0.,1.-.25/max(np.linalg.norm(offset[:2]),1e-6))
         stow=dict(pos=basepos+offset,rot=rot)
+        if stow_target is not None:
+            from reference_stow import load_stow
+            local,localrot,_=load_stow(self.ref,stow_target)
+            R=self.d.xmat[body].reshape(3,3)
+            stow=dict(pos=basepos+R@local,rot=R@localrot)
         self.transition(states,phases,errors,stow,self.initial[self.bids],'stow')
         # Hold exactly the stowed arm while holonomic base moves; orientation
         # of the stowed EEF follows the base, matching executor semantics.
@@ -172,7 +177,7 @@ def compile_candidates(ref,points,dock_plan,output):
     np.save(output/'restored-source-integration.npy',snapshot,allow_pickle=False)
     # Check every candidate including the full Source -> stow transition.
     for candidate in dock_plan['candidates']:
-        states,phases,errors=compiler.prefix(candidate['dock'])
+        states,phases,errors=compiler.prefix(candidate['dock'],candidate.get('stow_target'))
         collision=compiler.check.path(states,phases)
         pe=max(e[0] for e in errors);re=max(e[1] for e in errors)
         candidate['prefix_validation']=dict(collision=collision,max_position_error_m=pe,max_rotation_error_rad=re,

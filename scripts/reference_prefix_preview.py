@@ -36,6 +36,10 @@ def preview_prefix(ref,candidate,output,horizon=1200):
     offset[:2]*=max(0.,1.-.25/max(np.linalg.norm(offset[:2]),1e-6))
     local=d.xmat[body].reshape(3,3).T@offset
     localrot=d.xmat[body].reshape(3,3).T@d.site_xmat[site].reshape(3,3)
+    if 'stow_target' in candidate:
+        from reference_stow import load_stow
+        local,localrot,stow_q=load_stow(preview,candidate['stow_target'])
+        arm.initial_joint=stow_q.copy()
     guard=PalmClearance(preview);watch=ProgressWatch();phase='stow';settled=0
     states=[d.qpos.copy()];actions=[];trace=[];substeps=0;failure=None;ended=False
     names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]

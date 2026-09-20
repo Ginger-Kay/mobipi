@@ -129,6 +129,10 @@ def run_route(ref, route, points, horizon):
     offset[:2] *= max(0.,1.-.25/max(np.linalg.norm(offset[:2]),1e-6))
     stow_local=d.xmat[body].reshape(3,3).T@offset
     stow_rot_local=d.xmat[body].reshape(3,3).T@d.site_xmat[site].reshape(3,3)
+    if route=='D' and 'stow_target' in ref.dock_plan['selected']:
+        from reference_stow import load_stow
+        stow_local,stow_rot_local,stow_q=load_stow(ref,ref.dock_plan['selected']['stow_target'])
+        ref.robot.part_controllers['right'].initial_joint=stow_q.copy()
     watch=ProgressWatch()
     grip_waypoint=None;grip_count=0
     index=0; stuck=0; settled=0; reason='horizon'; base_max_drift=0.
