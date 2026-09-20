@@ -19,6 +19,7 @@ from reference_control_diagnostics import capture
 from reference_planning import compile_candidates
 from mobiwam.reference_dispatch import rejection_reason, target_finger_contact
 from reference_geometry import plan_dock, PalmClearance, adjust_reference, translation_limit
+from mobiwam.reference_prefix_safety import JointMarginMonitor, JointMarginStop, GuardedIntegration
 
 
 class ProgressWatch:
@@ -137,10 +138,19 @@ def run_route(ref, route, points, horizon):
     grip_waypoint=None;grip_count=0
     index=0; stuck=0; settled=0; reason='horizon'; base_max_drift=0.
     dock=np.asarray(ref.dock_plan['selected']['dock'])
+    margin_guard=None
+    if route=='D':
+        arm=ref.robot.part_controllers['right']
+        joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
+        margin_guard=JointMarginMonitor(arm.qpos_index,m.jnt_range[joints],
+            [mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) for j in joints])
     initial_opening=float(ref.trace()['target']['door'])
     log=(path/'feedback.jsonl').open('w')
     control_log=(path/'control.jsonl').open('w')
     try:
+        if margin_guard is not None:
+            failure=margin_guard.observe(d.qpos,step=0,substep=None,phase=stage,when='initial')
+            if failure:raise JointMarginStop(failure)
         for step in range(horizon):
             point=points[index]
             if stage in ('stow','navigate'):
@@ -193,7 +203,19 @@ def run_route(ref, route, points, horizon):
                 if route in ('E','D'):
                     base_max_drift=max(base_max_drift,float(np.linalg.norm(d.qpos[base.qpos_index]-target)))
             log.write(json.dumps(dict(step=step,stage=stage,waypoint=index,pos_error=pe,rot_error=re,base_error=be,progress_idle=progress_idle,palm_clearance=clearance_receipt))+'\n')
-            ref.step(action)
+            if margin_guard is None:
+                ref.step(action)
+            else:
+                before_step=ref.integration().copy()
+                integration_guard=GuardedIntegration(ref.env.sim,d,margin_guard,
+                    lite_physics=ref.env.lite_physics,step=step,phase=stage)
+                try:
+                    with integration_guard:ref.step(action)
+                except JointMarginStop:
+                    np.savez_compressed(path/'partial-control-step.npz',
+                        initial_integration=before_step,terminal_integration=ref.integration(),
+                        attempted_action=action,completed_physics_substeps=integration_guard.completed_substeps)
+                    raise
             if step%20==0:control_log.write(json.dumps(capture(ref,step,action))+'\n')
             if step%100==0:
                 log.flush();print(route,step,stage,index,'errors',round(pe,4),round(be,4),flush=True)
@@ -217,9 +239,17 @@ def run_route(ref, route, points, horizon):
             if progress_idle>=180:
                 reason='tracking_stall';break
         ref.finish(reason)
+    except JointMarginStop as exc:
+        reason='joint_margin_stop'
+        write_json(path/'joint-margin-stop.json',dict(failure=exc.failure,monitor=margin_guard.receipt(),
+            partial_step_file='partial-control-step.npz' if (path/'partial-control-step.npz').exists() else None,
+            replay_scope='HDF5 contains completed control steps only; partial step is separate and not a standard replay sample'))
+        ref.finish(reason)
     except BaseException:
         ref.finish('executor_exception');raise
-    finally:log.close();control_log.close()
+    finally:
+        log.close();control_log.close()
+        if margin_guard is not None:write_json(path/'joint-margin-monitor.json',margin_guard.receipt())
     write_json(path/'executor-result.json',dict(executor='reference-feedback-v17',route=route,reason=reason,
         base_max_drift_generalized=base_max_drift,waypoints_reached=index,total_waypoints=len(points),
         execution_scope='development',formal_train_ready=False,strict_semantics_verified=False,

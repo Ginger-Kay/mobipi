@@ -36,3 +36,46 @@ class JointMarginMonitor:
     def receipt(self):
         return dict(required_strictly_greater_than_rad=.015, samples=self.samples,
                     minimum=self.minimum, scope='sampled states; not a continuous dynamics certificate')
+
+
+class JointMarginStop(RuntimeError):
+    def __init__(self, failure):
+        super().__init__('D joint margin stop')
+        self.failure = failure
+
+
+class GuardedIntegration:
+    """Check both sides of each native integration; restore the sim method on exit.
+
+    A raised stop may leave a partially integrated control step. Callers must
+    save that partial state separately, not record it as a full policy step.
+    """
+    def __init__(self, sim, data, monitor, *, lite_physics, step, phase):
+        self.sim, self.data, self.monitor = sim, data, monitor
+        self.name = 'step2' if lite_physics else 'step'
+        self.step, self.phase = step, phase
+        self.completed_substeps = 0
+
+    def __enter__(self):
+        self.original = getattr(self.sim, self.name)
+        self.had_instance_value = self.name in vars(self.sim)
+        self.instance_value = vars(self.sim).get(self.name)
+        def guarded(*args, **kwargs):
+            for when in ('before_integration', 'after_integration'):
+                if when == 'after_integration':
+                    result = self.original(*args, **kwargs)
+                    self.completed_substeps += 1
+                failure = self.monitor.observe(self.data.qpos, step=self.step,
+                    substep=self.completed_substeps - int(when == 'after_integration'),
+                    phase=self.phase, when=when)
+                if failure:
+                    raise JointMarginStop(failure)
+            return result
+        setattr(self.sim, self.name, guarded)
+        return self
+
+    def __exit__(self, *args):
+        if self.had_instance_value:
+            setattr(self.sim, self.name, self.instance_value)
+        else:
+            delattr(self.sim, self.name)

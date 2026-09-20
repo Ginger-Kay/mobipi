@@ -7,6 +7,7 @@ a simulator planning probe (not zero physics steps), not a new task outcome.
 import argparse
 from pathlib import Path
 import json
+import hashlib
 import numpy as np
 import mujoco
 from teleop_reference import Reference, stamp
@@ -118,6 +119,8 @@ def preview_prefix(ref,candidate,output,horizon=1200):
             theoretical_continuous_dynamics_certificate=False)
         np.savez_compressed(output/'prefix-prediction.npz',qpos=np.asarray(states),actions=np.asarray(actions))
         (output/'trace.json').write_text(json.dumps(trace,indent=2))
+        result['prefix_qpos_actions_sha256']=hashlib.sha256((output/'prefix-prediction.npz').read_bytes()).hexdigest()
+        result['prefix_trace_sha256']=hashlib.sha256((output/'trace.json').read_bytes()).hexdigest()
         (output/'result.json').write_text(json.dumps(result,indent=2))
         return result
     finally:

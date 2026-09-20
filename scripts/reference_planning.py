@@ -14,9 +14,11 @@ from mobiwam.reference_collision import SweptGeometry
 from mobiwam.reference_ik import swept_pose_segment
 from mobiwam.scene004 import candidate_feature_vector
 from reference_prefix_preview import preview_prefix
+from mobiwam.reference_handoff import load_preview_prefix
 
 
-SPEC=dict(version='reference-geometric-candidate-v3',collision_margin_m=.0005,
+SPEC=dict(version='reference-geometric-candidate-v4-actual-prefix',collision_margin_m=.0005,
+          D_prefix='sampled planning-preview qpos, then manipulation IK from exact terminal qpos',
           distance_backend='MuJoCo 3.2.6 native GJK/EPA on private model copy; live physics unchanged',
           distance_tolerance_m=1e-9,distance_max_iterations=1000,
           manipulation_solver='bounded sequential collision-constrained pose IK',solver_clearance_buffer_m=.001,
@@ -204,12 +206,21 @@ def compile_candidates(ref,points,dock_plan,output):
             break
     dock_plan['selected']=selected
     records=[]
+    actual_prefix=None
+    if selected.get('prefix_executable',False):
+        actual_prefix=load_preview_prefix(output/f"D-prefix-{selected['id']}",compiler.initial,selected['id'])
     for route in ('E','D','A'):
         compiler.solver_receipts=[]
-        states,phases,errors=compiler.route(route,points,np.asarray(selected['dock']),prefixes[selected['id']] if route=='D' else None)
+        route_prefix=(actual_prefix if actual_prefix is not None else prefixes[selected['id']]) if route=='D' else None
+        states,phases,errors=compiler.route(route,points,np.asarray(selected['dock']),route_prefix)
         collision=compiler.check.path(states,phases)
         row=compiler.metrics(route,states,phases,errors,selected['id'],collision);row['route']=route
         row['manipulation_solver_receipts']=compiler.solver_receipts
+        if route=='D':
+            row['prefix_state_source']='native_planning_preview' if actual_prefix is not None else 'nominal_rejected_prefix'
+            row['prefix_ik_residual_scope']='not applicable for generated preview states; zeros excluded from manipulation IK maximum'
+            row['prefix_control_steps']=selected.get('controller_prefix_preview',{}).get('control_steps',0)
+            row['metrics_scope']='full geometric chain through sampled preview states; retimed durations are not observed execution times'
         if route=='D' and not selected.get('prefix_executable',False):
             row['hard_valid']=False;row['features']['hard_valid']=0.
             row['prefix_prediction_rejected']=True

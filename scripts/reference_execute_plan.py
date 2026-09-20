@@ -26,6 +26,7 @@ DEPENDENCIES = (
     'src/mobiwam/scene004.py',
     'src/mobiwam/reference_plan_reuse.py',
     'scripts/reference_stow.py', 'src/mobiwam/reference_prefix_safety.py',
+    'src/mobiwam/reference_handoff.py',
 )
 
 
@@ -89,7 +90,7 @@ def main():
             raw_source_restore_max_error=float(np.max(abs(ref.integration()-np.load(source/'integration.npy',allow_pickle=False)))),
             formal_train_ready=False,inputs=[dict(path=str(f),sha256=hashlib.sha256(f.read_bytes()).hexdigest()) for f in files]))
         write_json(out/'recording-provenance.json',dict(data_kind='autonomous_development',
-            planner='reference-geometric-candidate-v3',formal_train_ready=False))
+            planner=preflight['spec']['version'],formal_train_ready=False))
         results = [run_route(ref,route,points,args.horizon) for route in routes]
         write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results))
     finally:
