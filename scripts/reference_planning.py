@@ -21,6 +21,7 @@ SPEC=dict(version='reference-geometric-candidate-v3',collision_margin_m=.0005,
           distance_tolerance_m=1e-9,distance_max_iterations=1000,
           manipulation_solver='bounded sequential collision-constrained pose IK',solver_clearance_buffer_m=.001,
           manipulation_refinement_max_depth=6,
+          prefix_solver_joint_margin_rad=.01501,
           swept_max_depth=12,pose_spacing_m=.015,rotation_spacing_rad=.08,
           arm_velocity_rad_s=1.,arm_acceleration_rad_s2=2.,base_acceleration_m_s2=.2,
           time_horizon_s=120.,clearance_ceiling_m=.10,
@@ -77,7 +78,8 @@ class Compiler:
                 states.extend(added);errors.extend(added_errors);phases.extend([phase]*len(added))
                 self.solver_receipts.extend(receipts)
             else:
-                q,pe,re=pose_ik(self.m,self.d,self.site,self.qids,self.dofs,goal,states[-1][self.qids],self.limits)
+                q,pe,re=pose_ik(self.m,self.d,self.site,self.qids,self.dofs,goal,states[-1][self.qids],self.limits,
+                    joint_margin=SPEC['prefix_solver_joint_margin_rad'])
                 states.append(self.d.qpos.copy());phases.append(phase);errors.append([pe,re])
 
     def prefix(self,dock):

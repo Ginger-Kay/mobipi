@@ -4,8 +4,13 @@ import mujoco
 from scipy.spatial.transform import Rotation
 
 
-def pose_ik(model, data, site, qids, dofs, target, seed, limits):
-    data.qpos[qids]=seed
+def pose_ik(model, data, site, qids, dofs, target, seed, limits, *, joint_margin=None):
+    margin = .015 if joint_margin is None else float(joint_margin)
+    if not np.isfinite(margin) or margin < .015 or np.any(limits[:, 0] + margin >= limits[:, 1] - margin):
+        raise ValueError('invalid IK joint margin')
+    lower, upper = limits[:, 0] + margin, limits[:, 1] - margin
+    # An explicitly buffered solve must respect its bounds even on early exit.
+    data.qpos[qids]=seed if joint_margin is None else np.clip(seed, lower, upper)
     jp=np.zeros((3,model.nv));jr=jp.copy()
     for _ in range(100):
         mujoco.mj_forward(model,data)
@@ -16,7 +21,7 @@ def pose_ik(model, data, site, qids, dofs, target, seed, limits):
         J=np.vstack([jp[:,dofs],.2*jr[:,dofs]])
         error=np.r_[ep,.2*er]
         dq=J.T@np.linalg.solve(J@J.T+np.eye(6)*.0002,error)
-        data.qpos[qids]=np.clip(data.qpos[qids]+np.clip(dq,-.12,.12),limits[:,0]+.015,limits[:,1]-.015)
+        data.qpos[qids]=np.clip(data.qpos[qids]+np.clip(dq,-.12,.12),lower,upper)
     mujoco.mj_forward(model,data)
     ep=float(np.linalg.norm(target['pos']-data.site_xpos[site]))
     er=float(np.linalg.norm(Rotation.from_matrix(target['rot']@data.site_xmat[site].reshape(3,3).T).as_rotvec()))
