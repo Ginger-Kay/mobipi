@@ -10,6 +10,7 @@ import json
 import numpy as np
 import mujoco
 from teleop_reference import Reference, stamp
+from mobiwam.reference_prefix_safety import JointMarginMonitor
 
 
 def preview_prefix(ref,candidate,output,horizon=1200):
@@ -25,6 +26,10 @@ def preview_prefix(ref,candidate,output,horizon=1200):
     preview.env._check_success=denied;preview.env.reward=denied
     m,d=preview.model_data();env=preview.env
     base=preview.robot.part_controllers['base'];site=preview.robot.eef_site_id['right']
+    arm=preview.robot.part_controllers['right']
+    joint_ids=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
+    margin_guard=JointMarginMonitor(arm.qpos_index,m.jnt_range[joint_ids],
+        [mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) for j in joint_ids])
     body=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_BODY,preview.base_body)
     initial=d.qpos[base.qpos_index].copy();dock=np.asarray(candidate['dock'])
     offset=d.site_xpos[site]-d.xpos[body]
@@ -47,7 +52,9 @@ def preview_prefix(ref,candidate,output,horizon=1200):
             forbidden.append(dict(pair=[a,b],distance_m=float(c.dist),kind='environment_contact'))
         return forbidden
     try:
+        failure=margin_guard.observe(d.qpos,step=0,substep=None,phase=phase,when='initial')
         for step in range(horizon):
+            if failure:break
             R=d.xmat[body].reshape(3,3)
             point=dict(pos=d.xpos[body]+R@local,rot=R@localrot,grasp=-1.)
             target=initial if phase=='stow' else dock
@@ -72,10 +79,14 @@ def preview_prefix(ref,candidate,output,horizon=1200):
                 bad=contacts(d)
                 if bad:
                     failure=dict(kind='predicted_contact',step=step,substep=substep,phase=phase,contacts=bad);break
+                failure=margin_guard.observe(d.qpos,step=step,substep=substep,phase=phase,when='before_integration')
+                if failure:break
                 env._pre_action(action,policy)
                 if env.lite_physics:env.sim.step2()
                 else:env.sim.step()
                 env._update_observables();policy=False;substeps+=1
+                failure=margin_guard.observe(d.qpos,step=step,substep=substep,phase=phase,when='after_integration')
+                if failure:break
             env.cur_time+=env.control_timestep
             env._get_observations()
             states.append(d.qpos.copy());actions.append(action.copy())
@@ -99,6 +110,7 @@ def preview_prefix(ref,candidate,output,horizon=1200):
             scope='independent native-physics planning preview through settled controller reset; no task outcome query',
             outcome_queries_during_prediction=0,environment_step_calls=0,initial_source_validation_may_query_checker=True,
             collision_sampling='every native physics substep plus terminal configuration on scratch data; includes self and forbidden pre-dock finger contacts',
+            joint_margin=margin_guard.receipt(),
             theoretical_continuous_dynamics_certificate=False)
         np.savez_compressed(output/'prefix-prediction.npz',qpos=np.asarray(states),actions=np.asarray(actions))
         (output/'trace.json').write_text(json.dumps(trace,indent=2))
