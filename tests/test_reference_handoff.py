@@ -73,3 +73,28 @@ def test_guard_restores_instance_override_on_exception():
     with pytest.raises(RuntimeError,match='controller error'):
         with GuardedIntegration(sim,data,monitor,lite_physics=True,step=0,phase='stow'):sim.step2()
     assert sim.step2 is error
+
+
+@pytest.mark.parametrize('lite',[False,True])
+def test_native_mujoco_integration_unchanged_when_safe(lite):
+    import mujoco
+    from types import SimpleNamespace as NS
+    model=mujoco.MjModel.from_xml_string('''<mujoco><compiler angle="radian"/>
+    <option gravity="0 0 0"/><worldbody><body><joint range="0 1"/>
+    <geom type="sphere" size=".1" mass="1"/></body></worldbody></mujoco>''')
+    data=mujoco.MjData(model);baseline=mujoco.MjData(model)
+    for state in (data,baseline):state.qpos[0]=.5;state.qvel[0]=.1
+    class Sim:
+        def step(self):mujoco.mj_step(model,data)
+        def step2(self):mujoco.mj_step2(model,data)
+    sim=Sim();monitor=JointMarginMonitor([0],[[0.,1.]],['joint'])
+    with GuardedIntegration(sim,data,monitor,lite_physics=lite,step=0,phase='navigate') as guard:
+        for _ in range(3):
+            if lite:
+                mujoco.mj_step1(model,data);sim.step2()
+                mujoco.mj_step1(model,baseline);mujoco.mj_step2(model,baseline)
+            else:
+                sim.step();mujoco.mj_step(model,baseline)
+    np.testing.assert_array_equal(data.qpos,baseline.qpos)
+    np.testing.assert_array_equal(data.qvel,baseline.qvel)
+    assert data.time==baseline.time and guard.completed_substeps==3
