@@ -15,9 +15,11 @@ from teleop_reference import Reference, stamp, write_json
 from reference_executor import compile_path, run_route
 from mobiwam.reference_dispatch import rejection_reason
 from mobiwam.reference_plan_reuse import verify_plan_seal
+from mobiwam.reference_transfer import compile_transferred_path
 
 
 DEPENDENCIES = (
+    'scripts/reference_execute_plan.py',
     'scripts/reference_executor.py', 'scripts/reference_geometry.py',
     'scripts/reference_geometry_v16.py', 'scripts/reference_planning.py',
     'scripts/reference_prefix_preview.py', 'scripts/teleop_reference.py',
@@ -27,6 +29,8 @@ DEPENDENCIES = (
     'src/mobiwam/reference_plan_reuse.py',
     'scripts/reference_stow.py', 'src/mobiwam/reference_prefix_safety.py',
     'src/mobiwam/reference_handoff.py',
+    'src/mobiwam/reference_transfer.py',
+    'scripts/reference_transfer_plan.py',
 )
 
 
@@ -67,9 +71,23 @@ def main():
     cfg = json.loads((out/'env_config.json').read_text())
     ref = Reference(argparse.Namespace(output=str(out),task=cfg['env_name'],layout=0,style=0,seed=7,
         self_test=True,source=str(dest),replay_attempt=None,resume_attempt=None,width=1920,height=1080))
-    ref.label = 'autonomous_development_reference_feedback_v18'
+    ref.label = ('autonomous_development_reference_feedback_transfer_pilot_v1'
+                 if spec.get('transfer_mode') else 'autonomous_development_reference_feedback_v18')
     try:
-        ref.restore(); points = compile_path(ref,Path(spec['reference']))
+        ref.restore()
+        if spec.get('transfer_mode') == 'moving_target_handle_frame':
+            points, transfer = compile_transferred_path(ref, Path(spec['reference']))
+            planned_transfer = json.loads((prior/'transfer-receipt.json').read_text())
+            # Both stages make isolated Source copies under their own output;
+            # compare the semantic transfer, while Source bytes are sealed.
+            transfer.pop('new_source', None)
+            planned_transfer.pop('new_source', None)
+            if transfer != planned_transfer:
+                raise ValueError('reference transfer differs from preflight')
+        elif spec.get('transfer_mode') is None:
+            points = compile_path(ref, Path(spec['reference']))
+        else:
+            raise ValueError('unknown reference transfer mode')
         fresh = json.loads(json.dumps(points,default=lambda x:x.tolist()))
         if fresh != json.loads((prior/'waypoints.json').read_text()):
             raise ValueError('reference geometry changed since preflight')
@@ -90,7 +108,8 @@ def main():
             raw_source_restore_max_error=float(np.max(abs(ref.integration()-np.load(source/'integration.npy',allow_pickle=False)))),
             formal_train_ready=False,inputs=[dict(path=str(f),sha256=hashlib.sha256(f.read_bytes()).hexdigest()) for f in files]))
         write_json(out/'recording-provenance.json',dict(data_kind='autonomous_development',
-            planner=preflight['spec']['version'],formal_train_ready=False))
+            planner=preflight['spec']['version'],transfer_mode=spec.get('transfer_mode'),
+            formal_train_ready=False))
         results = [run_route(ref,route,points,args.horizon) for route in routes]
         write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results))
     finally:
