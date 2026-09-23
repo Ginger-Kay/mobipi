@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import traceback
 
 import numpy as np
@@ -67,6 +68,9 @@ def main():
         write_json(out / 'sealed-inputs.json', {
             'sha256': files,
             'restored_source_integration': 'planning/restored-source-integration.npy',
+            'planning_code_commit': subprocess.check_output(
+                ['git', '-C', str(Path(__file__).resolve().parents[1]), 'rev-parse', 'HEAD'],
+                text=True).strip(),
             'transfer_mode': 'moving_target_handle_frame',
             'reference_trace_sha256': sha(reference / 'trace.jsonl'),
             'reference_demo_sha256': sha(reference / 'demo.hdf5'),
