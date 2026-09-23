@@ -17,7 +17,7 @@ from reference_prefix_preview import preview_prefix
 from mobiwam.reference_handoff import load_preview_prefix
 
 
-SPEC=dict(version='reference-geometric-candidate-v4-actual-prefix',collision_margin_m=.0005,
+SPEC=dict(version='reference-geometric-candidate-v5-full-D-search',collision_margin_m=.0005,
           D_prefix='sampled planning-preview qpos, then manipulation IK from exact terminal qpos',
           distance_backend='MuJoCo 3.2.6 native GJK/EPA on private model copy; live physics unchanged',
           distance_tolerance_m=1e-9,distance_max_iterations=1000,
@@ -188,6 +188,7 @@ def compile_candidates(ref,points,dock_plan,output):
         print('D prefix',candidate['id'],candidate['prefix_validation']['valid'],collision.get('kind','certified'),flush=True)
     ranked=sorted(dock_plan['candidates'],key=lambda c:(not(c['sampled_ik_valid'] and c['prefix_validation']['valid']),c['score'],c['id']))
     selected=ranked[0]
+    first_full_compiled=None
     for candidate in ranked:
         candidate['prefix_executable']=False
         if not (candidate['sampled_ik_valid'] and candidate['prefix_validation']['valid']):continue
@@ -196,7 +197,23 @@ def compile_candidates(ref,points,dock_plan,output):
         candidate['prefix_executable']=prediction['valid']
         print('D controller preview',candidate['id'],prediction['valid'],prediction.get('failure'),flush=True)
         if prediction['valid']:
-            selected=candidate;break
+            actual=load_preview_prefix(output/f"D-prefix-{candidate['id']}",compiler.initial,candidate['id'])
+            try:
+                states,phases,errors=compiler.route('D',points,np.asarray(candidate['dock']),actual)
+                if first_full_compiled is None:first_full_compiled=candidate
+                collision=compiler.check.path(states,phases)
+                valid=False
+                if collision['valid']:
+                    valid=compiler.metrics('D',states,phases,errors,candidate['id'],collision)['hard_valid']
+                candidate['full_D_validation']=dict(hard_valid=bool(valid),collision=collision,
+                                                     path_segments=len(phases))
+                print('D full path',candidate['id'],valid,collision.get('kind','certified'),flush=True)
+                if valid:
+                    selected=candidate;break
+            except ValueError as exc:
+                candidate['full_D_validation']=dict(hard_valid=False,error=str(exc))
+                print('D full path',candidate['id'],False,str(exc),flush=True)
+            continue
         if prediction['failure'].get('phase')=='stow':
             # All nine candidates share exactly the same controller commands
             # before stow ends, regardless of the destination dock.
@@ -204,6 +221,8 @@ def compile_candidates(ref,points,dock_plan,output):
                 other['prefix_executable']=False
                 other['shared_stow_rejection_from_candidate']=candidate['id']
             break
+    else:
+        if first_full_compiled is not None:selected=first_full_compiled
     dock_plan['selected']=selected
     records=[]
     actual_prefix=None
