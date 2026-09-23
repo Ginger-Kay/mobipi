@@ -50,6 +50,16 @@ def plan_dock(ref,points):
     stow=dict(pos=d.xpos[body]+offset,rot=d.site_xmat[site].reshape(3,3).copy())
     scratch.qpos[:]=d.qpos
     stow_q,stow_pe,stow_re=pose_ik(m,scratch,site,qids,dofs,stow,d.qpos[qids],limits)
+    stow_target=None
+    if ref.args.task=='CloseSingleDoor':
+        # The ordinary stow IK can drive joint2 almost onto the unchanged
+        # 0.015-radian execution guard. Use the existing source-bound bounded
+        # posture for planning, native prefix preview, and actual D control.
+        from reference_stow import build_stow
+        stow_target=build_stow(ref)
+        stow_q=np.asarray(stow_target['arm_qpos'])
+        stow_pe=stow_target['preferred_error_m']
+        stow_re=stow_target['preferred_error_rad']
     names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]
     def robot(name):return name.startswith(('robot0_','gripper0_','mobilebase0_'))
     rows=[]
@@ -81,7 +91,9 @@ def plan_dock(ref,points):
                     if robot(n1)!=robot(n2) and 'floor' not in (n1+n2):
                         navigation_contacts.append(dict(fraction=float(f),pair=[n1,n2],distance=float(c.dist)))
             nav_valid=not navigation_contacts and stow_pe<.012 and stow_re<.10
-            rows.append(dict(navigation_valid=nav_valid,navigation_contacts=navigation_contacts,sampled_plan_valid=valid and nav_valid,id=len(rows),fraction=fraction,lateral_m=side,dock=dock.tolist(),arm_nullspace_goal=first_q.tolist(),samples=samples,sampled_ik_valid=valid,score=max(s['pos_error_m']+.2*s['rot_error_rad'] for s in samples)))
+            row=dict(navigation_valid=nav_valid,navigation_contacts=navigation_contacts,sampled_plan_valid=valid and nav_valid,id=len(rows),fraction=fraction,lateral_m=side,dock=dock.tolist(),arm_nullspace_goal=first_q.tolist(),samples=samples,sampled_ik_valid=valid,score=max(s['pos_error_m']+.2*s['rot_error_rad'] for s in samples))
+            if stow_target is not None:row['stow_target']=stow_target
+            rows.append(row)
     ranked=sorted(rows,key=lambda r:(not r['sampled_plan_valid'],r['score'],r['id']))
     return dict(candidates=rows,selected=ranked[0],scope='8 manipulation IK poses and 17 stowed navigation collision samples; not continuous swept-path certification',reference_conditioned=True)
 
