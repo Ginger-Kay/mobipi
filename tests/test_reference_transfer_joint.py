@@ -3,7 +3,10 @@ import unittest
 
 import numpy as np
 
-from mobiwam.reference_transfer import _map_drawer_joint_by_closed_progress
+from mobiwam.reference_transfer import (
+    _drawer_opening_from_joint,
+    _map_drawer_joint_by_closed_progress,
+)
 
 
 class DrawerJointTransferTest(unittest.TestCase):
@@ -44,6 +47,24 @@ class DrawerJointTransferTest(unittest.TestCase):
             _map_drawer_joint_by_closed_progress(
                 self.old_initial, self.old_initial, 0.001,
                 self.old_range, self.new_range)
+
+    def test_checker_opening_uses_mapped_joint_not_old_delta(self):
+        extent = -self.new_initial / 0.9260391442607656
+        mapped = self.map(-0.01472421125608)
+        opening = _drawer_opening_from_joint(mapped, extent)
+        self.assertAlmostEqual(_drawer_opening_from_joint(self.new_initial, extent),
+                               0.9260391442607656)
+        self.assertAlmostEqual(_drawer_opening_from_joint(0.0, extent), 0.0)
+        self.assertGreater(opening, 0.03)
+        self.assertLess(opening, 0.06)
+
+    def test_opening_or_closed_endpoint_semantics_must_match_native_drawer(self):
+        with self.assertRaises(ValueError):
+            _drawer_opening_from_joint(-0.4, 0.3)
+        with self.assertRaises(ValueError):
+            _map_drawer_joint_by_closed_progress(
+                self.old_initial, self.old_initial, self.new_initial,
+                self.old_range, np.array([-0.6, 0.01]))
 
 
 if __name__ == '__main__':

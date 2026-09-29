@@ -59,7 +59,8 @@ def _map_drawer_joint_by_closed_progress(old_q, old_initial, new_initial,
     new_span = new_closed - new_initial
     if (not np.isfinite([old_q, old_initial, new_initial, old_closed,
                          new_closed]).all() or old_span <= 1e-9 or
-            new_span <= 1e-9 or
+            new_span <= 1e-9 or abs(old_closed) > 1e-9 or
+            abs(new_closed) > 1e-9 or
             not old_range[0] <= old_q <= old_closed or
             not new_range[0] <= new_initial <= new_closed):
         raise ValueError('invalid drawer joint progress or source opening')
@@ -68,6 +69,16 @@ def _map_drawer_joint_by_closed_progress(old_q, old_initial, new_initial,
     if not new_range[0] <= mapped <= new_closed:
         raise ValueError('mapped drawer joint leaves new limits')
     return float(mapped)
+
+
+def _drawer_opening_from_joint(qpos, slide_extent):
+    """Use the RoboCasa Drawer.get_door_state normalization for a target point."""
+    if not np.isfinite([qpos, slide_extent]).all() or slide_extent <= 0:
+        raise ValueError('invalid drawer joint or opening extent')
+    opening = -qpos / slide_extent
+    if not 0 <= opening <= 1:
+        raise ValueError('mapped drawer opening leaves checker range')
+    return float(opening)
 
 
 def compile_transferred_path(ref, attempt):
@@ -158,6 +169,11 @@ def compile_transferred_path(ref, attempt):
         raise ValueError('reference action/trace mismatch')
     old_opening = float(old_binding['opening']['door'])
     new_opening = float(new_binding['opening']['door'])
+    drawer_slide_extent = None
+    if ref.args.task == 'CloseDrawer':
+        drawer_slide_extent = float(ref.env.drawer.size[1] * .55)
+        if abs(_drawer_opening_from_joint(new_initial, drawer_slide_extent) - new_opening) > 1e-6:
+            raise ValueError('new drawer opening disagrees with native checker')
     old_base_initial = old.qpos[old_base_ids].copy()
     new_base_initial = new.qpos[new_base_ids].copy()
     old_base_body = _body(old_model, ref.base_body)
@@ -226,11 +242,14 @@ def compile_transferred_path(ref, attempt):
             raise ValueError('invalid moving handle frame transfer')
         old_site_pos = old.site_xpos[old_site]
         old_site_rot = old.site_xmat[old_site].reshape(3, 3)
+        target_opening = (_drawer_opening_from_joint(new_q, drawer_slide_extent)
+                          if ref.args.task == 'CloseDrawer' else
+                          float(np.clip(new_opening + float(state['target']['door']) - old_opening, 0, 1)))
         point = dict(reference_step=i,
                      pos=new_handle_pos + rotation @ (old_site_pos - old_handle_pos),
                      rot=rotation @ old_site_rot,
                      base=base,
-                     opening=float(np.clip(new_opening + float(state['target']['door']) - old_opening, 0, 1)),
+                     opening=target_opening,
                      grasp=float(grasp_states[i]), arm_qpos=old.qpos[old_arm_ids].copy(),
                      fixture_qpos_address=new_address, fixture_qpos=float(new_q))
         point = adjust_reference(ref, new, point)
@@ -246,6 +265,9 @@ def compile_transferred_path(ref, attempt):
                'old_nq': old_model.nq, 'new_nq': new_model.nq,
                'old_joint_range': old_range.tolist(), 'new_joint_range': new_range.tolist(),
                'target_joint_mapping': joint_mapping,
+               'target_opening_mapping': ('native_drawer_slide_normalization_v0.2'
+                                          if ref.args.task == 'CloseDrawer' else
+                                          'relative_opening_displacement_v0.1'),
                'old_initial_target_qpos': old_initial, 'new_initial_target_qpos': new_initial,
                'old_initial_base': old_base_initial.tolist(), 'new_initial_base': new_base_initial.tolist(),
                'max_base_basis_condition': max_base_basis_condition,
