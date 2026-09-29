@@ -253,7 +253,13 @@ def compile_transferred_path(ref, attempt):
                      grasp=float(grasp_states[i]), arm_qpos=old.qpos[old_arm_ids].copy(),
                      fixture_qpos_address=new_address, fixture_qpos=float(new_q))
         point = adjust_reference(ref, new, point)
-        if points and point['grasp'] == points[-1]['grasp'] and np.linalg.norm(point['pos']-points[-1]['pos']) < .006 and np.linalg.norm(point['base']-points[-1]['base']) < .006 and np.linalg.norm(orientation_error(point['rot'], points[-1]['rot'])) < .03:
+        if (points and point['grasp'] == points[-1]['grasp'] and
+                np.linalg.norm(point['pos']-points[-1]['pos']) < .006 and
+                np.linalg.norm(point['base']-points[-1]['base']) < .006 and
+                np.linalg.norm(orientation_error(point['rot'], points[-1]['rot'])) < .03 and
+                (ref.args.task != 'CloseDrawer' or
+                 (i != len(records) - 1 and
+                  abs(point['opening'] - points[-1]['opening']) < .005))):
             continue
         max_base_offset = max(max_base_offset, float(np.linalg.norm(base[:2] - new_base_initial[:2])))
         max_target_displacement = max(max_target_displacement, float(np.linalg.norm(point['pos'] - old_site_pos)))
