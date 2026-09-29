@@ -47,6 +47,29 @@ def _wrap(angle):
     return float(np.arctan2(np.sin(angle), np.cos(angle)))
 
 
+def _map_drawer_joint_by_closed_progress(old_q, old_initial, new_initial,
+                                         old_range, new_range):
+    """Map remaining distance to each drawer model's closed hard stop.
+
+    The upper slide-joint limit is the physical closed endpoint. The initial
+    joint pose and closed endpoint both map exactly; out-of-range values fail.
+    """
+    old_closed, new_closed = float(old_range[1]), float(new_range[1])
+    old_span = old_closed - old_initial
+    new_span = new_closed - new_initial
+    if (not np.isfinite([old_q, old_initial, new_initial, old_closed,
+                         new_closed]).all() or old_span <= 1e-9 or
+            new_span <= 1e-9 or
+            not old_range[0] <= old_q <= old_closed or
+            not new_range[0] <= new_initial <= new_closed):
+        raise ValueError('invalid drawer joint progress or source opening')
+    progress = (old_q - old_initial) / old_span
+    mapped = new_initial + progress * new_span
+    if not new_range[0] <= mapped <= new_closed:
+        raise ValueError('mapped drawer joint leaves new limits')
+    return float(mapped)
+
+
 def compile_transferred_path(ref, attempt):
     """Return points and a pre-outcome transfer receipt for one fixed template."""
     from reference_geometry import adjust_reference
@@ -144,6 +167,8 @@ def compile_transferred_path(ref, attempt):
     max_base_offset = 0.
     max_target_displacement = 0.
     max_base_basis_condition = 0.
+    joint_mapping = ('drawer_closed_progress_v0.2' if ref.args.task == 'CloseDrawer'
+                     else 'range_scaled_displacement_v0.1')
     for i, record in enumerate(records):
         if i % 6 and i != len(records) - 1 and (i == 0 or grasp_states[i] == grasp_states[i-1]):
             continue
@@ -151,12 +176,18 @@ def compile_transferred_path(ref, attempt):
         old.qpos[:] = state['qpos']
         mujoco.mj_forward(old_model, old)
         old_q = float(old.qpos[old_address])
-        scale = (new_range[1] - new_range[0]) / (old_range[1] - old_range[0])
-        new_q = new_initial + (old_q - old_initial) * scale
-        if new_q < new_range[0] - 1e-6 or new_q > new_range[1] + 1e-6:
-            raise ValueError('mapped target joint leaves new limits')
+        if ref.args.task == 'CloseDrawer':
+            new_q = _map_drawer_joint_by_closed_progress(
+                old_q, old_initial, new_initial, old_range, new_range)
+            target_q = new_q
+        else:
+            scale = (new_range[1] - new_range[0]) / (old_range[1] - old_range[0])
+            new_q = new_initial + (old_q - old_initial) * scale
+            if new_q < new_range[0] - 1e-6 or new_q > new_range[1] + 1e-6:
+                raise ValueError('mapped target joint leaves new limits')
+            target_q = np.clip(new_q, *new_range)
         new.qpos[:] = live.qpos
-        new.qpos[new_address] = np.clip(new_q, *new_range)
+        new.qpos[new_address] = target_q
         old_base_world_pos, old_base_world_rot = _pose(old, old_base_body)
         desired_base_pos = new_main_pos + main_rotation @ (old_base_world_pos - old_main_pos)
         desired_base_yaw = _yaw(old_base_world_rot) + _yaw(main_rotation)
@@ -165,7 +196,7 @@ def compile_transferred_path(ref, attempt):
         # The body origin can move when yaw changes. Evaluate the XY basis at
         # this waypoint's yaw, then invert only the two translational joints.
         new.qpos[:] = live.qpos
-        new.qpos[new_address] = np.clip(new_q, *new_range)
+        new.qpos[new_address] = target_q
         new.qpos[new_base_ids[2]] = base[2]
         mujoco.mj_forward(new_model, new)
         base_at_yaw = new.xpos[new_base_body].copy()
@@ -181,7 +212,7 @@ def compile_transferred_path(ref, attempt):
         max_base_basis_condition = max(max_base_basis_condition, condition)
         base[:2] += np.linalg.solve(basis, desired_base_pos[:2] - base_at_yaw[:2])
         new.qpos[:] = live.qpos
-        new.qpos[new_address] = np.clip(new_q, *new_range)
+        new.qpos[new_address] = target_q
         new.qpos[new_base_ids] = base
         new.qpos[new_arm_ids] = old.qpos[old_arm_ids]
         mujoco.mj_forward(new_model, new)
@@ -214,6 +245,7 @@ def compile_transferred_path(ref, attempt):
                'old_fixture': old_binding['fixture_name'], 'new_fixture': new_binding['fixture_name'],
                'old_nq': old_model.nq, 'new_nq': new_model.nq,
                'old_joint_range': old_range.tolist(), 'new_joint_range': new_range.tolist(),
+               'target_joint_mapping': joint_mapping,
                'old_initial_target_qpos': old_initial, 'new_initial_target_qpos': new_initial,
                'old_initial_base': old_base_initial.tolist(), 'new_initial_base': new_base_initial.tolist(),
                'max_base_basis_condition': max_base_basis_condition,
