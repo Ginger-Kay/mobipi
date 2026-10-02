@@ -33,3 +33,12 @@ def test_unknown_gpu_context_and_allocation_changes_refused():
     rows[1]['graphics']=[];rows[2]['compute'].append(dict(pid=998))
     with pytest.raises(ValueError):require_occupancy_only(rows,expected)
     with pytest.raises(ValueError):require_occupancy_only(rows[:3],expected)
+
+
+def test_transition_tail_does_not_serialize_new_gpu_batch():
+    from mobiwam.dr_v04_parallel import continuation_batches
+    order=list(range(35));groups=continuation_batches(order,order[:9])
+    assert groups[0]==list(range(9,15))
+    assert [g for b in groups for g in b]==order[9:]
+    assert [len(b) for b in groups]==[6,6,6,6,2]
+    with pytest.raises(ValueError):continuation_batches(order,[0,2])

@@ -2,7 +2,7 @@
 import argparse,concurrent.futures,fcntl,json,os,shutil,subprocess,sys,time
 from pathlib import Path
 from dr_v04_r2_batch import audit_one,load,write,sha,stamp
-from mobiwam.dr_v04_parallel import group_output,completed_groups,choose_gpu,batches
+from mobiwam.dr_v04_parallel import group_output,completed_groups,choose_gpu,batches,continuation_batches
 
 
 def main():
@@ -58,8 +58,11 @@ def main():
         status['latest_checkpoint']=load(cp);save();print(stamp(),'checkpoint',cp.name,flush=True)
     try:
         save()
-        for batch in batches(order):
-            if all(g in done for g in batch) and (run/'batches'/f'checkpoint-{order.index(batch[-1])+1:02d}.json').exists():continue
+        closed={g for cp in (run/'batches').glob('checkpoint-*.json') for g in load(cp)['groups']}
+        backlog=[g for g in done if g not in closed]
+        for g in backlog:submit(g)
+        remaining_batches=continuation_batches(order,done)
+        for batch in remaining_batches:
             for group in batch:
                 if group in done:submit(group);continue
                 while not free:poll();time.sleep(3)
@@ -74,7 +77,9 @@ def main():
                 log=(run/'batches'/f'group-{index:02d}.log').open('a');proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,env=env);active[group]=dict(proc=proc,gpu=gpu,out=out,log=log);save();print(stamp(),'group_started',index,group,'GPU',gpu,'PID',proc.pid,flush=True)
                 poll()
             while active:poll();time.sleep(3)
+            if backlog:close_batch(backlog);backlog=[]
             close_batch(batch)
+        if backlog:close_batch(backlog)
         status.update(state='collection_and_machine_audits_complete',ended_at=stamp());save()
     except BaseException as exc:
         status.update(state='hold_engineering_diagnosis',error=repr(exc),held_at=stamp());save()

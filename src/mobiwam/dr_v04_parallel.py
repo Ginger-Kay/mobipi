@@ -31,3 +31,9 @@ def choose_gpu(free,task,counts):
 
 def batches(order):
     return [order[:4]]+[order[i:i+6] for i in range(4,len(order),6)]
+
+
+def continuation_batches(order,done):
+    if list(done)!=list(order[:len(done)]):raise ValueError('completed prefix order differs')
+    remaining=order[len(done):]
+    return [remaining[i:i+6] for i in range(0,len(remaining),6)]
