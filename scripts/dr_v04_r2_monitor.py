@@ -17,6 +17,16 @@ def write(p,v):
     p=Path(p);tmp=p.with_suffix(p.suffix+'.tmp');tmp.write_text(json.dumps(v,indent=2,allow_nan=False)+'\n');tmp.replace(p)
 def git(repo,*args):return subprocess.check_output(['git','-C',str(repo),*args],text=True,stderr=subprocess.STDOUT)
 
+def current_document(old,block,state,owner,now):
+    marker='<!-- R2_CHECKPOINT_HISTORY -->'
+    if marker in old:
+        previous,history=old.split(marker,1)
+        history=history+'\n\n'+previous
+    else:history='\n\n'+old
+    head=f"# DR-v0.4-R2 最新执行检查点\n\nupdated_at: `{now}`\nstatus: `{state}`\ncontrol_write_owner: `{owner}`\nreview_status: `pending`\nformal_train_ready: `false`\n"
+    return head+block+'\n\n## 历史快照（以下状态仅属于各自时间戳）\n'+marker+history
+
+
 def publish(run,output,event,final):
     project=run.parents[4];repo=project/'control'
     if git(repo,'remote','get-url','origin').strip()!='git@github-jhk:Ginger-Kay/MM-WAM-Research.git':raise ValueError('unexpected Research origin')
@@ -41,7 +51,7 @@ def publish(run,output,event,final):
     if gate['main'] is not None:
         block+=f'\n冻结数值条件：主24train best-fixed={gate["main"]["best_fixed"]}，oracle相对best-fixed/geometry成功Source增量={gate["main"]["oracle_gain_vs_best_fixed"]}/{gate["main"]["oracle_gain_vs_geometry"]}；23train敏感性best-fixed={gate["excluding_seed109_sensitivity"]["best_fixed"]}，数值Gate变化={gate["sensitivity_numerical_gate_changed"]}。非数值资格是否闭合={gate.get("nonnumerical_qualification_closed",False)}；不据敏感性挑主表。\n'
     for rel in FILES[:2]:
-        p=repo/rel;p.write_text(p.read_text()+block)
+        p=repo/rel;p.write_text(current_document(p.read_text(),block,status['state'],owner,now))
     for rel,prefix in [('docs/obc-wam-active-recovery.md','../08-experiments/'),('README.md','08-experiments/')]:
         p=repo/rel;p.write_text(f'{title}：{summary} {next_step} [交接]({prefix}handoff/{STEM}.md)。\n\n'+p.read_text())
     p=repo/'08-experiments/code-registry.md';p.write_text(f'{title}：执行code `{manifest["code_commit"]}` / `{run}/runtime`，非学习汇总代码 `{gate["analysis_code_commit"]}` / `{run}/analysis-runtime`，仅消费已记录train/validation。{summary} [报告](reports/{STEM}.md)。\n\n'+p.read_text())
