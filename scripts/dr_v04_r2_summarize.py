@@ -66,6 +66,8 @@ def main():
         seed109_exception='whole R1 package; known outcome admitted by R2; original first 3 excluded; sensitivity predeclared',
         new_outcomes=sum(r['attempt'] is not None and r['group_id']!=ADMITTED for r in rows),
         human_approved_sources=1,new_human_review='pending',source_denominator=36,sealed_test_sources=12,sealed_test_read=False)
+    from mobiwam.dr_v04_r2_pack import pack
+    evaluation['paired_supervision_candidate']=pack(run,Path(binding['parent_freeze']),roster,rows,out,Path(__file__).resolve().parent.parent)
     write(out/'route-outcomes.json',rows);write(out/'mechanical-gate.json',evaluation)
     with (out/'route-outcomes.csv').open('w') as f:
         keys=['group_id','task','split','route','status','success','failure','progress','base_path_m','completion_time_s','raw_reason','machine_eligible_for_gate','human_review','outcome_previously_observed','attempt','video']
