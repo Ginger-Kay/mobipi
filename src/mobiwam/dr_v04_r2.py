@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 VERSION='DR-v0.4-R2-batched-train-validation'
-CAMERA_RULE='target-base-side-segmentation-v2'
+CAMERA_RULE='target-base-side-segmentation-depth-v3'
 ADMITTED='CloseDrawer-layout1-style0-seed109'
 SAFETY=dict(collision_margin_m=.0005,joint_margin_strict_rad=.015,replay_max_state_abs_error=1e-5)
 
@@ -29,8 +29,8 @@ def camera_candidates(handle,base):
     approach=math.degrees(math.atan2(base[1]-handle[1],base[0]-handle[0]))
     center=.60*handle+.40*base;center[2]=max(.65,float(handle[2])*.65)
     distance=max(2.0,float(np.linalg.norm(handle-base))*1.8)
-    return [dict(lookat=center.tolist(),distance=distance,azimuth=(approach+offset)%360,elevation=-18.)
-            for offset in (60,-60,90,-90,30,-30)]
+    return [dict(lookat=center.tolist(),distance=distance,azimuth=(approach+180+offset)%360,elevation=-18.)
+            for offset in (0,30,-30,60,-60,90,-90,120,-120,150,-150,180)]
 
 def prepare_camera(ref,row,output):
     import mujoco
@@ -53,6 +53,26 @@ def prepare_camera(ref,row,output):
         finally:ref.renderer.disable_segmentation_rendering()
         valid=seg[:,:,1]==int(mujoco.mjtObj.mjOBJ_GEOM)
         counts={k:int(np.count_nonzero(valid & np.isin(seg[:,:,0],ids))) for k,ids in sets.items()}
+        # Native handle collision geoms are intentionally hidden by the normal
+        # recorder's render options. Measure the visible target surface at the
+        # projected handle location using depth, without changing geom groups,
+        # collision masks, renderer policy, or physical geometry.
+        ref.renderer.enable_depth_rendering()
+        try:depth=ref.frame(c).copy()
+        finally:ref.renderer.disable_depth_rendering()
+        cam=ref.renderer.scene.camera[0]
+        forward=np.asarray(cam.forward);up=np.asarray(cam.up)
+        right=np.cross(forward,up);delta=np.mean(d.geom_xpos[sets['handle']],axis=0)-np.asarray(cam.pos)
+        z=float(np.dot(delta,forward));focal=ref.args.height/(2*math.tan(math.radians(float(m.vis.global_.fovy))/2))
+        handle_pixels=0
+        if z>0:
+            px=ref.args.width/2+focal*float(np.dot(delta,right))/z
+            py=ref.args.height/2-focal*float(np.dot(delta,up))/z
+            radius=max(6,int(math.ceil(focal*.04/z)))
+            yy,xx=np.ogrid[:depth.shape[0],:depth.shape[1]]
+            region=(xx-px)**2+(yy-py)**2<=radius**2
+            handle_pixels=int(np.count_nonzero(region & valid & np.isin(seg[:,:,0],sets['target']) & (np.abs(depth-z)<.08)))
+        counts['handle']=handle_pixels
         thresholds=dict(target=800,handle=30,gripper=100,base=500)
         ratios=[counts[k]/v for k,v in thresholds.items()]
         records.append(dict(index=i,camera=c,pixels=counts,minimum_visibility_ratio=min(ratios)))
@@ -60,7 +80,7 @@ def prepare_camera(ref,row,output):
     # then target and contact detail, stable candidate index breaks exact ties.
     selected=max(records,key=lambda x:(min(x['minimum_visibility_ratio'],2.),x['pixels']['handle'],x['pixels']['gripper'],-x['index']))
     Image.fromarray(frames[selected['index']]).save(output/'selected.jpg')
-    panel=Image.new('RGB',(1440,600))
+    panel=Image.new('RGB',(1440,300*math.ceil(len(frames)/3)))
     for i,frame in enumerate(frames):
         thumb=Image.fromarray(frame).resize((480,270));panel.paste(thumb,((i%3)*480,(i//3)*300+30))
     draw=ImageDraw.Draw(panel)
