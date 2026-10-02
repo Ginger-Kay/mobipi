@@ -110,6 +110,12 @@ def main():
  ref.label='DR-v0.4_prospective_formal_candidate_pending_full_route_audit'
  try:
   ref.restore()
+  # Independent native identity is mandatory before compiling or stepping routes.
+  from mobiwam.task_video_identity import observe_native
+  ref.identity_expected=row
+  ref.identity_context=dict(run_id=out.parent.name,group_id=args.group_id)
+  native_identity=observe_native(ref,row)
+  write_json(out/'native-task-identity.json',native_identity)
   if spec.get('transfer_mode')=='moving_target_handle_frame':
    points,transfer=compile_transferred_path(ref,Path(spec['reference']))
    planned=json.loads((prior/'transfer-receipt.json').read_text())
@@ -157,6 +163,10 @@ def main():
     checker_success=replay_result['checker_success'],
     max_state_abs_error=replay_result['max_state_abs_error'],
     replay_kind='fixed saved actions, no human correction, not an independent outcome'))
+  from mobiwam.task_video_identity import validate_recording
+  for result in results:
+   attempt=Path(result['path'])
+   validate_recording(attempt/'task-video-manifest.json',dict(run_id=ref.identity_context['run_id'],group_id=args.group_id,route=result['route'],attempt_id=attempt.name))
   write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results,
    route_outcomes=len(results),audit='pending',formal_train_ready=False))
  finally:

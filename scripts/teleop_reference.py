@@ -380,10 +380,19 @@ class Reference:
 
     def begin(self):
         self.restore()
+        if getattr(self, 'identity_expected', None):
+            from mobiwam.task_video_identity import observe_native
+            observe_native(self, self.identity_expected)
         path = self.source / self.route / ('attempt-' + identifier())
         path.mkdir(parents=True)
+        identity = None
+        if getattr(self, 'identity_expected', None):
+            from mobiwam.task_video_identity import recorder_binding
+            identity = recorder_binding(self, path, self.identity_expected, self.identity_context)
         h = h5py.File(path / 'demo.hdf5', 'w')
         group = h.create_group('data/demo_0')
+        if identity is not None:
+            group.attrs['task_video_identity'] = json.dumps(identity)
         group.attrs['model_file'] = (self.source / 'model.xml').read_text()
         group.attrs['env_info'] = json.dumps(self.config)
         group.attrs['ep_meta'] = (self.source / 'ep_meta.json').read_text()
@@ -401,6 +410,7 @@ class Reference:
                           'trace': (path / 'trace.jsonl').open('w'),
                           'n': 0, 'started': stamp(), 'events': [], 'success_streak': 0}
         self.recording['camera'] = self.camera_state()
+        self.recording['task_video_identity'] = identity
         self.paused = False
         self.message = 'Recording. Stop saves this attempt, including failures.'
         write_json(path / 'status.json', {'status': 'recording', 'route': self.route,
@@ -450,9 +460,18 @@ class Reference:
         r['group'].attrs['num_samples'] = r['n']
         r['h']['data'].attrs['total'] = r['n']
         r['h']['data'].attrs['env_args'] = json.dumps({'env_name': self.args.task, 'type': 1, 'env_kwargs': self.config})
+        identity = r.get('task_video_identity')
+        if identity is not None:
+            identity['camera'] = r['camera']
+            r['group'].attrs['task_video_identity'] = json.dumps(identity)
         r['h'].close()
         r['trace'].close()
         r['video'].close()
+        if identity is not None:
+            from mobiwam.task_video_identity import finalize_recording, human_delivery
+            manifest = finalize_recording(r['path'], identity, r['n'])
+            result['task_video_manifest'] = str(manifest)
+            human_delivery(manifest, r['path'] / 'human-review')
         write_json(r['path'] / 'result.json', result)
         write_json(r['path'] / 'status.json', {'status': 'recorded'})
         self.last_attempt = r['path']
@@ -460,6 +479,33 @@ class Reference:
         self.paused = True
         self.message = 'Saved. Replay checks actions without human correction.'
         print('SAVED', self.last_attempt, reason, flush=True)
+
+    def identity_preview(self, output, expected, context, camera=None):
+        """One native still through recorder binding; zero actions, no route outcome."""
+        from mobiwam.task_video_identity import recorder_binding, finalize_recording, human_delivery
+        self.restore()
+        before = self.integration().copy()
+        if camera is not None:
+            self.apply_camera(camera)
+        output = Path(output).resolve()
+        identity = recorder_binding(self, output, expected, context)
+        output.mkdir(parents=True, exist_ok=False)
+        with h5py.File(output / 'demo.hdf5', 'w') as h:
+            g = h.create_group('data/demo_0')
+            g.attrs['task_video_identity'] = json.dumps(identity)
+            g.attrs['model_file'] = (self.source / 'model.xml').read_text()
+            g.attrs['env_info'] = json.dumps(self.config)
+            g.create_dataset('actions', shape=(0, self.env.action_dim), dtype='f8')
+            g.create_dataset('states', data=[self.env.sim.get_state().flatten()])
+            self.append_observation(g)
+        (output / 'trace.jsonl').write_text('')
+        with imageio.get_writer(output / 'original.mp4', fps=20, codec='libx264', quality=7, macro_block_size=None) as video:
+            video.append_data(self.frame(identity['camera']))
+        if not np.array_equal(before, self.integration()):
+            raise ValueError('zero-action identity preview changed integration state')
+        manifest = finalize_recording(output, identity, 0, kind='zero_action_diagnostic')
+        human_delivery(manifest, output / 'human-review')
+        return manifest
 
     def replay(self):
         assert self.last_attempt, 'No recorded attempt to replay.'
