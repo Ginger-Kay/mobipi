@@ -146,6 +146,17 @@ def main():
    # Append immediately: stop or crash after any route leaves the complete attempt and no repeat.
    write_json(out/f'route-{route}-dispatched.json',dict(route=route,path=path,ended_at=stamp(),
     outcome_status='pending_independent_replay_and_full_video_substep_audit'))
+   # Protocol replay uses exactly the saved actions. It is verification, never a
+   # second scientific outcome or a search for success; an error stops this group.
+   ref.replay()
+   replay_files=sorted(Path(path).glob('replay-*/result.json'))
+   if len(replay_files)!=1:raise ValueError('expected one protocol replay per scientific route')
+   replay_result=json.loads(replay_files[0].read_text())
+   write_json(out/f'route-{route}-replay.json',dict(result=str(replay_files[0]),
+    sha256=sha(replay_files[0]),steps=replay_result['steps'],
+    checker_success=replay_result['checker_success'],
+    max_state_abs_error=replay_result['max_state_abs_error'],
+    replay_kind='fixed saved actions, no human correction, not an independent outcome'))
   write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results,
    route_outcomes=len(results),audit='pending',formal_train_ready=False))
  finally:
