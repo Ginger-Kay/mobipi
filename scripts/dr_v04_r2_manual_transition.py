@@ -1,4 +1,4 @@
-"""Researcher-run transition: stop this queue's dispatch, drain children, then launch.
+"""Researcher-authorized automatic transition: stop this queue's dispatch, drain children, then launch.
 
 Only SIGINT is sent, to the exact registered R2 CPU coordinator. No signal is
 sent to a collector, auditor, unknown process, GPU worker or occupancy program.
@@ -26,13 +26,14 @@ def live_collectors(run):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--binding',type=Path,required=True);a=p.parse_args();run=a.run.resolve();b=load(a.binding)
     lock=(run/'four-gpu-transition.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    marker=run/'preflight/manual-four-gpu-start.json'
-    if marker.exists():raise ValueError('manual transition already started; inspect existing provenance before any retry')
+    marker=run/'preflight/authorized-four-gpu-start.json'
+    if marker.exists():raise ValueError('authorized transition already started; inspect existing provenance before any retry')
     status=load(run/'status.json');root=Path(__file__).resolve().parent.parent
     oldpid=status['pid'];expected=str(run/'runtime-stop-repair/scripts/dr_v04_r2_batch.py')
     if status['state']!='running' or expected not in command(oldpid) or '--run '+str(run) not in command(oldpid):raise ValueError('old coordinator identity/state differs; no process intervention')
     if status.get('mode')=='four_gpu':raise ValueError('four GPU queue already running')
-    write(marker,dict(at=stamp(),run_id=b['run_id'],binding_sha256=sha(a.binding),requested_gpus=[0,1,2,3],manual_entrypoint=str(Path(__file__).resolve()),old_coordinator_pid=oldpid,old_coordinator_command=command(oldpid),old_status=status,scope='user-authorized four-card data collection; researcher invoked manual launch; no training'))
+    if b.get('automatic_start_authorized') is not True or b.get('manual_start_required') is not False:raise ValueError('explicit researcher automatic start authorization missing')
+    write(marker,dict(at=stamp(),run_id=b['run_id'],binding_sha256=sha(a.binding),requested_gpus=[0,1,2,3],authorized_entrypoint=str(Path(__file__).resolve()),old_coordinator_pid=oldpid,old_coordinator_command=command(oldpid),old_status=status,scope='user-authorized four-card data collection; researcher explicitly waived manual launch in current conversation; no training'))
     print(stamp(),'DRAIN exact CPU coordinator',oldpid,'; collectors/auditors continue',flush=True)
     os.kill(oldpid,signal.SIGINT)
     deadline=time.monotonic()+3600

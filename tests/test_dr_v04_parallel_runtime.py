@@ -14,7 +14,7 @@ def test_actual_coordinator_fifo_four_slots_and_unique_routes(tmp_path,monkeypat
     binding=dict(run_id='run',parent_freeze=str(tmp_path/'freeze.json'),allowed_group_ids=order,scientific_rows=rows,parallel_gpu_indices=[0,1,2,3],new_route_budget=105,training_authorized=False,execution_code_commit='frozen')
     bp=tmp_path/'binding.json';save(bp,binding);permit=tmp_path/'permit.json';save(permit,dict(run_id='run',binding_sha256=hashlib.sha256(bp.read_bytes()).hexdigest(),requested_gpus=[0,1,2,3]))
     save(tmp_path/'preflight/first-batch-runtime-review.json',dict(runtime_checks_pass=True));save(tmp_path/'batches/checkpoint-04.json',dict(groups=order[:4]));(tmp_path/'videos').mkdir();(tmp_path/'audit').mkdir()
-    monkeypatch.setattr(sys,'argv',['parallel','--run',str(tmp_path),'--binding',str(bp),'--manual-start-receipt',str(permit)])
+    monkeypatch.setattr(sys,'argv',['parallel','--run',str(tmp_path),'--binding',str(bp),'--start-receipt',str(permit)])
     monkeypatch.setattr(coordinator,'completed_groups',lambda *args:order[:4].copy())
     monkeypatch.setattr(coordinator.subprocess,'check_output',lambda cmd,**kw:'frozen' if 'rev-parse' in cmd else '')
     monkeypatch.setattr(coordinator.time,'sleep',lambda n:None);monkeypatch.setenv('R2_ROBOCASA_PATH','unused')

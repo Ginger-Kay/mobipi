@@ -6,10 +6,10 @@ from mobiwam.dr_v04_parallel import group_output,completed_groups,choose_gpu,bat
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--binding',type=Path,required=True);p.add_argument('--manual-start-receipt',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--binding',type=Path,required=True);p.add_argument('--start-receipt',type=Path,required=True);a=p.parse_args()
     run=a.run.resolve();root=Path(__file__).resolve().parent.parent;b=load(a.binding);freeze=Path(b['parent_freeze']);order=b['allowed_group_ids'];rows={x['group_id']:x for x in b['scientific_rows']}
-    permit=load(a.manual_start_receipt)
-    if permit.get('run_id')!=b['run_id'] or permit.get('binding_sha256')!=sha(a.binding) or permit.get('requested_gpus')!=[0,1,2,3]:raise ValueError('manual launch receipt differs')
+    permit=load(a.start_receipt)
+    if permit.get('run_id')!=b['run_id'] or permit.get('binding_sha256')!=sha(a.binding) or permit.get('requested_gpus')!=[0,1,2,3]:raise ValueError('authorized launch receipt differs')
     if b.get('parallel_gpu_indices')!=[0,1,2,3] or b.get('new_route_budget')!=105 or b.get('training_authorized') is not False:raise ValueError('parallel boundary differs')
     if subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()!=b['execution_code_commit'] or subprocess.check_output(['git','-C',str(root),'status','--porcelain']).strip():raise ValueError('runtime must be frozen and clean')
     lock=(run/'queue.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
