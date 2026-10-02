@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 VERSION='DR-v0.4-R2-batched-train-validation'
-CAMERA_RULE='target-base-side-segmentation-v1'
+CAMERA_RULE='target-base-side-segmentation-v2'
 ADMITTED='CloseDrawer-layout1-style0-seed109'
 SAFETY=dict(collision_margin_m=.0005,joint_margin_strict_rad=.015,replay_max_state_abs_error=1e-5)
 
@@ -37,9 +37,7 @@ def prepare_camera(ref,row,output):
     from PIL import Image,ImageDraw
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     before=ref.integration().copy();rng=json.dumps(ref.env.rng.bit_generator.state,sort_keys=True)
-    m,d=ref.model_data();suffix='_door_handle_handle' if row['task']=='CloseDrawer' else '_handle'
-    gid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_GEOM,row['fixture_name']+suffix)
-    if gid<0:raise ValueError('native handle missing for camera')
+    m,d=ref.model_data()
     bid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_BODY,ref.base_body)
     names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]
     sets=dict(target=[i for i,n in enumerate(names) if n.startswith(row['fixture_name'])],
@@ -47,7 +45,7 @@ def prepare_camera(ref,row,output):
               gripper=[i for i,n in enumerate(names) if n.startswith('gripper0_')],
               base=[i for i,n in enumerate(names) if n.startswith('mobilebase0_')])
     if any(not x for x in sets.values()):raise ValueError('native visibility geometry missing')
-    candidates=camera_candidates(d.geom_xpos[gid],d.xpos[bid]);records=[];frames=[]
+    candidates=camera_candidates(np.mean(d.geom_xpos[sets['handle']],axis=0),d.xpos[bid]);records=[];frames=[]
     for i,c in enumerate(candidates):
         rgb=ref.frame(c).copy();frames.append(rgb)
         ref.renderer.enable_segmentation_rendering()
