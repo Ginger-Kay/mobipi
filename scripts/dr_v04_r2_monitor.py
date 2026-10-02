@@ -84,7 +84,7 @@ def snapshot(run,event,deliver,final):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--deliver',action='store_true');p.add_argument('--once',action='store_true')
-    p.add_argument('--stage',choices=('pilot','remainder'),default='remainder');a=p.parse_args();run=a.run.resolve()
+    p.add_argument('--exit-file',type=Path);p.add_argument('--stage',choices=('pilot','remainder'),default='remainder');a=p.parse_args();run=a.run.resolve()
     lock=(run/'checkpoint-observer.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     if a.once:
         print(snapshot(run,'manual-snapshot',a.deliver,False),flush=True);return
@@ -97,7 +97,7 @@ def main():
         if status.get('stage')!=a.stage:time.sleep(15);continue
         checkpoints=sorted((run/'batches').glob('checkpoint-*.json'))
         events=[p.stem for p in checkpoints if p.stem not in seen]
-        if (run/(a.stage+'.exit')).exists() and 'dispatcher-exited' not in seen:events.append('dispatcher-exited')
+        if (a.exit_file if a.exit_file else run/(a.stage+'.exit')).exists() and 'dispatcher-exited' not in seen:events.append('dispatcher-exited')
         for event in events:
             final=event=='dispatcher-exited'
             try:
