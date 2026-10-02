@@ -29,7 +29,7 @@ def topology(model):
     for key in ('names','body_parentid','body_jntnum','body_pos','body_quat',
                 'jnt_type','jnt_bodyid','jnt_qposadr','jnt_axis','jnt_range',
                 'geom_bodyid','geom_type','geom_size','geom_pos','geom_quat',
-                'geom_meshid','mesh_vert','mesh_face'):
+                'geom_dataid','mesh_vert','mesh_face'):
         value=getattr(model,key);h.update(key.encode());h.update(bytes(value) if isinstance(value,bytes) else np.asarray(value).tobytes())
     return h.hexdigest()
 
