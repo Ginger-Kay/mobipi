@@ -20,6 +20,7 @@ from reference_planning import compile_candidates
 from mobiwam.reference_dispatch import rejection_reason, target_finger_contact
 from reference_geometry import plan_dock, PalmClearance, adjust_reference, translation_limit
 from mobiwam.reference_prefix_safety import JointMarginMonitor, JointMarginStop, GuardedIntegration
+from mobiwam.reference_formal_substep import FormalSubstepMonitor, FormalSafetyStop
 
 
 class ProgressWatch:
@@ -141,7 +142,9 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
     index=0; stuck=0; settled=0; reason='horizon'; base_max_drift=0.
     dock=np.asarray(ref.dock_plan['selected']['dock'])
     margin_guard=None
-    if route=='D':
+    formal_scope=execution_scope=='DR-v0.4_formal_candidate_pending_audit'
+    formal_guard=FormalSubstepMonitor(ref,target_name) if formal_scope else None
+    if route=='D' or formal_scope:
         arm=ref.robot.part_controllers['right']
         joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
         margin_guard=JointMarginMonitor(arm.qpos_index,m.jnt_range[joints],
@@ -211,12 +214,18 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
                 before_step=ref.integration().copy()
                 integration_guard=GuardedIntegration(ref.env.sim,d,margin_guard,
                     lite_physics=ref.env.lite_physics,step=step,phase=stage)
+                if formal_guard is not None:formal_guard.set_boundary(step,stage)
                 try:
-                    with integration_guard:ref.step(action)
-                except JointMarginStop:
+                    if formal_guard is not None:
+                        with formal_guard:
+                            with integration_guard:ref.step(action)
+                    else:
+                        with integration_guard:ref.step(action)
+                except (JointMarginStop,FormalSafetyStop):
                     np.savez_compressed(path/'partial-control-step.npz',
                         initial_integration=before_step,terminal_integration=ref.integration(),
-                        attempted_action=action,completed_physics_substeps=integration_guard.completed_substeps)
+                        attempted_action=action,completed_physics_substeps=(len(formal_guard.phases)
+                          if formal_guard is not None else integration_guard.completed_substeps))
                     raise
             if step%20==0:control_log.write(json.dumps(capture(ref,step,action))+'\n')
             if step%100==0:
@@ -241,6 +250,10 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
             if progress_idle>=180:
                 reason='tracking_stall';break
         ref.finish(reason)
+    except FormalSafetyStop as exc:
+        reason='native_forbidden_contact_stop'
+        write_json(path/'formal-substep-stop.json',exc.failure)
+        ref.finish(reason)
     except JointMarginStop as exc:
         reason='joint_margin_stop'
         write_json(path/'joint-margin-stop.json',dict(failure=exc.failure,monitor=margin_guard.receipt(),
@@ -252,6 +265,7 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
     finally:
         log.close();control_log.close()
         if margin_guard is not None:write_json(path/'joint-margin-monitor.json',margin_guard.receipt())
+        if formal_guard is not None:write_json(path/'formal-native-substeps-receipt.json',formal_guard.save(path))
     write_json(path/'executor-result.json',dict(executor='reference-feedback-v17',route=route,reason=reason,
         base_max_drift_generalized=base_max_drift,waypoints_reached=index,total_waypoints=len(points),
         execution_scope=execution_scope,formal_train_ready=False,strict_semantics_verified=False,

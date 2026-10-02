@@ -29,7 +29,8 @@ PREPLAN_DEPENDENCIES=(
  'src/mobiwam/reference_prefix_safety.py','src/mobiwam/reference_handoff.py',
  'src/mobiwam/reference_transfer.py','scripts/reference_transfer_plan.py',
 )
-NEW_DEPENDENCIES=('scripts/reference_executor.py','scripts/dr_v04_formal_collect.py')
+NEW_DEPENDENCIES=('scripts/reference_executor.py','scripts/dr_v04_formal_collect.py',
+                  'src/mobiwam/reference_formal_substep.py')
 
 def sha(path):
  h=sha256()
