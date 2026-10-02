@@ -466,7 +466,8 @@ class Reference:
         result = {'status': 'recorded', 'route': self.route, 'source': str(self.source),
                   'started_at': r['started'], 'ended_at': stamp(), 'steps': r['n'],
                   'checker_success': bool(self.env._check_success()), 'reason': reason,
-                  'events': r['events'], 'review_status': 'pending',
+                  'events': r['events'], 'controller_events_schema': 'reference-controller-events-v1',
+                  'initial_stow_required': r.get('initial_stow_required',False), 'review_status': 'pending',
                   'collision_and_A_qualification': 'not_verified', 'replay': 'pending',
                   'state_alignment': 'states[0] before actions[0]; states[t+1] after actions[t]',
                   'video_alignment': 'frame[t] after actions[t], 20 simulation Hz; wall clock may be slower'}

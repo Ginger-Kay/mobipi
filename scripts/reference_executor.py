@@ -136,7 +136,9 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
     if route=='D' and 'stow_target' in ref.dock_plan['selected']:
         from reference_stow import load_stow
         stow_local,stow_rot_local,stow_q=load_stow(ref,ref.dock_plan['selected']['stow_target'])
-        ref.robot.part_controllers['right'].initial_joint=stow_q.copy()
+        from mobiwam.reference_controller_events import emit_event
+        emit_event(ref,dict(event='initial_stow_nullspace',step=0,timing='before_action',arm_nullspace_goal=stow_q.tolist()))
+        ref.recording['initial_stow_required']=True
     watch=ProgressWatch()
     grip_waypoint=None;grip_count=0
     index=0; stuck=0; settled=0; reason='horizon'; base_max_drift=0.
@@ -176,13 +178,9 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
                 if settled>=20:
                     stage='manipulate'
                     # Stateless feedback has no observation history to carry across docking.
-                    ref.env._get_observations(force_update=True)
-                    ref.robot.composite_controller.update_state()
-                    ref.robot.part_controllers['right'].set_goal_update_mode('achieved')
-                    ref.robot.part_controllers['right'].set_goal(np.zeros(6))
+                    from mobiwam.reference_controller_events import emit_event
                     nullspace=np.asarray(ref.dock_plan['selected']['arm_nullspace_goal'])
-                    ref.robot.part_controllers['right'].initial_joint=nullspace.copy()
-                    ref.recording['events'].append(dict(step=step,event='dock_settled_reobserve_feedback_reset',arm_nullspace_goal=nullspace.tolist()))
+                    emit_event(ref,dict(step=step,timing='before_action',event='dock_settled_reobserve_feedback_reset',arm_nullspace_goal=nullspace.tolist()))
                     # Reacquire with the shared open-gripper approach; never jump to an already-closing pose.
                     index=0
                     stuck=0
