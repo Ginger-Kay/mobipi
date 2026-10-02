@@ -48,7 +48,7 @@ def publish(run,output,event,final):
     analysis_root=manifest.get('analysis_code_root',str(run/'analysis-runtime'))
     title=f'{now} R2 {event}'
     summary=f'新增已记录路线 {len(recorded)}/105、真实回放 {len(replay_files)}（一致 {replay_ok}）、完整新配对 {complete}/35、已完成机器审计 {len(audited)}（合格 {len(eligible)}）。seed109例外另计原train1组；主分母36组108路，新组human_review=pending。机械Gate `{gate["gate_status"]}`，训练/CV/模型推理/test均0。'
-    next_step='本批执行已退出；保留全部成功/失败/缺失，交Research审阅视频/资格/Gate并决定后续；禁止自行训练或test。' if final else '单卡队列按原顺序继续；不重复outcome、不按成功率换组。'
+    next_step='本批执行已退出；保留全部成功/失败/缺失，交Research审阅视频/资格/Gate并决定后续；禁止自行训练或test。' if final else f'采集队列按原顺序继续，GPU worker上限{load(run/"manifest.json").get("worker_count",1)}；不重复outcome、不按成功率换组。'
     block=f'\n\n## {title}\n\n{summary}\n\n状态 `{status["state"]}`；{next_step} control_write_owner={owner}。\n\n完整108行表 `{output}/route-outcomes.csv`；所有已保存原片精确路径 `{output}/videos.md` / `videos.csv`；首批及异常优先清单 `{output}/priority-review-videos.json`；机械Gate与固定排除seed109敏感性 `{output}/mechanical-gate.json`。缺失保留空值，不对不完整train提前选择best-fixed。原始路径与SHA见JSON；抽帧/机器审计不冒充人审。\n'
     block+=f'\n当前执行代码 `{manifest["code_commit"]}` / `{execution_root}`，CPU审计并发 {manifest.get("cpu_audit_workers",3)}，GPU采集worker{manifest.get("worker_count",1)}。候选监督包 `{output}/paired-supervision-candidate.npz`（X108×1045、y108×5，缺失值+mask）；它不是训练放行。\n'
     if gate['main'] is not None:
