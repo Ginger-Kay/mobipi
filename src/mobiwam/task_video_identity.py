@@ -100,7 +100,7 @@ def recorder_binding(ref, path, expected, context):
         require(bool(context.get(key)),'missing recording '+key)
     path=Path(path).resolve();require(ref.route in ('E','D','A'),'missing recording route')
     native=observe_native(ref,expected)
-    return dict(schema='native-task-video-identity-v1',run_id=context['run_id'],group_id=context['group_id'],
+    return dict(schema='native-task-video-identity-v2-visible-geometry',run_id=context['run_id'],group_id=context['group_id'],
         route=ref.route,attempt_id=path.name,attempt=str(path),source=str(Path(ref.source).resolve()),
         source_model_sha256=sha(Path(ref.source)/'model.xml'),native=native,
         policy_cameras=list(ref.policy_cameras),camera=ref.camera_state())
@@ -120,7 +120,7 @@ def validate_recording(manifest_path,context=None):
     manifest_path=Path(manifest_path).resolve();require(manifest_path.is_file(),'missing recorder identity manifest');v=json.loads(manifest_path.read_text());b=v.get('binding',{})
     for key in ('schema','run_id','group_id','route','attempt_id','attempt','source','source_model_sha256','native','camera','policy_cameras'):
         require(bool(b.get(key)),'missing binding '+key)
-    require(b['schema']=='native-task-video-identity-v1','unknown identity schema')
+    require(b['schema']=='native-task-video-identity-v2-visible-geometry','unknown identity schema')
     for key in ('task','environment_class','fixture_name','fixture_class','joint_name','qpos_address','checker','checker_target','checker_source_sha256','model_topology_sha256','source_model_sha256','target_description','native_geometry_sha256','native_geometry_inventory'):
         require(key in b['native'] and b['native'][key] is not None,'missing native '+key)
     path=manifest_path.parent
@@ -144,6 +144,8 @@ def validate_recording(manifest_path,context=None):
             actual=t.get('native_frame_binding',{})
             require(actual.get('frame_index')==i and actual.get('native_model_geometry_sha256')==b['native']['native_geometry_sha256'],'missing/changed actual render geometry binding')
             require(actual.get('actual_qpos_sha256')==hashlib.sha256(np.asarray(t['after']['qpos'],dtype=np.float64).tobytes()).hexdigest(),'recorded render state differs from trace')
+            require(actual.get('actual_qvel_sha256')==hashlib.sha256(np.asarray(t['after']['qvel'],dtype=np.float64).tobytes()).hexdigest(),'recorded render velocity differs from trace')
+            require(isinstance(actual.get('raw_rgb_sha256'),str) and len(actual['raw_rgb_sha256'])==64,'missing recorder raw frame identity')
             require(actual.get('actual_sim_time')==t['after']['sim_time'] and actual.get('camera')==t['camera'],'render time/camera differs from trace')
             require(t['step']==i and t['camera']==b['camera'],'trace index or camera differs')
             require(np.max(np.abs(g['states'][i+1,1:1+model.nq]-t['after']['qpos']))<=1e-10,'HDF5/trace state differs')

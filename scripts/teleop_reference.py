@@ -382,7 +382,10 @@ class Reference:
             validate_render_model(m,self.renderer)
             self.recording['native_frame_binding']=frame_binding(m,d,self.recording['n'],{'lookat':list(self.capture_camera.lookat),'distance':self.capture_camera.distance,'azimuth':self.capture_camera.azimuth,'elevation':self.capture_camera.elevation})
         self.renderer.update_scene(d, camera=self.capture_camera, scene_option=self.render_options)
-        return self.renderer.render()
+        frame = self.renderer.render()
+        if self.recording and self.recording.get('native_frame_binding'):
+            self.recording['native_frame_binding']['raw_rgb_sha256'] = hashlib.sha256(frame.tobytes()).hexdigest()
+        return frame
 
     def begin(self):
         self.restore()

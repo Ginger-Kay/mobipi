@@ -84,3 +84,14 @@ def test_actual_step_guard_rejects_before_any_action(recorder):
 def test_actual_renderer_other_native_instance_rejected(recorder):
     ref,_=recorder;m,_=ref.model_data()
     with pytest.raises(VisibleBindingHold,match='another native model instance'):validate_render_model(copy.deepcopy(m),ref.renderer)
+
+def test_actual_zero_action_frame_binds_model_state_camera_and_rgb(recorder):
+    import hashlib
+    ref,b=recorder;m,d=ref.model_data();ref.recording=dict(task_video_identity=b,n=0)
+    try:
+        image=ref.frame(b['camera']);captured=ref.recording['native_frame_binding']
+        assert captured['native_model_geometry_sha256']==b['native']['native_geometry_sha256']
+        assert captured['actual_qpos_sha256']==hashlib.sha256(d.qpos.tobytes()).hexdigest()
+        assert captured['raw_rgb_sha256']==hashlib.sha256(image.tobytes()).hexdigest()
+        assert b['schema']=='native-task-video-identity-v2-visible-geometry'
+    finally:ref.recording=None
