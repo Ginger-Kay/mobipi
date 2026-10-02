@@ -26,6 +26,21 @@ def sha(path):
 def load(path):return json.loads(Path(path).read_text())
 
 
+def bind_modeled_failure(sweep, native_forbidden_contact):
+    """Use the existing task adapter's irreversible_failure=collision scope.
+
+    The two rigid-body closing tasks expose no separate irreversible-damage
+    channel. A witnessed forbidden native contact is positive; absence is
+    negative only when the entire actual path passes the strict swept gate.
+    Unresolved or low-clearance paths remain missing and cannot enter Gate.
+    """
+    if native_forbidden_contact:
+        return True, 'native_forbidden_contact_positive'
+    if sweep.get('valid') is True:
+        return False, 'full_native_and_swept_audit_negative'
+    return None, 'missing_due_to_actual_swept_safety_failure'
+
+
 def audit(freeze,group_id,route,attempt):
  rows=[x for x in freeze['primary'] if x['group_id']==group_id]
  if freeze['status']!='DR-v0.4_complete_preoutcome_freeze' or len(rows)!=1:
@@ -109,7 +124,8 @@ def audit(freeze,group_id,route,attempt):
  if substeps['substeps']!=len(native_phases):raise ValueError('substep count differs')
  if controller['execution_scope']!='DR-v0.4_formal_candidate_pending_audit':
   raise ValueError('development execution cannot become formal')
- ready=bool(actual_safety_pass and reproducible and not substeps['forbidden_contact'])
+ failure,failure_binding=bind_modeled_failure(sweep,contact_stop)
+ ready=bool(actual_safety_pass and reproducible and failure is not None and not substeps['forbidden_contact'])
  return dict(group_id=group_id,split=row['split'],route=route,attempt=str(attempt),
   status='machine_audit_pass_pending_research_review' if ready else 'route_ineligible_or_machine_audit_failed',
   checker_success=bool(result['checker_success']),task_progress_after=progress,
@@ -118,8 +134,9 @@ def audit(freeze,group_id,route,attempt):
   actual_swept_geometry=sweep,realized_contact_stop=contact_stop,
   arm_joint_margin=margin,replay_result_sha256=sha(replay_results[0]),replay_reproducible=reproducible,
   raw_executor_reason=result['reason'],
-  label_failure_status='pending_irreversibility_definition_review',
-  machine_eligible_for_gate=False,
+  irreversible_or_collision=failure,label_failure_status=failure_binding,
+  failure_label_source='existing CloseDrawer/CloseSingleDoor adapter: irreversible_failure=trace.collision; actual native forbidden contact and conservative 0.5mm swept gate',
+  machine_eligible_for_gate=ready,
   source_input_sha256=row['source_input_sha256'],
   original_video_sha256=sha(attempt/'original.mp4'),
   action_hdf5_sha256=sha(attempt/'demo.hdf5'),
@@ -135,6 +152,6 @@ def main():
  out=audit(load(a.freeze),a.group_id,a.route,a.attempt.resolve())
  with a.output.open('x') as f:json.dump(out,f,indent=2,allow_nan=False);f.write('\n')
  print(json.dumps({'status':out['status'],'group_id':a.group_id,'route':a.route,
-                   'machine_eligible_for_gate':False}))
+                   'machine_eligible_for_gate':out['machine_eligible_for_gate']}))
 
 if __name__=='__main__':main()
