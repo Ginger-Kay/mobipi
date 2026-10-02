@@ -5,6 +5,7 @@ manifest is an engineering identity receipt, never human task approval.
 """
 from __future__ import annotations
 import hashlib,inspect,json
+from functools import lru_cache
 from pathlib import Path
 import cv2,h5py,mujoco,numpy as np
 
@@ -22,6 +23,11 @@ def sha(path):
 
 def write(path,value):
     Path(path).write_text(json.dumps(value,indent=2,allow_nan=False)+'\n')
+
+@lru_cache(maxsize=4)
+def source_model(path, digest):
+    # The digest is verified at each caller; no cached mutable runtime state.
+    return mujoco.MjModel.from_xml_path(path)
 
 def topology(model):
     h=hashlib.sha256()
@@ -58,7 +64,7 @@ def observe_native(ref, expected):
     adr=int(model.jnt_qposadr[jid]);require(jid==adr,'checker joint-id/qpos-address mismatch')
     require(int(model.jnt_type[jid])==int(mujoco.mjtJoint.mjJNT_SLIDE if task=='CloseDrawer' else mujoco.mjtJoint.mjJNT_HINGE),'actual target degree of freedom differs')
     source=Path(ref.source).resolve();require(sha(source/'model.xml')==expected['model_sha256'],'declared Source model differs')
-    native_source=mujoco.MjModel.from_xml_path(str(source/'model.xml'))
+    native_source=source_model(str(source/'model.xml'),expected['model_sha256'])
     require(topology(model)==topology(native_source),'loaded native model topology differs from Source')
     return dict(task=task,environment_class=type(env).__module__+'.'+task,
         language=env.get_ep_meta()['lang'],fixture_name=fixture.name,fixture_class=type(fixture).__name__,
@@ -113,7 +119,7 @@ def validate_recording(manifest_path,context=None):
         require(hashlib.sha256(g.attrs['model_file'].encode()).hexdigest()==b['source_model_sha256'],'HDF5 source-model differs')
         require(json.loads(g.attrs['env_info'])['env_name']==b['native']['task'],'HDF5 native task differs')
         require(g['actions'].shape[0]==n and g['states'].shape[0]==n+1 and len(trace)==n,'video-HDF5-trace count differs')
-        model=mujoco.MjModel.from_xml_path(str(Path(b['source'])/'model.xml'))
+        model=source_model(str(Path(b['source'])/'model.xml'),b['source_model_sha256'])
         for i,t in enumerate(trace):
             require(t['step']==i and t['camera']==b['camera'],'trace index or camera differs')
             require(np.max(np.abs(g['states'][i+1,1:1+model.nq]-t['after']['qpos']))<=1e-10,'HDF5/trace state differs')
@@ -136,13 +142,32 @@ def human_delivery(manifest_path,output,context=None):
     out=Path(output);out.mkdir(parents=True,exist_ok=False)
     from PIL import Image,ImageDraw
     cap=cv2.VideoCapture(str(p));n=len(v['decoded_frames_sha256']);sheet=Image.new('RGB',(960,220));draw=ImageDraw.Draw(sheet)
-    for i,k in enumerate((0,n//2,n-1)):
-        cap.set(cv2.CAP_PROP_POS_FRAMES,k);ok,frame=cap.read();require(ok,'preview decode failed')
-        im=Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB));im.thumbnail((320,180));sheet.paste(im,(i*320,35))
+    selected=(0,n//2,n-1);frames={}
+    try:
+        for k in range(n):
+            ok,frame=cap.read();require(ok,'preview decode failed')
+            if k in selected:frames[k]=cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+    finally:cap.release()
+    for i,k in enumerate(selected):
+        im=Image.fromarray(frames[k]);im.thumbnail((320,180));sheet.paste(im,(i*320,35))
         draw.text((i*320+4,8),f'{b["route"]} frame {k}',fill='white')
-    cap.release();sheet.save(out/'preview.jpg')
+    sheet.save(out/'preview.jpg')
+    # Native recorded policy views expose the target hidden by the free camera.
+    # They are labeled as HDF5 observations, separately from the original video.
+    policy=Image.new('RGB',(768,570));labels=ImageDraw.Draw(policy)
+    with h5py.File(Path(b['attempt'])/'demo.hdf5') as f:
+        obs=f['data/demo_0/obs']
+        for row,camera in enumerate(('robot0_agentview_left','robot0_eye_in_hand')):
+            key=camera+'_image';require(key in obs,'missing recorded policy preview '+key)
+            for col,k in enumerate(selected):
+                state_index=0 if v['kind']=='zero_action_diagnostic' else k+1
+                require(obs[key].shape[0]==v['steps']+1,'policy preview state count differs')
+                im=Image.fromarray(obs[key][state_index]);im.thumbnail((256,256));policy.paste(im,(col*256,row*285+25))
+                labels.text((col*256+4,row*285+4),f'HDF5 {camera} state {state_index}',fill='white')
+    policy.save(out/'policy-target-preview.jpg')
     review=dict(video=str(p),video_sha256=v['files']['original.mp4']['sha256'],manifest=str(Path(manifest_path).resolve()),
         target=b['native']['target_description'],preview=str((out/'preview.jpg').resolve()),
+        recorded_policy_target_preview=str((out/'policy-target-preview.jpg').resolve()),
         identity_status='native_identity_verified',human_motion_semantics_review='pending',human_task_review='pending',
         machine_safety='not_assessed_by_identity_guard',formal_qualification=False,kind=v['kind'])
     write(out/'review.json',review);return review
