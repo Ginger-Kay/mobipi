@@ -35,7 +35,8 @@ NEW_DEPENDENCIES=('scripts/reference_executor.py','scripts/dr_v04_formal_collect
                   'scripts/teleop_reference.py','src/mobiwam/task_video_identity.py',
                   'src/mobiwam/visible_object_binding.py',
                   'src/mobiwam/reference_formal_substep.py',
-                  'src/mobiwam/reference_controller_events.py','scripts/reference_protocol_replay.py')
+                  'src/mobiwam/reference_controller_events.py','scripts/reference_protocol_replay.py',
+                  'src/mobiwam/dr_v04_r2.py')
 
 def sha(path):
  h=sha256()
@@ -53,6 +54,9 @@ def verify_dispatch(freeze, group_id, code_root, prior, binding=None):
  execution_sha=subprocess.check_output(['git','-C',str(code_root),'rev-parse','HEAD'],text=True).strip()
  if binding is None:
   if execution_sha!=freeze['formal_execution_code_commit']:raise ValueError('formal execution commit differs')
+ elif binding.get('version')=='DR-v0.4-R2-batched-train-validation':
+  from mobiwam.dr_v04_r2 import validate_binding
+  validate_binding(freeze,binding,group_id,execution_sha)
  else:
   if binding.get('version')!='DR-v0.4-R1-seed109-recollection' or binding.get('execution_code_commit')!=execution_sha:raise ValueError('R1 execution binding differs')
   if binding.get('group_id')!=group_id or group_id!='CloseDrawer-layout1-style0-seed109':raise ValueError('R1 only authorizes seed109')
@@ -98,6 +102,8 @@ def main():
  p.add_argument('--group-id',required=True)
  p.add_argument('--output',type=Path,required=True)
  p.add_argument('--execution-binding',type=Path)
+ p.add_argument('--run-id')
+ p.add_argument('--preview-only',action='store_true')
  args=p.parse_args(); prior_freeze=args.freeze.resolve();out=args.output.resolve()
  root=Path(__file__).resolve().parent.parent
  freeze=json.loads(prior_freeze.read_text())
@@ -137,15 +143,24 @@ def main():
   ref.restore()
   # Independent native identity is mandatory before compiling or stepping routes.
   from mobiwam.task_video_identity import observe_native
-  if binding is not None:
+  if binding is not None and binding['version']=='DR-v0.4-R2-batched-train-validation':
+   from mobiwam.dr_v04_r2 import prepare_camera
+   camera=prepare_camera(ref,row,out/'camera-preview')
+   ref.evidence_camera=camera['camera'];ref.apply_camera(ref.evidence_camera)
+  elif binding is not None:
    ref.evidence_camera=binding['evidence_camera']['camera']
    ref.panoramic_camera=binding['panoramic_camera']
    ref.apply_camera(ref.evidence_camera)
    if ref.model_data()[0].vis.global_.fovy!=binding['evidence_camera']['native_fovy_degrees']:raise ValueError('evidence projection changed')
   ref.identity_expected=row
-  ref.identity_context=dict(run_id=out.parent.name,group_id=args.group_id)
+  if binding and binding['version']=='DR-v0.4-R2-batched-train-validation':
+   if args.run_id!=binding['run_id']:raise ValueError('R2 globally unique run_id required')
+  ref.identity_context=dict(run_id=args.run_id or out.parent.name,group_id=args.group_id)
   native_identity=observe_native(ref,row)
   write_json(out/'native-task-identity.json',native_identity)
+  if args.preview_only:
+   write_json(out/'preview-only.json',dict(zero_task_actions=True,group_id=args.group_id,run_id=ref.identity_context['run_id']))
+   return
   if spec.get('transfer_mode')=='moving_target_handle_frame':
    points,transfer=compile_transferred_path(ref,Path(spec['reference']))
    planned=json.loads((prior/'transfer-receipt.json').read_text())
@@ -177,6 +192,8 @@ def main():
    formal_train_ready=False))
   results=[]
   for route in order:
+   with (out/f'route-{route}-start.json').open('x') as ledger:
+    json.dump(dict(route=route,started_at=stamp(),group_id=args.group_id,run_id=ref.identity_context['run_id']),ledger)
    path=run_route(ref,route,points,2400,execution_scope='DR-v0.4_formal_candidate_pending_audit')
    results.append(dict(route=route,path=path))
    # Append immediately: stop or crash after any route leaves the complete attempt and no repeat.
@@ -202,8 +219,8 @@ def main():
    attempt=Path(result['path'])
    validate_recording(attempt/'task-video-manifest.json',dict(run_id=ref.identity_context['run_id'],group_id=args.group_id,route=result['route'],attempt_id=attempt.name))
   write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results,
-   recollection_provenance='researcher_authorized_recollection_after_replay_defect' if binding else None,
-   outcome_previously_observed=bool(binding),same_independent_Source=True,
+   recollection_provenance='researcher_authorized_recollection_after_replay_defect' if binding and binding['version']=='DR-v0.4-R1-seed109-recollection' else None,
+   outcome_previously_observed=bool(binding and binding['version']=='DR-v0.4-R1-seed109-recollection'),same_independent_Source=True,
    route_outcomes=len(results),audit='pending',formal_train_ready=False))
  finally:
   if ref.observation_renderer is not None:ref.observation_renderer.close()
