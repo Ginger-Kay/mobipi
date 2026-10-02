@@ -31,6 +31,15 @@ def replay_attempt(ref,attempt,output,plan=None,video=False):
             if i%100==0:print('REAL_REPLAY',attempt.parent.name,i,'state_error',errors[-1],flush=True)
     finally:
         if writer:writer.close()
+    from mobiwam.reference_terminal_step import terminal_record,replay_terminal
+    feedback=[json.loads(x) for x in (attempt/'feedback.jsonl').read_text().splitlines()]
+    partial=terminal_record(attempt,result,feedback);terminal=None
+    if partial is not None:
+        for event in events:
+            if event['step']==len(actions):
+                event_receipts.append(dict(step=len(actions),receipt=apply_event(ref,event)));applied.append((event['event'],len(actions)))
+        terminal=replay_terminal(ref,partial)
+        write_json(output/'terminal-step.json',terminal)
     if len(applied)!=len(events):raise ValueError('missing event application')
     model,_=ref.model_data();actual=np.asarray(actual);diff=np.abs(actual-states)
     np.savez_compressed(output/'replayed-states-and-field-errors.npz',actual=actual,absolute_field_errors=diff)
@@ -40,10 +49,11 @@ def replay_attempt(ref,attempt,output,plan=None,video=False):
     out=dict(ended_at=stamp(),attempt=str(attempt),steps=len(actions),route=result['route'],initial_error=initial_error,
              max_state_abs_error=max(errors,default=0.),first_state_error_gt_1e_5=first,
              state_errors=errors,checker_success=bool(ref.env._check_success()),expected_checker_success=result['checker_success'],
-             reproducible=max(errors,default=0.)<=1e-5 and bool(ref.env._check_success())==bool(result['checker_success']),
+             reproducible=(terminal is None or terminal['reproducible']) and max(errors,default=0.)<=1e-5 and bool(ref.env._check_success())==bool(result['checker_success']),
              replay_kind='real native saved actions + versioned controller events; no per-step state injection',applied_events=applied,
              original_events_preserved=True,video_generated=video,scientific_route_outcomes=0,formal_train_ready=False)
     out['first_state_error_gt_1e-5']=first
+    out['terminal_step']=terminal
     write_json(output/'result.json',out);return out
 
 def main():

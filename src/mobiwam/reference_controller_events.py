@@ -66,12 +66,14 @@ def load_replay_events(attempt,result,explicit_plan=None):
     """
     attempt=Path(attempt);n=result['steps'];events=copy.deepcopy(result.get('events',[]));lineage=[]
     feedback=[json.loads(x) for x in (attempt/'feedback.jsonl').read_text().splitlines()]
-    if len(feedback)!=n:raise ValueError('controller feedback/action count differs')
+    from mobiwam.reference_terminal_step import terminal_record
+    terminal=terminal_record(attempt,result,feedback)
+    event_steps=n+int(terminal is not None)
     dock_steps=[x['step'] for i,x in enumerate(feedback) if result['route']=='D' and x['stage']=='manipulate' and (i==0 or feedback[i-1]['stage']!='manipulate')]
     recorded_steps=[e['step'] for e in events if e.get('event')=='dock_settled_reobserve_feedback_reset']
     if dock_steps!=recorded_steps:raise ValueError('missing or mistimed dock reset event relative to recorded feedback transition')
     if result.get('controller_events_schema')==SCHEMA:
-        validate_events(events,result['route'],n,result.get('initial_stow_required',False));return events,lineage
+        validate_events(events,result['route'],event_steps,result.get('initial_stow_required',False));return events,lineage
     if any(e.get('event')!='dock_settled_reobserve_feedback_reset' for e in events):raise ValueError('unknown legacy controller event')
     for event in events:
         event['timing']='before_action';lineage.append(dict(event=event['event'],step=event['step'],basis='original reference_executor.run_route reset immediately before ref.step; action already computed',reconstruction='timing only; original nullspace payload preserved'))
@@ -91,4 +93,4 @@ def load_replay_events(attempt,result,explicit_plan=None):
             event=dict(event='initial_stow_nullspace',step=0,timing='before_action',arm_nullspace_goal=goal.tolist())
             events.insert(0,event);lineage.append(dict(event=event,basis='original run_route sets initial_joint from dock.selected.stow_target before action0',plan=str(plan),dock_sha256=hashlib.sha256(dock_path.read_bytes()).hexdigest()))
         lineage.append(dict(legacy_plan=str(plan),initial_stow_required=stow is not None,existing_original_events_untouched=True))
-    validate_events(events,result['route'],n,any(e['event']=='initial_stow_nullspace' for e in events));return events,lineage
+    validate_events(events,result['route'],event_steps,any(e['event']=='initial_stow_nullspace' for e in events));return events,lineage

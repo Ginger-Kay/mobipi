@@ -63,10 +63,12 @@ def audit(freeze,group_id,route,attempt):
   raise ValueError('route did not restore sealed Source')
  trace=[json.loads(line) for line in (attempt/'trace.jsonl').read_text().splitlines()]
  feedback=[json.loads(line) for line in (attempt/'feedback.jsonl').read_text().splitlines()]
+ from mobiwam.reference_terminal_step import terminal_record
+ partial=terminal_record(attempt,result,feedback)
  with h5py.File(attempt/'demo.hdf5') as f:
   group=f['data/demo_0'];states=group['states'];actions=group['actions']
   n=result['steps']
-  if states.shape[0]!=n+1 or actions.shape[0]!=n or n!=len(trace) or n!=len(feedback):
+  if states.shape[0]!=n+1 or actions.shape[0]!=n or n!=len(trace) or len(feedback)!=n+int(partial is not None):
    raise ValueError('trace/action/state misalignment')
   if any(not np.isfinite(states[i:i+100]).all() or not np.isfinite(actions[i:i+100]).all()
          for i in range(0,n,100)):
@@ -96,13 +98,18 @@ def audit(freeze,group_id,route,attempt):
     raise ValueError('original video failed full RGB decode')
    video_frames+=1
  if video_frames!=n:raise ValueError('video and recorded actions misaligned')
- end=trace[-1]['after']
+ replay_results=list(attempt.glob('replay-*/result.json'))
+ if len(replay_results)!=1:raise ValueError('exactly one replay receipt required')
+ replay=load(replay_results[0])
+ terminal=replay.get('terminal_step')
+ if partial is not None and (not terminal or not terminal['reproducible']):raise ValueError('partial terminal replay not verified')
+ end=terminal['terminal_trace'] if partial is not None else trace[-1]['after']
  if bool(end['success'])!=bool(result['checker_success']):
   raise ValueError('native task checker and recorder disagree')
  if not np.isfinite(float(end['target']['door'])):
   raise ValueError('invalid native task progress')
  progress=float(np.clip(1.0-float(end['target']['door']),0.0,1.0))
- bases=np.array([trace[0]['before']['base_pos']]+[t['after']['base_pos'] for t in trace],dtype=float)
+ bases=np.array([trace[0]['before']['base_pos']]+[t['after']['base_pos'] for t in trace]+([end['base_pos']] if partial is not None else []),dtype=float)
  if not np.isfinite(bases).all() or bases.shape[1]<2:raise ValueError('invalid base trajectory')
  base_path=float(np.linalg.norm(np.diff(bases[:,:2],axis=0),axis=1).sum())
  elapsed=float(end['sim_time']-trace[0]['before']['sim_time'])
@@ -121,7 +128,7 @@ def audit(freeze,group_id,route,attempt):
  replay_results=list(attempt.glob('replay-*/result.json'))
  if len(replay_results)!=1:raise ValueError('exactly one replay receipt required')
  replay=load(replay_results[0])
- reproducible=(replay['steps']==n and replay['checker_success']==result['checker_success']
+ reproducible=(replay.get('reproducible') is True and replay['steps']==n and replay['checker_success']==result['checker_success']
   and replay['first_state_error_gt_1e-5'] is None and replay['max_state_abs_error'] is not None
   and replay['max_state_abs_error']<=1e-5)
  if substeps['substeps']!=len(native_phases):raise ValueError('substep count differs')
@@ -133,7 +140,7 @@ def audit(freeze,group_id,route,attempt):
   status='machine_audit_pass_pending_research_review' if ready else 'route_ineligible_or_machine_audit_failed',
   checker_success=bool(result['checker_success']),task_progress_after=progress,
   actual_base_path_m=base_path,completion_time_s=elapsed,original_video_frames=video_frames,
-  recorded_actions=n,native_substeps=len(native_phases),
+  recorded_actions=n,partial_terminal_action=partial is not None,terminal_replay=terminal,native_substeps=len(native_phases),
   actual_swept_geometry=sweep,realized_contact_stop=contact_stop,
   arm_joint_margin=margin,replay_result_sha256=sha(replay_results[0]),replay_reproducible=reproducible,
   raw_executor_reason=result['reason'],
