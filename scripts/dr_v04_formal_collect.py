@@ -104,6 +104,7 @@ def main():
  p.add_argument('--execution-binding',type=Path)
  p.add_argument('--run-id')
  p.add_argument('--preview-only',action='store_true')
+ p.add_argument('--resume-completed-prefix',action='store_true')
  args=p.parse_args(); prior_freeze=args.freeze.resolve();out=args.output.resolve()
  root=Path(__file__).resolve().parent.parent
  freeze=json.loads(prior_freeze.read_text())
@@ -128,12 +129,20 @@ def main():
  rejected={route:rejection_reason(preflight,route,True) for route in order}
  if any(rejected.values()):raise ValueError('predeclared hard-invalid primary: '+repr(rejected))
  # No directory is created until all checks above have passed.
- out.mkdir(parents=True,exist_ok=False)
- dest=out/source.name;dest.mkdir()
+ resuming=args.resume_completed_prefix
+ if resuming and (binding is None or binding.get('resume_completed_prefix_authorized') is not True):raise ValueError('resume not bound')
+ if resuming:
+  from mobiwam.reference_route_resume import completed_prefix
+  previous=completed_prefix(out,order,binding['run_id'],args.group_id)
+  if not previous or len(previous)>=3:raise ValueError('resume requires incomplete group with verified route prefix')
+ else:previous=[]
+ out.mkdir(parents=True,exist_ok=resuming)
+ dest=out/source.name;dest.mkdir(exist_ok=resuming)
  for name in ('model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json'):
-  shutil.copy2(source/name,dest/name)
+  if not resuming:shutil.copy2(source/name,dest/name)
   if sha(dest/name)!=sha(source/name):raise ValueError('Source copy mismatch')
- shutil.copy2(prior/'env_config.json',out/'env_config.json')
+ if not resuming:shutil.copy2(prior/'env_config.json',out/'env_config.json')
+ elif sha(prior/'env_config.json')!=sha(out/'env_config.json'):raise ValueError('resume config differs')
  cfg=json.loads((out/'env_config.json').read_text())
  if cfg['env_name']!=row['task']:raise ValueError('frozen task mismatch')
  ref=Reference(argparse.Namespace(output=str(out),task=cfg['env_name'],layout=0,style=0,seed=7,
@@ -145,7 +154,8 @@ def main():
   from mobiwam.task_video_identity import observe_native
   if binding is not None and binding['version']=='DR-v0.4-R2-batched-train-validation':
    from mobiwam.dr_v04_r2 import prepare_camera
-   camera=prepare_camera(ref,row,out/'camera-preview')
+   camera=json.loads((out/'camera-preview/camera.json').read_text()) if resuming else prepare_camera(ref,row,out/'camera-preview')
+   if not camera['visibility_pass'] or not camera['source_integration_unchanged']:raise ValueError('resume camera invalid')
    ref.evidence_camera=camera['camera'];ref.apply_camera(ref.evidence_camera)
   elif binding is not None:
    ref.evidence_camera=binding['evidence_camera']['camera']
@@ -157,7 +167,7 @@ def main():
    if args.run_id!=binding['run_id']:raise ValueError('R2 globally unique run_id required')
   ref.identity_context=dict(run_id=args.run_id or out.parent.name,group_id=args.group_id)
   native_identity=observe_native(ref,row)
-  write_json(out/'native-task-identity.json',native_identity)
+  write_json(out/('resume-native-task-identity.json' if resuming else 'native-task-identity.json'),native_identity)
   if args.preview_only:
    write_json(out/'preview-only.json',dict(zero_task_actions=True,group_id=args.group_id,run_id=ref.identity_context['run_id']))
    return
@@ -185,13 +195,14 @@ def main():
    formal_execution_code_commit=new_commit,reference_geometry_identical=True,source_restore_max_error=error,
    Source_model_sha256=sha(source/'model.xml'),Source_integration_sha256=sha(source/'integration.npy'),
    outcome_scope='prospective_formal_candidate_pending_machine_video_replay_audit',formal_train_ready=False)
-  write_json(out/'formal-preexecution-receipt.json',receipt)
-  write_json(out/'recording-provenance.json',dict(data_kind='DR-v0.4_prospective_formal_candidate_pending_audit',
+  write_json(out/('resume-preexecution-receipt.json' if resuming else 'formal-preexecution-receipt.json'),receipt)
+  write_json(out/('resume-recording-provenance.json' if resuming else 'recording-provenance.json'),dict(data_kind='DR-v0.4_prospective_formal_candidate_pending_audit',
    split=row['split'],group_id=args.group_id,model_code_commit=new_commit,planner_commit=old_commit,
    lineage_reference_sha256=row['derived_reference_trace_sha256'],preoutcome_freeze_sha256=sha(prior_freeze),
    formal_train_ready=False))
-  results=[]
+  results=previous[:]
   for route in order:
+   if any(x['route']==route for x in previous):continue
    with (out/f'route-{route}-start.json').open('x') as ledger:
     json.dump(dict(route=route,started_at=stamp(),group_id=args.group_id,run_id=ref.identity_context['run_id']),ledger)
    path=run_route(ref,route,points,2400,execution_scope='DR-v0.4_formal_candidate_pending_audit')

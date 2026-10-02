@@ -127,7 +127,8 @@ def main():
             batch_no=0 if index<=4 else 1+(index-5)//6
             out=run/'batches'/f'{batch_no:02d}'/f'{index:02d}-{group}'
             ledger=run/'batches'/f'group-{index:02d}-dispatch.json'
-            if ledger.exists() or out.exists():
+            resume=(out.exists() and not (out/'completed.json').exists() and binding.get('resume_completed_prefix_authorized') is True)
+            if (ledger.exists() or out.exists()) and not resume:
                 # Recovery may consume a completed group but never re-execute it.
                 if not (out/'completed.json').exists():
                     raise RuntimeError('partial/previous dispatch requires route-level recovery; no automatic replay of outcomes: '+str(out))
@@ -136,6 +137,11 @@ def main():
             else:
                 cmd=[sys.executable,str(root/'scripts/dr_v04_formal_collect.py'),'--freeze',str(freeze),
                      '--execution-binding',str(a.binding),'--run-id',binding['run_id'],'--group-id',group,'--output',str(out)]
+                if resume:
+                    from mobiwam.reference_route_resume import completed_prefix
+                    completed_prefix(out,rows[group]['route_order'],binding['run_id'],group)
+                    cmd.append('--resume-completed-prefix')
+                    ledger=run/'batches'/f'group-{index:02d}-resume-dispatch.json'
                 ledger.parent.mkdir(exist_ok=True,parents=True)
                 with ledger.open('x') as f:json.dump(dict(group_id=group,index=index,batch=batch_no,command=cmd,created_at=stamp(),binding_sha256=sha(a.binding)),f,indent=2)
                 log_path=run/'batches'/f'group-{index:02d}.log'
@@ -147,7 +153,7 @@ def main():
                         submit_available(group,out)
                         time.sleep(5)
                     submit_available(group,out)
-                    write(run/'batches'/f'group-{index:02d}-exit.json',dict(returncode=proc.returncode,at=stamp(),pid=proc.pid))
+                    write(run/'batches'/(f'group-{index:02d}-resume-exit.json' if resume else f'group-{index:02d}-exit.json'),dict(returncode=proc.returncode,at=stamp(),pid=proc.pid))
                     if proc.returncode:raise RuntimeError('collector exited; preserve partial outcome and hold: '+str(log_path))
                 if not (out/'completed.json').exists():raise ValueError('collector lacks completion receipt')
             camera=load(out/'camera-preview/camera.json')

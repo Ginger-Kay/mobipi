@@ -61,7 +61,7 @@ def main():
     attempt=Path(a.attempt).resolve();out=Path(a.output).resolve()
     ref=Reference(argparse.Namespace(output=str(out.parent/('environment-'+out.name)),task='CloseDrawer',layout=0,style=0,seed=7,self_test=True,source=str(attempt.parent.parent),replay_attempt=None,resume_attempt=None,width=1920,height=1080))
     try:
-        result=replay_attempt(ref,attempt,out,a.plan,a.video);print(json.dumps({k:v for k,v in result.items() if k!='state_errors'}))
+        result=replay_attempt(ref,attempt,out,a.plan,a.video);print(json.dumps({k:v for k,v in result.items() if k!='state_errors'},default=lambda x:x.tolist()))
     finally:
         if ref.observation_renderer:ref.observation_renderer.close()
         if ref.renderer:ref.renderer.close()
