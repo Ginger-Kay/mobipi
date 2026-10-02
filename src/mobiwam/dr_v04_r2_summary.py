@@ -10,6 +10,7 @@ def values(row):
     if any(row.get(k) is None for k in keys):raise ValueError('missing label is not zero')
     if type(row['success']) is not bool or type(row['failure']) is not bool:raise ValueError('boolean labels required')
     if any(not math.isfinite(float(row[k])) for k in keys):raise ValueError('nonfinite label')
+    if not 0.<=float(row['progress'])<=1. or float(row['base_path_m'])<0 or float(row['completion_time_s'])<0:raise ValueError('invalid label bounds')
     return (-int(row['success']),int(row['failure']),-float(row['progress']),float(row['base_path_m']),float(row['completion_time_s']))
 
 def route_oracle(rows):

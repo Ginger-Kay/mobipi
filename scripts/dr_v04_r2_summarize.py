@@ -49,7 +49,9 @@ def main():
                 if not movie.is_file() or movie.stat().st_size!=entry['size']:raise ValueError('native movie missing/size mismatch')
                 if is_admitted and entry['sha256']!=admission['approved_video_sha256'][route]:raise ValueError('approved side video mismatch')
                 row.update(attempt=str(attempt),video=str(movie),video_sha256=entry['sha256'],frames=native['steps'])
-                videos.append({k:row.get(k) for k in ('group_id','task','split','route','video','video_sha256','frames','completion_time_s','raw_reason','status','human_review')})
+                video={k:row.get(k) for k in ('group_id','task','split','route','video','video_sha256','frames','completion_time_s','raw_reason','status','human_review')}
+                video['checker_success']=row['success'] if row['success'] is not None else row.get('raw_checker_success')
+                videos.append(video)
             rows.append(row)
     # Scientific qualification cannot be inferred from a mere lack of errors.
     # Only a separately reviewed full-run engineering closure can discharge it.
@@ -74,7 +76,7 @@ def main():
     text=header+'|Source|Route|Frames|Reason|Review|Absolute native video|\n|---|---|---:|---|---|---|\n'
     for v in videos:text+=f"|{v['group_id']}|{v['route']}|{v['frames']}|{v['raw_reason']}|{v['human_review']}|{v['video']}|\n"
     (out/'videos.md').write_text(text)
-    priority=[v for v in videos if v['group_id']!=ADMITTED and (v['group_id'] in binding['allowed_group_ids'][:4] or v['raw_reason']!='success' or v['status']!='machine_audit_pass_pending_research_review')]
+    priority=[v for v in videos if v['group_id']!=ADMITTED and (v['group_id'] in binding['allowed_group_ids'][:4] or v['checker_success'] is not True or v['status']!='machine_audit_pass_pending_research_review')]
     write(out/'priority-review-videos.json',priority)
     write(run/'gate/latest-summary.json',dict(output=str(out),created_at=evaluation['created_at'],gate_status=evaluation['gate_status']))
     print(json.dumps({k:evaluation[k] for k in ('new_outcomes','machine_eligible_routes','complete_machine_dataset','gate_status')}))

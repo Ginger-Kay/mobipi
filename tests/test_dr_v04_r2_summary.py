@@ -50,11 +50,11 @@ def test_validation_cannot_change_train_fixed():
 
 def test_oracle_failure_then_progress_then_path_then_time_order():
     rows,_=dataset();rs=rows[:3]
-    for r in rs:r.update(success=True,failure=False,progress=1.,base_path_m=1.,completion_time_s=2.)
+    for r in rs:r.update(success=True,failure=False,progress=.9,base_path_m=1.,completion_time_s=2.)
     assert route_oracle(rs)=='E'
     rs[0]['failure']=True;assert route_oracle(rs)=='D'
     rs[2]['base_path_m']=.5;assert route_oracle(rs)=='A'
-    rs[1]['progress']=1.1;assert route_oracle(rs)=='D'
+    rs[1]['progress']=1.0;assert route_oracle(rs)=='D'
 
 def test_only_one_oracle_gain_fails_numeric_gate():
     rows,roster=dataset()
@@ -74,3 +74,9 @@ def test_exclusion_reselects_best_fixed_without_switching_main():
     assert out['main']['best_fixed']=='D'
     assert out['excluding_seed109_sensitivity']['best_fixed']=='E'
     assert out['sensitivity_best_fixed_changed']
+
+
+@pytest.mark.parametrize('key,value',[('progress',1.1),('base_path_m',-1.),('completion_time_s',float('nan'))])
+def test_out_of_range_or_nonfinite_labels_rejected(key,value):
+    rows,roster=dataset();rows[0][key]=value
+    with pytest.raises(ValueError):evaluate(rows,roster,True)
