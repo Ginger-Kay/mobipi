@@ -53,6 +53,7 @@ def main():
     p.add_argument('--run',type=Path,required=True)
     p.add_argument('--binding',type=Path,required=True)
     p.add_argument('--stage',choices=('pilot','remainder'),required=True)
+    p.add_argument('--audit-workers',type=int,choices=range(1,7),default=3)
     a=p.parse_args();run=a.run.resolve();binding=load(a.binding)
     root=Path(__file__).resolve().parent.parent;freeze=Path(binding['parent_freeze'])
     frozen=load(freeze);order=binding['allowed_group_ids'];rows={r['group_id']:r for r in binding['scientific_rows']}
@@ -67,12 +68,13 @@ def main():
         if review.get('runtime_checks_pass') is not True or review.get('group_ids')!=order[:4]:
             raise ValueError('first batch runtime closure missing')
     selected=list(enumerate(order,1))[:4] if a.stage=='pilot' else list(enumerate(order,1))[4:]
-    pool=concurrent.futures.ThreadPoolExecutor(max_workers=3)
+    if a.audit_workers!=binding.get('cpu_audit_workers',3):raise ValueError('CPU audit worker count not bound')
+    pool=concurrent.futures.ThreadPoolExecutor(max_workers=a.audit_workers)
     futures={};collected=[];pending=[]
     audit_root=run/'audit';video_root=run/'videos';audit_root.mkdir(exist_ok=True);video_root.mkdir(exist_ok=True)
     status=dict(stage=a.stage,started_at=stamp(),pid=os.getpid(),run_id=binding['run_id'],
                 binding=str(a.binding),binding_sha256=sha(a.binding),groups_completed=[],
-                state='running',training=0,sealed_test=0,human_review='pending')
+                state='running',cpu_audit_workers=a.audit_workers,training=0,sealed_test=0,human_review='pending')
     write(run/'status.json',status)
     def submit_available(group,out):
         for route in rows[group]['route_order']:
