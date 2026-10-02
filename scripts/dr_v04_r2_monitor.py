@@ -44,17 +44,19 @@ def publish(run,output,event,final):
     now=stamp();counts=dict(new_outcomes=len(recorded),new_replays=len(replay_files),new_reproducible_replays=replay_ok,new_complete_groups=complete,new_machine_audited_routes=len(audited),new_machine_eligible_routes=len(eligible),admitted_seed109_groups=1,training_runs=0,cv_fits=0,model_inference=0,test_routes=0)
     manifest=load(run/'manifest.json');manifest.update(updated_at=now,status=status['state'],counters=counts,latest_summary=str(output),mechanical_gate=gate['gate_status'],formal_train_ready=False,current_control_write_owner=owner)
     write(run/'manifest.json',manifest)
+    execution_root=manifest.get('runtime_code_root',str(run/'runtime'))
     title=f'{now} R2 {event}'
     summary=f'新增已记录路线 {len(recorded)}/105、真实回放 {len(replay_files)}（一致 {replay_ok}）、完整新配对 {complete}/35、已完成机器审计 {len(audited)}（合格 {len(eligible)}）。seed109例外另计原train1组；主分母36组108路，新组human_review=pending。机械Gate `{gate["gate_status"]}`，训练/CV/模型推理/test均0。'
     next_step='本批执行已退出；保留全部成功/失败/缺失，交Research审阅视频/资格/Gate并决定后续；禁止自行训练或test。' if final else '单卡队列按原顺序继续；不重复outcome、不按成功率换组。'
     block=f'\n\n## {title}\n\n{summary}\n\n状态 `{status["state"]}`；{next_step} control_write_owner={owner}。\n\n完整108行表 `{output}/route-outcomes.csv`；所有已保存原片精确路径 `{output}/videos.md` / `videos.csv`；首批及异常优先清单 `{output}/priority-review-videos.json`；机械Gate与固定排除seed109敏感性 `{output}/mechanical-gate.json`。缺失保留空值，不对不完整train提前选择best-fixed。原始路径与SHA见JSON；抽帧/机器审计不冒充人审。\n'
+    block+=f'\n当前执行代码 `{manifest["code_commit"]}` / `{execution_root}`，CPU审计并发 {manifest.get("cpu_audit_workers",3)}，GPU采集worker1。候选监督包 `{output}/paired-supervision-candidate.npz`（X108×1045、y108×5，缺失值+mask）；它不是训练放行。\n'
     if gate['main'] is not None:
         block+=f'\n冻结数值条件：主24train best-fixed={gate["main"]["best_fixed"]}，oracle相对best-fixed/geometry成功Source增量={gate["main"]["oracle_gain_vs_best_fixed"]}/{gate["main"]["oracle_gain_vs_geometry"]}；23train敏感性best-fixed={gate["excluding_seed109_sensitivity"]["best_fixed"]}，数值Gate变化={gate["sensitivity_numerical_gate_changed"]}。非数值资格是否闭合={gate.get("nonnumerical_qualification_closed",False)}；不据敏感性挑主表。\n'
     for rel in FILES[:2]:
         p=repo/rel;p.write_text(current_document(p.read_text(),block,status['state'],owner,now))
     for rel,prefix in [('docs/obc-wam-active-recovery.md','../08-experiments/'),('README.md','08-experiments/')]:
         p=repo/rel;p.write_text(f'{title}：{summary} {next_step} [交接]({prefix}handoff/{STEM}.md)。\n\n'+p.read_text())
-    p=repo/'08-experiments/code-registry.md';p.write_text(f'{title}：执行code `{manifest["code_commit"]}` / `{run}/runtime`，非学习汇总代码 `{gate["analysis_code_commit"]}` / `{run}/analysis-runtime`，仅消费已记录train/validation。{summary} [报告](reports/{STEM}.md)。\n\n'+p.read_text())
+    p=repo/'08-experiments/code-registry.md';p.write_text(f'{title}：执行code `{manifest["code_commit"]}` / `{execution_root}`，非学习汇总代码 `{gate["analysis_code_commit"]}` / `{run}/analysis-runtime`，仅消费已记录train/validation。{summary} [报告](reports/{STEM}.md)。\n\n'+p.read_text())
     p=repo/FILES[-1];p.write_text(p.read_text()+f'\n\n## {title}\n\n{summary} {next_step} [报告](../../08-experiments/reports/{STEM}.md)。\n')
     changed=git(repo,'diff','--name-only').splitlines()
     if set(changed)!=set(FILES):raise ValueError('unexpected publication scope')
