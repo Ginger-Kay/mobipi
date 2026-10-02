@@ -48,7 +48,7 @@ def observe_native(ref, expected):
     require(env.behavior=='close','checker behavior differs')
     method=env._check_success
     code=inspect.getsource(method);read=inspect.getsource(fixture.get_door_state)
-    require(method.__self__ is env,'checker bound to another environment')
+    require(getattr(method,'__self__',None) is env,'checker bound to another environment')
     require('self.'+attr+'.get_door_state' in code and '0.05' in code,'unknown checker target or threshold')
     suffix='_slidejoint' if task=='CloseDrawer' else '_microjoint'
     require(suffix in read and 'joint_name2id' in read,'unknown native checker joint read')

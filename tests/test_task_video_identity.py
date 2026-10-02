@@ -80,4 +80,4 @@ def test_missing_fields_reject(recorded):
 def test_actual_audit_rejects_legacy_without_manifest(recorded):
     from dr_v04_formal_audit import audit
     with pytest.raises(IdentityHold,match='missing recorder identity manifest'):
-        audit({},'legacy','E',recorded[-1]/'missing-legacy-attempt')
+        audit(dict(status='DR-v0.4_complete_preoutcome_freeze',primary=[dict(group_id='legacy',split='train',route_order=['E'])]),'legacy','E',recorded[-1]/'missing-legacy-attempt')

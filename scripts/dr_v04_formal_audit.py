@@ -43,13 +43,13 @@ def bind_modeled_failure(sweep, native_forbidden_contact):
 
 def audit(freeze,group_id,route,attempt):
  from mobiwam.task_video_identity import validate_recording
- validate_recording(attempt/'task-video-manifest.json',dict(group_id=group_id,route=route,attempt_id=attempt.name))
  rows=[x for x in freeze['primary'] if x['group_id']==group_id]
  if freeze['status']!='DR-v0.4_complete_preoutcome_freeze' or len(rows)!=1:
   raise ValueError('unfrozen group')
  row=rows[0]
  if row['split'] not in ('train','validation') or route not in row['route_order']:
   raise ValueError('sealed test or nonregistered route')
+ validate_recording(attempt/'task-video-manifest.json',dict(group_id=group_id,route=route,attempt_id=attempt.name))
  expected_parent=attempt.parent.parent
  if attempt.parent.name!=route or expected_parent.name!=Path(row['source']).name:
   raise ValueError('route/source identity differs')
