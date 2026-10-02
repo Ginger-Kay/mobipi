@@ -65,6 +65,11 @@ def load_replay_events(attempt,result,explicit_plan=None):
     Replay uses saved actions, so applies exactly before the same action index.
     """
     attempt=Path(attempt);n=result['steps'];events=copy.deepcopy(result.get('events',[]));lineage=[]
+    feedback=[json.loads(x) for x in (attempt/'feedback.jsonl').read_text().splitlines()]
+    if len(feedback)!=n:raise ValueError('controller feedback/action count differs')
+    dock_steps=[x['step'] for i,x in enumerate(feedback) if result['route']=='D' and x['stage']=='manipulate' and (i==0 or feedback[i-1]['stage']!='manipulate')]
+    recorded_steps=[e['step'] for e in events if e.get('event')=='dock_settled_reobserve_feedback_reset']
+    if dock_steps!=recorded_steps:raise ValueError('missing or mistimed dock reset event relative to recorded feedback transition')
     if result.get('controller_events_schema')==SCHEMA:
         validate_events(events,result['route'],n,result.get('initial_stow_required',False));return events,lineage
     if any(e.get('event')!='dock_settled_reobserve_feedback_reset' for e in events):raise ValueError('unknown legacy controller event')

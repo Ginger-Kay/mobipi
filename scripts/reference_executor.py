@@ -125,7 +125,18 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
     initial=d.qpos[base.qpos_index].copy()
     baseline=ref.integration().copy()
     expected=np.load(ref.source/'integration.npy')
-    write_json(path/'restore-receipt.json',dict(max_integration_abs_error=float(np.max(np.abs(baseline-expected))),source=str(ref.source),time=stamp()))
+    scratch=mujoco.MjData(m)
+    mujoco.mj_setState(m,scratch,expected,ref.kind);mujoco.mj_forward(m,scratch)
+    from mobiwam.reference_controller_events import snapshot
+    field_diff=[]
+    for joint in range(m.njnt):
+        qs=int(m.jnt_qposadr[joint]);qe=int(m.jnt_qposadr[joint+1]) if joint+1<m.njnt else m.nq
+        vs=int(m.jnt_dofadr[joint]);ve=int(m.jnt_dofadr[joint+1]) if joint+1<m.njnt else m.nv
+        field_diff.append(dict(joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joint),qpos_max_abs_diff=float(np.max(abs(d.qpos[qs:qe]-scratch.qpos[qs:qe]))),qvel_max_abs_diff=float(np.max(abs(d.qvel[vs:ve]-scratch.qvel[vs:ve])))))
+    error=float(np.max(np.abs(baseline-expected)))
+    rng_equal=ref.env.rng.bit_generator.state==json.loads((ref.source/'rng.json').read_text())
+    write_json(path/'restore-receipt.json',dict(max_integration_abs_error=error,source=str(ref.source),time=stamp(),per_joint_field_diff=field_diff,sim_time_abs_diff=abs(float(d.time-scratch.time)),rng_identical=rng_equal,controller=snapshot(ref),comparison='read-only expected state on isolated scratch MjData; no live physics writes'))
+    if error>1e-10 or not rng_equal:raise ValueError('route Source restore differs')
     stage='stow' if route=='D' else 'manipulate'
     body=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_BODY,ref.base_body)
     site=ref.robot.eef_site_id['right']

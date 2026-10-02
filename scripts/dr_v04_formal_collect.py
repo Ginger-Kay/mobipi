@@ -60,6 +60,10 @@ def verify_dispatch(freeze, group_id, code_root, prior, binding=None):
   if binding.get('scientific_row')!=next((x for x in freeze['primary'] if x['group_id']==group_id),None):raise ValueError('R1 scientific Source/plan/split/reference/order changed')
   if binding.get('route_order')!=['E','D','A'] or not binding.get('outcome_previously_observed'):raise ValueError('R1 recollection provenance missing')
   if binding.get('safety')!=dict(collision_margin_m=.0005,joint_margin_strict_rad=.015,replay_max_state_abs_error=1e-5):raise ValueError('R1 safety/replay thresholds changed')
+  verification=binding['old_D_verification']
+  if sha(verification['result'])!=verification['sha256']:raise ValueError('old D verification changed')
+  verified=json.loads(Path(verification['result']).read_text())
+  if not verified['reproducible'] or verified['steps']!=849 or verified['max_state_abs_error']>1e-5 or verified['initial_error']>1e-10:raise ValueError('old D complete real action replay must pass before recollection')
  if subprocess.check_output(['git','-C',str(code_root),'status','--porcelain']).strip():
   raise ValueError('formal execution worktree is dirty')
  rows=[x for x in freeze['primary'] if x['group_id']==group_id]
@@ -192,6 +196,7 @@ def main():
     max_state_abs_error=replay_result['max_state_abs_error'],
     reproducible=replay_result['reproducible'],
     replay_kind='fixed saved actions, no human correction, not an independent outcome'))
+   if not replay_result['reproducible']:raise ValueError('real action replay failed; stop subsequent routes')
   from mobiwam.task_video_identity import validate_recording
   for result in results:
    attempt=Path(result['path'])

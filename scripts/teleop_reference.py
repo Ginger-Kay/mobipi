@@ -462,6 +462,10 @@ class Reference:
                 panorama=self.renderer.render().copy();r['panoramic_video'].append_data(panorama)
                 if 'panoramic_raw_frame_sha256' not in r:r['panoramic_raw_frame_sha256']=[]
                 r['panoramic_raw_frame_sha256'].append(hashlib.sha256(panorama.tobytes()).hexdigest())
+                if 'panoramic_frame_bindings' not in r:r['panoramic_frame_bindings']=[]
+                from mobiwam.visible_object_binding import frame_binding
+                binding=frame_binding(m,d,n,c);binding['raw_rgb_sha256']=r['panoramic_raw_frame_sha256'][-1]
+                r['panoramic_frame_bindings'].append(binding)
             r['n'] += 1
             r['success_streak'] = r['success_streak'] + 1 if after['success'] else 0
             if r['n'] % 20 == 0:
@@ -495,7 +499,7 @@ class Reference:
         if r.get('panoramic_video'):
             r['panoramic_video'].close()
             write_json(r['path']/'panoramic-binding.json',dict(camera=r['panoramic_camera'],native_model_geometry_sha256=identity['native']['native_geometry_sha256'] if identity else None,
-                frames=r['n'],raw_frame_sha256=r['panoramic_raw_frame_sha256'],sim_time_binding='same native state/time as primary trace after each action',sha256=hashlib.sha256((r['path']/'panoramic.mp4').read_bytes()).hexdigest()))
+                frames=r['n'],frame_bindings=r['panoramic_frame_bindings'],raw_frame_sha256=r['panoramic_raw_frame_sha256'],sim_time_binding='same native state/time as primary trace after each action',sha256=hashlib.sha256((r['path']/'panoramic.mp4').read_bytes()).hexdigest()))
         if identity is not None:
             from mobiwam.task_video_identity import finalize_recording, human_delivery
             manifest = finalize_recording(r['path'], identity, r['n'])
