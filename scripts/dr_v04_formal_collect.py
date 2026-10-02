@@ -22,14 +22,17 @@ from mobiwam.reference_transfer import compile_transferred_path
 PREPLAN_DEPENDENCIES=(
  'scripts/reference_geometry.py','scripts/reference_geometry_v16.py',
  'scripts/reference_planning.py','scripts/reference_prefix_preview.py',
- 'scripts/teleop_reference.py','scripts/reference_control_diagnostics.py',
+ 'scripts/reference_control_diagnostics.py',
  'src/mobiwam/reference_collision.py','src/mobiwam/reference_ik.py',
  'src/mobiwam/reference_dispatch.py','src/mobiwam/scene004.py',
  'src/mobiwam/reference_plan_reuse.py','scripts/reference_stow.py',
  'src/mobiwam/reference_prefix_safety.py','src/mobiwam/reference_handoff.py',
  'src/mobiwam/reference_transfer.py','scripts/reference_transfer_plan.py',
 )
+# Recorder-only changes are bound to the new execution commit; old planning
+# inputs and planning dependencies remain sealed under the historical commit.
 NEW_DEPENDENCIES=('scripts/reference_executor.py','scripts/dr_v04_formal_collect.py',
+                  'scripts/teleop_reference.py','src/mobiwam/task_video_identity.py',
                   'src/mobiwam/reference_formal_substep.py')
 
 def sha(path):
