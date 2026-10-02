@@ -37,7 +37,13 @@ def audit_one(root,freeze,group,route,attempt,out):
     cmd=[sys.executable,str(root/'scripts/dr_v04_formal_audit.py'),'--freeze',str(freeze),
          '--group-id',group,'--route',route,'--attempt',str(attempt),'--output',str(out)]
     with out.with_suffix('.log').open('a') as log:
-        rc=subprocess.call(cmd,stdout=log,stderr=subprocess.STDOUT,env=env)
+        proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT,env=env)
+        receipt=out.parent/'processes'/(out.stem+'-'+str(proc.pid)+'.json')
+        process=dict(pid=proc.pid,ppid=os.getpid(),started_at=stamp(),command=cmd,
+                     cuda_visible_devices='',kind='CPU_only_saved_trajectory_audit',scientific_outcomes=0)
+        write(receipt,process)
+        print(stamp(),'audit_started',group,route,'pid',proc.pid,flush=True)
+        rc=proc.wait();process.update(ended_at=stamp(),returncode=rc);write(receipt,process)
     if rc:raise RuntimeError('audit process failed: '+str(out.with_suffix('.log')))
     result=load(out)
     from mobiwam.reference_controller_events import load_replay_events
@@ -88,7 +94,7 @@ def main():
                 raise ValueError('native run_id differs')
             ap=audit_root/f'{group}-{route}.json'
             futures[key]=pool.submit(audit_one,root,freeze,group,route,attempt,ap)
-            print(stamp(),'audit_started',group,route,flush=True)
+            print(stamp(),'audit_submitted',group,route,flush=True)
     def finish_batch(batch):
         audits=[]
         for group in batch:
