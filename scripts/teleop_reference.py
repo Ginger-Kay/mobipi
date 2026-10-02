@@ -375,6 +375,12 @@ class Reference:
             self.capture_camera.lookat[:] = c.lookat
             for attr in ['distance', 'azimuth', 'elevation']:
                 setattr(self.capture_camera, attr, getattr(c, attr))
+        if self.recording and self.recording.get('task_video_identity'):
+            from mobiwam.visible_object_binding import validate_native_geometry, validate_render_model, frame_binding
+            identity=self.recording['task_video_identity']
+            validate_native_geometry(m,identity['native']['native_geometry_inventory'])
+            validate_render_model(m,self.renderer)
+            self.recording['native_frame_binding']=frame_binding(m,d,self.recording['n'],{'lookat':list(self.capture_camera.lookat),'distance':self.capture_camera.distance,'azimuth':self.capture_camera.azimuth,'elevation':self.capture_camera.elevation})
         self.renderer.update_scene(d, camera=self.capture_camera, scene_option=self.render_options)
         return self.renderer.render()
 
@@ -418,6 +424,10 @@ class Reference:
         print('RECORDING', self.route, path, flush=True)
 
     def step(self, action, keys=()):
+        if self.recording and self.recording.get('task_video_identity'):
+            from mobiwam.visible_object_binding import validate_native_geometry
+            m,_=self.model_data()
+            validate_native_geometry(m,self.recording['task_video_identity']['native']['native_geometry_inventory'])
         before = self.trace() if self.recording else None
         self.env.step(action)
         if self.recording:
@@ -432,7 +442,7 @@ class Reference:
             after = self.trace()
             frame = self.frame(r['camera'])
             r['trace'].write(json.dumps({'step': n, 'wall_time': stamp(), 'keys': keys,
-                'before': before, 'after': after, 'camera': {
+                'before': before, 'after': after, 'native_frame_binding': r.get('native_frame_binding'), 'camera': {
                     'lookat': self.capture_camera.lookat.copy(),
                     'distance': self.capture_camera.distance,
                     'azimuth': self.capture_camera.azimuth,

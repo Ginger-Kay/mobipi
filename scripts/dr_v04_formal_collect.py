@@ -33,6 +33,7 @@ PREPLAN_DEPENDENCIES=(
 # inputs and planning dependencies remain sealed under the historical commit.
 NEW_DEPENDENCIES=('scripts/reference_executor.py','scripts/dr_v04_formal_collect.py',
                   'scripts/teleop_reference.py','src/mobiwam/task_video_identity.py',
+                  'src/mobiwam/visible_object_binding.py',
                   'src/mobiwam/reference_formal_substep.py')
 
 def sha(path):
