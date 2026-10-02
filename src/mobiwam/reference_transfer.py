@@ -5,6 +5,7 @@ read. Every transferred waypoint still needs full geometry and controller
 preflight before a route may execute.
 """
 import json
+import hashlib
 from pathlib import Path
 
 import h5py
@@ -101,7 +102,8 @@ def compile_transferred_path(ref, attempt):
             old_binding['fixture_class'] != new_binding['fixture_class']):
         raise ValueError('reference/new target class differs')
     suffix = '_slidejoint' if ref.args.task == 'CloseDrawer' else '_microjoint'
-    old_model = mujoco.MjModel.from_xml_path(str(old_source / 'model.xml'))
+    from mobiwam.task_video_identity import source_model
+    old_model = source_model(str(old_source / 'model.xml'), hashlib.sha256((old_source / 'model.xml').read_bytes()).hexdigest())
     old = mujoco.MjData(old_model)
     new_model, live = ref.model_data()
     new = mujoco.MjData(new_model)

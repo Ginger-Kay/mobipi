@@ -38,11 +38,12 @@ def replay_attempt(ref,attempt,output,plan=None,video=False):
     write_json(output/'controller-event-receipts.json',dict(events=event_receipts,controller_windows=controllers,legacy_reconstruction=lineage,event_application_timing='before saved zero-based action; no observation/control-policy regeneration',unknown_event_fail_closed=True))
     first=next((i for i,e in enumerate(errors) if e>1e-5),None)
     out=dict(ended_at=stamp(),attempt=str(attempt),steps=len(actions),route=result['route'],initial_error=initial_error,
-             max_state_abs_error=max(errors,default=0.),first_state_error_gt_1e5=first,first_state_error_gt_1e_5=first,
+             max_state_abs_error=max(errors,default=0.),first_state_error_gt_1e_5=first,
              state_errors=errors,checker_success=bool(ref.env._check_success()),expected_checker_success=result['checker_success'],
              reproducible=max(errors,default=0.)<=1e-5 and bool(ref.env._check_success())==bool(result['checker_success']),
              replay_kind='real native saved actions + versioned controller events; no per-step state injection',applied_events=applied,
              original_events_preserved=True,video_generated=video,scientific_route_outcomes=0,formal_train_ready=False)
+    out['first_state_error_gt_1e-5']=first
     write_json(output/'result.json',out);return out
 
 def main():

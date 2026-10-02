@@ -34,7 +34,8 @@ PREPLAN_DEPENDENCIES=(
 NEW_DEPENDENCIES=('scripts/reference_executor.py','scripts/dr_v04_formal_collect.py',
                   'scripts/teleop_reference.py','src/mobiwam/task_video_identity.py',
                   'src/mobiwam/visible_object_binding.py',
-                  'src/mobiwam/reference_formal_substep.py')
+                  'src/mobiwam/reference_formal_substep.py',
+                  'src/mobiwam/reference_controller_events.py','scripts/reference_protocol_replay.py')
 
 def sha(path):
  h=sha256()
@@ -46,11 +47,19 @@ def checked_dependency(root, commit, file):
  historical=subprocess.check_output(['git','-C',str(root),'show',commit+':'+file])
  if historical!=(root/file).read_bytes():raise ValueError('code dependency changed: '+file)
 
-def verify_dispatch(freeze, group_id, code_root, prior):
+def verify_dispatch(freeze, group_id, code_root, prior, binding=None):
  if freeze['status']!='DR-v0.4_complete_preoutcome_freeze':raise ValueError('formal freeze not complete')
  if freeze['formal_route_outcomes']!=0:raise ValueError('preoutcome freeze has outcome contamination')
  execution_sha=subprocess.check_output(['git','-C',str(code_root),'rev-parse','HEAD'],text=True).strip()
- if execution_sha!=freeze['formal_execution_code_commit']:raise ValueError('formal execution commit differs')
+ if binding is None:
+  if execution_sha!=freeze['formal_execution_code_commit']:raise ValueError('formal execution commit differs')
+ else:
+  if binding.get('version')!='DR-v0.4-R1-seed109-recollection' or binding.get('execution_code_commit')!=execution_sha:raise ValueError('R1 execution binding differs')
+  if binding.get('group_id')!=group_id or group_id!='CloseDrawer-layout1-style0-seed109':raise ValueError('R1 only authorizes seed109')
+  if binding.get('parent_formal_execution_code_commit')!=freeze['formal_execution_code_commit']:raise ValueError('parent code binding differs')
+  if binding.get('scientific_row')!=next((x for x in freeze['primary'] if x['group_id']==group_id),None):raise ValueError('R1 scientific Source/plan/split/reference/order changed')
+  if binding.get('route_order')!=['E','D','A'] or not binding.get('outcome_previously_observed'):raise ValueError('R1 recollection provenance missing')
+  if binding.get('safety')!=dict(collision_margin_m=.0005,joint_margin_strict_rad=.015,replay_max_state_abs_error=1e-5):raise ValueError('R1 safety/replay thresholds changed')
  if subprocess.check_output(['git','-C',str(code_root),'status','--porcelain']).strip():
   raise ValueError('formal execution worktree is dirty')
  rows=[x for x in freeze['primary'] if x['group_id']==group_id]
@@ -61,7 +70,12 @@ def verify_dispatch(freeze, group_id, code_root, prior):
  old_commit=freeze['planning_code_commit']
  if old_commit!=json.loads((prior.parent/'manifest.json').read_text())['code_commit']:
   raise ValueError('planning provenance changed')
- for file in PREPLAN_DEPENDENCIES:checked_dependency(code_root,old_commit,file)
+ for file in PREPLAN_DEPENDENCIES:
+  if binding is not None and file=='src/mobiwam/reference_transfer.py':
+   historical=subprocess.check_output(['git','-C',str(code_root),'show',old_commit+':'+file]).decode()
+   expected=historical.replace('import json\n','import json\nimport hashlib\n',1).replace("old_model = mujoco.MjModel.from_xml_path(str(old_source / 'model.xml'))", "from mobiwam.task_video_identity import source_model\n    old_model = source_model(str(old_source / 'model.xml'), hashlib.sha256((old_source / 'model.xml').read_bytes()).hexdigest())")
+   if (code_root/file).read_text()!=expected:raise ValueError('reference mapping changed beyond approved URI resolution')
+  else:checked_dependency(code_root,old_commit,file)
  for file in NEW_DEPENDENCIES:checked_dependency(code_root,execution_sha,file)
  for name,key in (('model.xml','model_sha256'),('integration.npy','integration_sha256')):
   if sha(Path(row['source'])/name)!=row[key]:raise ValueError('frozen Source mutated')
@@ -79,13 +93,16 @@ def main():
  p.add_argument('--freeze',type=Path,required=True)
  p.add_argument('--group-id',required=True)
  p.add_argument('--output',type=Path,required=True)
+ p.add_argument('--execution-binding',type=Path)
  args=p.parse_args(); prior_freeze=args.freeze.resolve();out=args.output.resolve()
  root=Path(__file__).resolve().parent.parent
  freeze=json.loads(prior_freeze.read_text())
  rows=[x for x in freeze.get('primary',[]) if x['group_id']==args.group_id]
  if len(rows)!=1:raise ValueError('unknown frozen group')
  prior=Path(rows[0]['plan_run']).resolve()
- row,old_commit,new_commit=verify_dispatch(freeze,args.group_id,root,prior)
+ binding=json.loads(args.execution_binding.read_text()) if args.execution_binding else None
+ if binding is not None and (binding['parent_freeze_sha256']!=sha(prior_freeze) or Path(binding['parent_freeze']).resolve()!=prior_freeze):raise ValueError('parent freeze changed')
+ row,old_commit,new_commit=verify_dispatch(freeze,args.group_id,root,prior,binding)
  preflight=json.loads((prior/'planning/candidate-features.json').read_text())
  spec=json.loads((prior/'executor-spec.json').read_text())
  source=Path(preflight['source']).resolve()
@@ -116,6 +133,11 @@ def main():
   ref.restore()
   # Independent native identity is mandatory before compiling or stepping routes.
   from mobiwam.task_video_identity import observe_native
+  if binding is not None:
+   ref.evidence_camera=binding['evidence_camera']['camera']
+   ref.panoramic_camera=binding['panoramic_camera']
+   ref.apply_camera(ref.evidence_camera)
+   if ref.model_data()[0].vis.global_.fovy!=binding['evidence_camera']['native_fovy_degrees']:raise ValueError('evidence projection changed')
   ref.identity_expected=row
   ref.identity_context=dict(run_id=out.parent.name,group_id=args.group_id)
   native_identity=observe_native(ref,row)
@@ -158,7 +180,9 @@ def main():
     outcome_status='pending_independent_replay_and_full_video_substep_audit'))
    # Protocol replay uses exactly the saved actions. It is verification, never a
    # second scientific outcome or a search for success; an error stops this group.
-   ref.replay()
+   from reference_protocol_replay import replay_attempt
+   replay_out=Path(path)/('replay-'+stamp().replace(':','').replace('+','_'))
+   replay_attempt(ref,Path(path),replay_out,prior,video=False)
    replay_files=sorted(Path(path).glob('replay-*/result.json'))
    if len(replay_files)!=1:raise ValueError('expected one protocol replay per scientific route')
    replay_result=json.loads(replay_files[0].read_text())
@@ -166,12 +190,15 @@ def main():
     sha256=sha(replay_files[0]),steps=replay_result['steps'],
     checker_success=replay_result['checker_success'],
     max_state_abs_error=replay_result['max_state_abs_error'],
+    reproducible=replay_result['reproducible'],
     replay_kind='fixed saved actions, no human correction, not an independent outcome'))
   from mobiwam.task_video_identity import validate_recording
   for result in results:
    attempt=Path(result['path'])
    validate_recording(attempt/'task-video-manifest.json',dict(run_id=ref.identity_context['run_id'],group_id=args.group_id,route=result['route'],attempt_id=attempt.name))
   write_json(out/'completed.json',dict(ended_at=stamp(),attempts=results,
+   recollection_provenance='researcher_authorized_recollection_after_replay_defect' if binding else None,
+   outcome_previously_observed=bool(binding),same_independent_Source=True,
    route_outcomes=len(results),audit='pending',formal_train_ready=False))
  finally:
   if ref.observation_renderer is not None:ref.observation_renderer.close()

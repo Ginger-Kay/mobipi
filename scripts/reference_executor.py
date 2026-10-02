@@ -116,7 +116,7 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
     ref.base_locked=route in ('E','D')
     ref.begin()
     path=ref.recording['path']
-    if ref.args.task=='CloseDrawer' and target_name=='stack_4_main_group_2':
+    if not getattr(ref,'evidence_camera',None) and ref.args.task=='CloseDrawer' and target_name=='stack_4_main_group_2':
         camera=dict(lookat=[3.8,-1.0,.65],distance=2.4,azimuth=90.,elevation=-15.)
         ref.apply_camera(camera);ref.recording['camera']=camera
     clearance= PalmClearance(ref)

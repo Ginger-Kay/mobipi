@@ -107,7 +107,8 @@ def audit(freeze,group_id,route,attempt):
  base_path=float(np.linalg.norm(np.diff(bases[:,:2],axis=0),axis=1).sum())
  elapsed=float(end['sim_time']-trace[0]['before']['sim_time'])
  if elapsed<0 or not np.isfinite(elapsed):raise ValueError('invalid simulator elapsed time')
- model=mujoco.MjModel.from_xml_path(str(expected_parent/'model.xml'))
+ from mobiwam.task_video_identity import source_model
+ model=source_model(str(expected_parent/'model.xml'),sha(expected_parent/'model.xml'))
  if native_states.shape[1]!=model.nq:raise ValueError('native qpos/model dimension differs')
  geom=SweptGeometry(model,target_prefix=row['fixture_name'],margin=.0005)
  sweep=geom.path(native_states,native_phases)

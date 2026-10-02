@@ -352,7 +352,7 @@ class Reference:
         if self.panel:
             self.panel_ready = False
         source_info = json.loads((self.source / 'source.json').read_text())
-        self.apply_camera(source_info.get('camera', self.camera_state()))
+        self.apply_camera(getattr(self,'evidence_camera',None) or source_info.get('camera', self.camera_state()))
         self.verify_target()
         if self.env.viewer is not None:
             self.env.viewer.update()
@@ -420,6 +420,9 @@ class Reference:
                           'n': 0, 'started': stamp(), 'events': [], 'success_streak': 0}
         self.recording['camera'] = self.camera_state()
         self.recording['task_video_identity'] = identity
+        if getattr(self,'panoramic_camera',None):
+            self.recording['panoramic_camera']=self.panoramic_camera
+            self.recording['panoramic_video']=imageio.get_writer(path/'panoramic.mp4',fps=20,codec='libx264',quality=7,macro_block_size=None)
         self.paused = False
         self.message = 'Recording. Stop saves this attempt, including failures.'
         write_json(path / 'status.json', {'status': 'recording', 'route': self.route,
@@ -451,6 +454,14 @@ class Reference:
                     'azimuth': self.capture_camera.azimuth,
                     'elevation': self.capture_camera.elevation}}, default=lambda x: x.tolist()) + '\n')
             r['video'].append_data(frame)
+            if r.get('panoramic_video'):
+                # Same native model/data/time, second evidence camera; policy cameras unchanged.
+                pano=mujoco.MjvCamera();c=r['panoramic_camera'];pano.lookat[:]=c['lookat']
+                pano.distance=c['distance'];pano.azimuth=c['azimuth'];pano.elevation=c['elevation']
+                m,d=self.model_data();self.renderer.update_scene(d,camera=pano,scene_option=self.render_options)
+                panorama=self.renderer.render().copy();r['panoramic_video'].append_data(panorama)
+                if 'panoramic_raw_frame_sha256' not in r:r['panoramic_raw_frame_sha256']=[]
+                r['panoramic_raw_frame_sha256'].append(hashlib.sha256(panorama.tobytes()).hexdigest())
             r['n'] += 1
             r['success_streak'] = r['success_streak'] + 1 if after['success'] else 0
             if r['n'] % 20 == 0:
@@ -481,6 +492,10 @@ class Reference:
         r['h'].close()
         r['trace'].close()
         r['video'].close()
+        if r.get('panoramic_video'):
+            r['panoramic_video'].close()
+            write_json(r['path']/'panoramic-binding.json',dict(camera=r['panoramic_camera'],native_model_geometry_sha256=identity['native']['native_geometry_sha256'] if identity else None,
+                frames=r['n'],raw_frame_sha256=r['panoramic_raw_frame_sha256'],sim_time_binding='same native state/time as primary trace after each action',sha256=hashlib.sha256((r['path']/'panoramic.mp4').read_bytes()).hexdigest()))
         if identity is not None:
             from mobiwam.task_video_identity import finalize_recording, human_delivery
             manifest = finalize_recording(r['path'], identity, r['n'])
