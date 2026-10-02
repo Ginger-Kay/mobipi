@@ -103,7 +103,9 @@ def mapped_action(ref, point, base_target, arm_enabled=True):
     return action, float(np.linalg.norm(pos_error)), float(np.linalg.norm(rot_error)), float(np.linalg.norm(error))
 
 
-def run_route(ref, route, points, horizon):
+def run_route(ref, route, points, horizon, *, execution_scope="development"):
+    if execution_scope not in ("development", "DR-v0.4_formal_candidate_pending_audit"):
+        raise ValueError("unrecognized execution scope")
     fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
     target_name=fixture.name
     binding=json.loads((ref.source/'target-binding.json').read_text())
@@ -252,8 +254,8 @@ def run_route(ref, route, points, horizon):
         if margin_guard is not None:write_json(path/'joint-margin-monitor.json',margin_guard.receipt())
     write_json(path/'executor-result.json',dict(executor='reference-feedback-v17',route=route,reason=reason,
         base_max_drift_generalized=base_max_drift,waypoints_reached=index,total_waypoints=len(points),
-        execution_scope='development',formal_train_ready=False,strict_semantics_verified=False,
-        note='No collision safety certification; feedback path is reference-conditioned; development pre-outcome candidate features exported.'))
+        execution_scope=execution_scope,formal_train_ready=False,strict_semantics_verified=False,
+        note='No collision safety certification; feedback path is reference-conditioned; all outcomes need original video and substep audit before eligibility.'))
     return str(path)
 
 
