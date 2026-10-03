@@ -17,7 +17,7 @@ import h5py
 import mujoco
 import numpy as np
 from PIL import Image
-from teleop_reference import Reference, write_json, stamp, key_actions
+from teleop_reference import Reference, write_json, stamp, key_actions, Keyboard
 from mobiwam.human_scene_collection import VERSION, validate_start, append_index, load_index, phase_for
 from mobiwam.task_video_identity import observe_native
 from mobiwam.dr_v04_r2 import prepare_camera
@@ -55,7 +55,12 @@ class PilotReference(Reference):
         self.collect_meta = None
         self.substep_guard = None
         self.margin_guard = None
+        interactive=not args.self_test
+        # This VNC server has no GLX extension. Use the existing EGL renderer
+        # for a Tk display; task inputs, policy cameras and physics stay intact.
+        args.self_test=True
         super().__init__(args)
+        if interactive:self.keyboard=Keyboard()
         self.label = VERSION + ':human_only'
         self.paused = True
 
@@ -191,7 +196,29 @@ class PilotReference(Reference):
         self.panel.geometry('410x1000+1200+0')
         tk.Label(self.panel,text='Operator ID (required before F2)',bg='#243447',fg='white').pack()
         self.operator_entry=tk.Entry(self.panel,font=('sans',14));self.operator_entry.pack(fill='x',padx=12)
+        self.operator_entry.bind('<Button-1>',lambda event:self.operator_entry.focus_force())
         tk.Label(self.panel,text='PILOT / practice only\nF2 restores Source and records full attempt\nF4 = human contact mark, F3 = stop/save\nAuto-save after 10 successful steps',bg='#243447',fg='white',justify='left').pack(pady=8)
+
+        self.live_window=tk.Toplevel(self.panel);self.live_window.title(self.pilot['scene_id']+' | Live native view')
+        self.live_window.geometry('1200x820+0+0');self.live_window.protocol('WM_DELETE_WINDOW',lambda:self.keyboard.commands.put('pause'))
+        self.live_label=tk.Label(self.live_window,bg='black');self.live_label.pack()
+        self.live_camera=json.loads(json.dumps(self.evidence_camera));self.last_live_frame=0.;self.last_ui_status=0.
+        tk.Label(self.live_window,text='Mouse drag: view angle | Wheel: zoom | Buttons below: view only. Recording uses fixed target + panorama cameras.').pack()
+        def select_camera(camera):self.live_camera=json.loads(json.dumps(camera));self.last_live_frame=0.
+        tk.Button(self.live_window,text='Target view',command=lambda:select_camera(self.evidence_camera)).pack(side='left')
+        tk.Button(self.live_window,text='Base overview',command=lambda:select_camera(self.panoramic_camera)).pack(side='left')
+        self.camera_drag=None
+        def drag_start(event):self.camera_drag=(event.x,event.y)
+        def drag(event):
+            if self.camera_drag is None:return
+            x,y=self.camera_drag;self.camera_drag=(event.x,event.y)
+            self.live_camera['azimuth']+=(event.x-x)*.3
+            self.live_camera['elevation']=float(np.clip(self.live_camera['elevation']+(event.y-y)*.3,-80,10))
+            self.last_live_frame=0.
+        def zoom(factor):self.live_camera['distance']=float(np.clip(self.live_camera['distance']*factor,.5,8));self.last_live_frame=0.
+        self.live_label.bind('<Button-1>',drag_start);self.live_label.bind('<B1-Motion>',drag)
+        self.live_label.bind('<Button-4>',lambda event:zoom(.9));self.live_label.bind('<Button-5>',lambda event:zoom(1.1))
+        self.panel.focus_force()
 
     def update_panel(self,mode=None):
         super().update_panel(mode)
@@ -199,6 +226,17 @@ class PilotReference(Reference):
         state='PAUSED' if self.paused else ('RECORDING' if self.recording else 'UNRECORDED PRACTICE')
         steps=self.recording['n'] if self.recording else 0
         self.status_label.config(text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | {steps*.05:.2f}/120s\n{self.message}')
+        now=time.monotonic()
+        if now-self.last_live_frame>=.2:
+            from PIL import ImageTk
+            self.live_photo=ImageTk.PhotoImage(Image.fromarray(self.frame(self.live_camera).copy()).resize((1200,675)))
+            self.live_label.configure(image=self.live_photo);self.last_live_frame=now
+        if now-self.last_ui_status>=5:
+            write_json(self.root/'ui-status.json',dict(at=stamp(),pid=os.getpid(),paused=self.paused,recording=bool(self.recording),
+                scene_id=self.pilot['scene_id'],source=str(self.source),route=self.route,sim_time=native['sim_time'],
+                opening=native['target'],native_success=native['success'],operator_id=self.operator_id,
+                complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry))
+            self.last_ui_status=now
         # The entry needs keyboard events; do not grab the keyboard until it loses focus.
         from Xlib import X
         entry_focus=self.panel.focus_get() is self.operator_entry
