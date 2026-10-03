@@ -41,7 +41,8 @@ def recheck(arg):
     # Recompute every previously unclosed interval including partial native stop.
     sweep=geom.path(states[prefix:],phases[prefix:])
     sweep["reused_certified_prefix_segments"]=prefix
-    sweep["newly_rechecked_suffix_segments"]=len(phases)-prefix
+    sweep["required_suffix_segments"]=len(phases)-prefix
+    sweep["newly_certified_suffix_segments"]=int(sweep.get("segments",sweep.get("completed_segments",0)))
     sweep["total_saved_segments"]=len(phases)
     sweep["full_saved_path_valid"]=bool(sweep["valid"])
     if "segment" in sweep:sweep["absolute_segment"]=prefix+sweep["segment"]
