@@ -3,7 +3,7 @@ import argparse,csv,json,hashlib,html,subprocess
 from pathlib import Path
 from datetime import datetime,timezone
 import cv2
-from PIL import Image,ImageDraw
+from PIL import Image,ImageDraw,ImageFont
 import imageio_ffmpeg
 
 def load(p):return json.loads(Path(p).read_text())
@@ -37,12 +37,23 @@ def main():
         assert sha(attempt/"original.mp4")==native["files"]["original.mp4"]["sha256"]
         assert sha(attempt/"panoramic.mp4")==panobinding["sha256"]
         info=movie_info(attempt/"panoramic.mp4",decode=True);assert info["frames"]==n and info["fps"]==20
-        out=r/"videos"/f'{slot["slot"]:02d}-{slot["group_id"]}';out.mkdir(exist_ok=False)
-        watch=out/"watch.mp4";label=out/"label.txt"
+        out=r/"videos"/f'{slot["slot"]:02d}-{slot["group_id"]}';out.mkdir(exist_ok=True)
+        watch=out/"watch-labeled.mp4";label=out/"label.txt"
         label.write_text(f'{slot["group_id"]} | MODEL SELECTED {complete["route"]} | step2000 | {complete["result"]["reason"]} | native video 20Hz')
-        # Native simultaneous base stream is inset in a labeled viewing copy.
-        vf=f"[0:v]drawtext=textfile={label}:fontcolor=white:fontsize=24:box=1:boxcolor=black@0.65:x=12:y=10[main];[1:v]scale=480:270[base];[main][base]overlay=W-w-12:H-h-12[out]"
+        # This packaged ffmpeg has overlay but no drawtext. Render exact native
+        # timestamps into transparent PNG frames using Pillow instead.
+        labels=out/"label-frames";labels.mkdir(exist_ok=False)
+        font=ImageFont.truetype("/share/personal/chensiyu/haokaijiang/MobiWAM/env/lib/python3.10/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf",23)
+        trace=[json.loads(s) for s in (attempt/"trace.jsonl").read_text().splitlines()]
+        samecamera=native["binding"]["camera"]==panobinding["camera"]
+        for i,t in enumerate(trace):
+            banner=Image.new("RGBA",(1920,78),(0,0,0,170));draw=ImageDraw.Draw(banner)
+            draw.text((12,7),label.read_text(),font=font,fill="white")
+            draw.text((12,40),f'frame {i} | native sim time {t["after"]["sim_time"]:.3f}s | video time {(i+1)/20:.3f}s | base inset: '+("same camera" if samecamera else "wider simultaneous camera"),font=font,fill="white")
+            banner.save(labels/f"label-{i:05d}.png")
+        vf="[1:v]scale=480:270[base];[0:v][base]overlay=W-w-12:H-h-12[main];[main][2:v]overlay=0:0:shortest=1[out]"
         cmd=[ffmpeg,"-hide_banner","-loglevel","error","-threads","2","-i",str(attempt/"original.mp4"),"-i",str(attempt/"panoramic.mp4"),
+            "-framerate","20","-i",str(labels/"label-%05d.png"),
             "-filter_complex_threads","1","-filter_complex",vf,"-map","[out]","-an","-c:v","libx264","-threads","2","-preset","veryfast","-crf","20","-movflags","+faststart",str(watch)]
         process=subprocess.run(cmd,capture_output=True,text=True)
         if process.returncode:
@@ -63,7 +74,7 @@ def main():
              panoramic_video=str(attempt/"panoramic.mp4"),panoramic_sha256=panobinding["sha256"],preview=str(out/"preview.jpg"),
              native_manifest=str(attempt/"task-video-manifest.json"),native_target=native["binding"]["native"]["target_description"],
              checkpoint_sha256=roster["checkpoint_sha256"],episode_code_commit=primary_binding["code_commit"],full_recorded_control_steps=True,
-             partial_terminal_control_step=terminal["partial_control_step"],native_video_all_frames_decoded_receipt_reused=True,
+             partial_terminal_control_step=terminal["partial_control_step"],base_view_distinct_camera=not samecamera,native_video_all_frames_decoded_receipt_reused=True,
              new_panoramic_and_watch_all_frames_decoded=True,full_action_replay=False,development_repeat=True,formal_train_ready=False)
         write(out/"episode-video-manifest.json",new);rows.append(new)
         print(json.dumps(dict(slot=slot["slot"],frames=n,watch=str(watch))),flush=True)
