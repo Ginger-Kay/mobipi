@@ -33,7 +33,18 @@ def recheck(arg):
         states=z["qpos"]; phases=z["phases"].tolist()
     geom=SweptGeometry(model,target_prefix=target,margin=.0005)
     assert not any(set(pair)==set(ids) for pair in geom.pairs)
-    sweep=geom.path(states,phases)
+    prefix=int(old["actual_swept_geometry"]["completed_segments"])
+    assert old["actual_swept_geometry"]["valid"] is False
+    assert frozenset(old["actual_swept_geometry"]["pair"])==FINGER_PAD_PAIR
+    assert old["actual_swept_geometry"]["segment"]==prefix and 0<=prefix<len(phases)
+    # Every earlier interval was certified with a strictly larger forbidden-pair set.
+    # Recompute every previously unclosed interval including partial native stop.
+    sweep=geom.path(states[prefix:],phases[prefix:])
+    sweep["reused_certified_prefix_segments"]=prefix
+    sweep["newly_rechecked_suffix_segments"]=len(phases)-prefix
+    sweep["total_saved_segments"]=len(phases)
+    sweep["full_saved_path_valid"]=bool(sweep["valid"])
+    if "segment" in sweep:sweep["absolute_segment"]=prefix+sweep["segment"]
     for k,v in physics.items():np.testing.assert_array_equal(v,getattr(model,k))
     oldstop=load(p/"formal-substep-stop.json")
     contacts=oldstop["contacts"]
@@ -46,7 +57,7 @@ def recheck(arg):
                 physical_parameters_unchanged=True,record_integrity="reused_closed_R2_receipt",
                 old_rule_truncated=True,full_new_rule_outcome_known=False,
                 saved_prefix_safety_status="pass" if sweep["valid"] and not still_forbidden else "not_passed",
-                trajectory_scope="entire saved prefix including partial native terminal substep; no continuation",
+                trajectory_scope="stricter old certified prefix plus all previously unclosed suffix including partial native terminal substep; no continuation",
                 replay_reused=old["replay_reproducible"])
     write(Path(out)/f'{row["group_id"]}-{row["route"]}.json',result)
     print(json.dumps(dict(group=row["group_id"],route=row["route"],sweep=sweep)),flush=True)
