@@ -105,7 +105,7 @@ def mapped_action(ref, point, base_target, arm_enabled=True):
 
 
 def run_route(ref, route, points, horizon, *, execution_scope="development"):
-    if execution_scope not in ("development", "DR-v0.4_formal_candidate_pending_audit"):
+    if execution_scope not in ("development", "DR-v0.4_formal_candidate_pending_audit", "DR-v0.4_R4_development_selected_route"):
         raise ValueError("unrecognized execution scope")
     fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
     target_name=fixture.name
@@ -155,7 +155,7 @@ def run_route(ref, route, points, horizon, *, execution_scope="development"):
     index=0; stuck=0; settled=0; reason='horizon'; base_max_drift=0.
     dock=np.asarray(ref.dock_plan['selected']['dock'])
     margin_guard=None
-    formal_scope=execution_scope=='DR-v0.4_formal_candidate_pending_audit'
+    formal_scope=execution_scope in ('DR-v0.4_formal_candidate_pending_audit','DR-v0.4_R4_development_selected_route')
     formal_guard=FormalSubstepMonitor(ref,target_name) if formal_scope else None
     if route=='D' or formal_scope:
         arm=ref.robot.part_controllers['right']
