@@ -221,7 +221,7 @@ class PilotReference(Reference):
         self.panel.focus_force()
 
     def update_panel(self,mode=None):
-        super().update_panel(mode)
+        while self.keyboard_display.pending_events():self.keyboard_display.next_event()
         native=self.trace(); streak=self.recording['success_streak'] if self.recording else 0
         state='PAUSED' if self.paused else ('RECORDING' if self.recording else 'UNRECORDED PRACTICE')
         steps=self.recording['n'] if self.recording else 0
@@ -237,6 +237,8 @@ class PilotReference(Reference):
                 opening=native['target'],native_success=native['success'],operator_id=self.operator_id,
                 complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry))
             self.last_ui_status=now
+        self.panel.update()
+        self.panel.lift()
         # The entry needs keyboard events; do not grab the keyboard until it loses focus.
         from Xlib import X
         entry_focus=self.panel.focus_get() is self.operator_entry
