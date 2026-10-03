@@ -31,6 +31,21 @@ def code_commit():
     return subprocess.check_output(['git', '-C', str(Path(__file__).resolve().parents[1]), 'rev-parse', 'HEAD'], text=True).strip()
 
 
+def restore_saved_integration(ref):
+    Reference.restore(ref)
+    # mj_forward recomputes the solver warm-start cache. Restore the saved cache
+    # after derived kinematics/controller refresh, without advancing physics.
+    m,d=ref.model_data();saved=np.load(ref.source/'integration.npy')
+    scratch=mujoco.MjData(m);mujoco.mj_setState(m,scratch,saved,ref.kind)
+    warmstart_delta=float(np.max(abs(d.qacc_warmstart-scratch.qacc_warmstart),initial=0))
+    d.qacc_warmstart[:]=scratch.qacc_warmstart
+    error=float(np.max(abs(ref.integration()-saved),initial=0))
+    if error>1e-10:raise ValueError(f'Source integration restore mismatch after warm-start restore: {error}')
+    ref.restore_receipt=dict(max_abs_error=error,solver_warmstart_recomputed_delta=warmstart_delta,
+        solver_warmstart_restored=True,new_physics_steps=0)
+    return ref.restore_receipt
+
+
 class PilotReference(Reference):
     def __init__(self, args, pilot):
         self.pilot = pilot
@@ -43,6 +58,9 @@ class PilotReference(Reference):
         super().__init__(args)
         self.label = VERSION + ':human_only'
         self.paused = True
+
+    def restore(self):
+        return restore_saved_integration(self)
 
     def bind(self):
         binding = load(self.source/'target-binding.json')
@@ -200,19 +218,27 @@ def make_args(root,task,seed,source=None,interactive=False):
         source=str(source) if source else None,replay_attempt=None,resume_attempt=None,width=1280,height=720)
 
 
-def prepare(batch,scene,task,seed):
-    root=batch/'scenes'/scene/'pilot-v1';root.mkdir(parents=True,exist_ok=False)
-    ref=Reference(make_args(root,task,seed));ref.label='human-scene-pilot-preparation'
+def prepare(batch,scene,task,seed,resume_source=None):
+    root=batch/'scenes'/scene/'pilot-v1'
+    if resume_source:
+        if not root.exists() or (root/'pilot.json').exists():raise ValueError('Resume requires incomplete preparation')
+        resume_source=Path(resume_source).resolve()
+        if resume_source.parent!=root.resolve():raise ValueError('Resume Source outside this pilot')
+        output=root/('recovery-'+time.strftime('%Y%m%dT%H%M%SZ',time.gmtime()))
+    else:
+        root.mkdir(parents=True,exist_ok=False);output=root
+    ref=Reference(make_args(output,task,seed,resume_source));ref.label='human-scene-pilot-preparation'
+    if resume_source:restore_saved_integration(ref)
     try:
-        binding=load(root/'target-binding.json')
+        binding=load(ref.root/'target-binding.json')
         initial=ref.trace()
         if initial['success']:raise ValueError('Initial target is already closed')
         guard=FormalSubstepMonitor(ref,binding['fixture_name']);bad=list(guard.forbidden_contacts())
         write_json(root/'initial-contact-check.json',dict(contacts=bad,phase='precontact',native_check_only=True,continuous_clearance='pending'))
         if bad:raise ValueError('Initial forbidden robot contact')
-        source=ref.freeze()
+        source=ref.source if resume_source else ref.freeze()
         before=ref.integration().copy();rng=ref.env.rng.bit_generator.state
-        ref.restore();error=float(np.max(abs(ref.integration()-before)))
+        restore_saved_integration(ref);error=float(np.max(abs(ref.integration()-before)))
         if error>1e-10 or rng!=ref.env.rng.bit_generator.state:raise ValueError('Saved Source restore mismatch')
         expected=dict(task=task,fixture_name=binding['fixture_name'],fixture_class=binding['fixture_class'],model_sha256=digest(source/'model.xml'),group_id=scene)
         native=observe_native(ref,expected)
@@ -228,7 +254,7 @@ def prepare(batch,scene,task,seed):
             target_binding=str(source/'target-binding.json'),preview_visibility_pass=camera['visibility_pass'],
             restore_max_abs_error=error,source_rng_restored=True,new_task_actions=0,review_status='pending',formal_train_ready=False)
         write_json(root/'pilot.json',config);write_json(root/'native-identity.json',native)
-        write_json(root/'restore-receipt.json',dict(created_at=stamp(),integration_max_abs_error=error,rng_identical=True,new_task_actions=0))
+        write_json(root/'restore-receipt.json',dict(created_at=stamp(),integration_max_abs_error=error,rng_identical=True,new_task_actions=0,solver_state=ref.restore_receipt))
         print(json.dumps(dict(prepared=scene,source=str(source),config=str(root/'pilot.json'),opening=initial['target'],restore_error=error)),flush=True)
     finally:
         for name in ('observation_renderer','renderer'):
@@ -239,10 +265,10 @@ def prepare(batch,scene,task,seed):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=['prepare','ui','record-smoke']);parser.add_argument('--batch',type=Path,required=True)
-    parser.add_argument('--scene',required=True);parser.add_argument('--task',choices=['CloseSingleDoor','CloseDrawer']);parser.add_argument('--seed',type=int)
+    parser.add_argument('--scene',required=True);parser.add_argument('--task',choices=['CloseSingleDoor','CloseDrawer']);parser.add_argument('--seed',type=int);parser.add_argument('--resume-source',type=Path)
     args=parser.parse_args();batch=args.batch.resolve()
     if args.mode=='prepare':
-        return prepare(batch,args.scene,args.task,args.seed)
+        return prepare(batch,args.scene,args.task,args.seed,args.resume_source)
     config_path=batch/'scenes'/args.scene/'pilot-v1/pilot.json';config=load(config_path)
     source=Path(config['source']);output=batch/'episodes'/args.scene/'interactive'
     if args.mode=='record-smoke':output=batch/'episodes'/args.scene/'engineering-record-smoke'
