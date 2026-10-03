@@ -14,6 +14,7 @@ import h5py
 import imageio.v2 as imageio
 import mujoco
 from mobiwam.reference_collision import SweptGeometry
+from mobiwam.contact_rules import allowed_contact, RULE_VERSION
 
 
 def sha(path):
@@ -115,7 +116,10 @@ def audit(freeze,group_id,route,attempt):
  controller=load(attempt/'executor-result.json')
  substeps=load(attempt/'formal-native-substeps-receipt.json')
  margin=load(attempt/'joint-margin-monitor.json')
- contact_stop=(attempt/'formal-substep-stop.json').is_file() or (attempt/'contact-stop.json').is_file()
+ old_stop=[]
+ for stop_path in (attempt/'formal-substep-stop.json',attempt/'contact-stop.json'):
+  if stop_path.is_file():old_stop.append(load(stop_path))
+ contact_stop=any(not allowed_contact(c.get('geom1'),c.get('geom2'),stop.get('phase','manipulate'),row['fixture_name']) for stop in old_stop for c in stop.get('contacts',[]))
  actual_safety_pass=(sweep['valid'] and not contact_stop and
   margin['minimum'] is not None and margin['minimum']['margin_rad']>.015)
  replay_results=list(attempt.glob('replay-*/result.json'))
@@ -128,12 +132,13 @@ def audit(freeze,group_id,route,attempt):
  if controller['execution_scope']!='DR-v0.4_formal_candidate_pending_audit':
   raise ValueError('development execution cannot become formal')
  failure,failure_binding=bind_modeled_failure(sweep,contact_stop)
- ready=bool(actual_safety_pass and reproducible and failure is not None and not substeps['forbidden_contact'])
+ ready=bool(actual_safety_pass and reproducible and failure is not None and not contact_stop)
  return dict(group_id=group_id,split=row['split'],route=route,attempt=str(attempt),
   status='machine_audit_pass_pending_research_review' if ready else 'route_ineligible_or_machine_audit_failed',
   checker_success=bool(result['checker_success']),task_progress_after=progress,
   actual_base_path_m=base_path,completion_time_s=elapsed,original_video_frames=video_frames,
   recorded_actions=n,native_substeps=len(native_phases),
+  contact_rule_version=RULE_VERSION, old_contact_stops=old_stop,
   actual_swept_geometry=sweep,realized_contact_stop=contact_stop,
   arm_joint_margin=margin,replay_result_sha256=sha(replay_results[0]),replay_reproducible=reproducible,
   raw_executor_reason=result['reason'],

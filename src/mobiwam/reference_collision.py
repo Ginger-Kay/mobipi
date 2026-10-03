@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import numpy as np
 import mujoco
+from mobiwam.contact_rules import exempt_finger_pad_pair, allowed_contact
 
 
 class SweptGeometry:
@@ -30,6 +31,7 @@ class SweptGeometry:
         for offset,a in enumerate(ids):
             for b in ids[offset+1:]:
                 if not (self.robot[a] or self.robot[b]):continue
+                if exempt_finger_pad_pair(self.names[a],self.names[b]):continue
                 if not ((model.geom_contype[a]&model.geom_conaffinity[b]) or
                         (model.geom_contype[b]&model.geom_conaffinity[a])):continue
                 ba,bb=int(model.geom_bodyid[a]),int(model.geom_bodyid[b])
@@ -45,10 +47,7 @@ class SweptGeometry:
                 if ('floor' in self.names[a] and self.names[b].startswith('mobilebase0_')) or ('floor' in self.names[b] and self.names[a].startswith('mobilebase0_')):continue
                 pairs.append((a,b))
         self.pairs=np.asarray(pairs,dtype=int).reshape(-1,2)
-        self.allowed_manipulation=np.array([
-            ('finger' in self.names[a] and self.names[b].startswith(target_prefix) or
-             'finger' in self.names[b] and self.names[a].startswith(target_prefix))
-            if target_prefix else False for a,b in pairs])
+        self.allowed_manipulation=np.array([allowed_contact(self.names[a],self.names[b],'manipulate',target_prefix) for a,b in pairs],dtype=bool)
         self.chains=[]
         for geom in range(model.ngeom):
             chain=[];body=int(model.geom_bodyid[geom])

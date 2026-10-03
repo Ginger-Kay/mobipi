@@ -6,6 +6,7 @@ clearance certificate; that must be checked on the recorded native states.
 from __future__ import annotations
 import numpy as np
 import mujoco
+from mobiwam.contact_rules import allowed_contact, exempt_finger_pad_pair, RULE_VERSION
 
 
 class FormalSafetyStop(RuntimeError):
@@ -30,6 +31,7 @@ class FormalSubstepMonitor:
         self.step = -1
         self.phase = 'precontact'
         self.first_forbidden = None
+        self.exempt_contacts = []
 
     def set_boundary(self, step, phase):
         self.step,self.phase=int(step),str(phase)
@@ -40,11 +42,9 @@ class FormalSubstepMonitor:
             robot_a=a.startswith(('robot0_','gripper0_','mobilebase0_'))
             robot_b=b.startswith(('robot0_','gripper0_','mobilebase0_'))
             if not (robot_a or robot_b):continue
-            if ('floor' in a and b.startswith('mobilebase0_')) or ('floor' in b and a.startswith('mobilebase0_')):
-                continue
-            if self.phase=='manipulate' and ((robot_a and 'finger' in a and b.startswith(self.target)) or
-                                             (robot_b and 'finger' in b and a.startswith(self.target))):
-                continue
+            if exempt_finger_pad_pair(a,b):
+                self.exempt_contacts.append(dict(step=self.step,substep=len(self.phases)-1,phase=self.phase,geom1=a,geom2=b,distance_m=float(c.dist)))
+            if allowed_contact(a,b,self.phase,self.target):continue
             yield dict(geom1=a,geom2=b,distance_m=float(c.dist))
 
     def __enter__(self):
@@ -80,4 +80,5 @@ class FormalSubstepMonitor:
             phases=np.asarray(self.phases,dtype='<U12'))
         return dict(substeps=len(self.phases),states=len(self.states),
             forbidden_contact=self.first_forbidden,
+            contact_rule_version=RULE_VERSION, exempt_contact_diagnostics=self.exempt_contacts,
             scope='native integration qpos plus contact guard; actual continuous swept 0.5mm clearance still requires separate audit')
