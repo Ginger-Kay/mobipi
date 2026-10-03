@@ -64,10 +64,11 @@ def main():
         ref.evidence_camera=camera["camera"];ref.apply_camera(ref.evidence_camera)
         eligible=[c for c in camera["candidates"] if c["minimum_visibility_ratio"]>=1.]
         panoramic=max(eligible,key=lambda c:c["pixels"]["base"])
-        ref.panoramic_camera=panoramic["camera"]
+        ref.panoramic_camera=dict(panoramic["camera"])
+        ref.panoramic_camera["distance"]*=1.35
         Image.fromarray(ref.frame(ref.panoramic_camera).copy()).save(out/"camera-preview/panoramic.jpg")
         ref.apply_camera(ref.evidence_camera)
-        write_json(out/"camera-preview/panoramic-camera.json",dict(camera=ref.panoramic_camera,source_visible_pixels=panoramic["pixels"],
+        write_json(out/"camera-preview/panoramic-camera.json",dict(camera=ref.panoramic_camera,base_camera_zoom_out_factor=1.35,source_candidate_pixels_before_zoom=panoramic["pixels"],
              zero_task_actions=True,independent_evidence_camera=True,policy_cameras_unchanged=ref.policy_cameras))
         if np.max(abs(ref.integration()-before))>1e-10:raise ValueError("camera preview changed Source")
         assert torch.cuda.is_available() and "A800" in torch.cuda.get_device_name(0)
