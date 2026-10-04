@@ -241,6 +241,10 @@ class PilotReference(Reference):
         super().create_panel()
         import tkinter as tk
         self.panel.title(self.pilot['scene_id']+' | Human pilot')
+        if self.pilot.get('paired_protocol_version')=='human-eda-v2-stowed':
+            tk.Label(self.panel,text='COMMON STOWED SOURCE / PRACTICE\nD: base only until F5; arm and closing blocked.\nRelease base keys, wait stopped, then F5.\nAfter F5: base locked; approach with arm.\nE: base always locked. A: both available.',
+                     bg='#243447',fg='#ffe08a',justify='left').pack()
+
         self.panel.geometry('410x1000+1200+0')
         for widget in self.panel.winfo_children():
             if isinstance(widget,tk.Label) and str(widget.cget('text')).startswith('ARM:'):
@@ -320,8 +324,8 @@ class PilotReference(Reference):
             count=sum(finger_contacts)
             warning=grip_closed and count<2
             self.contact_label.config(
-                text=f'Handle contact: {count}/2 fingers | command: {"CLOSE" if grip_closed else "OPEN"}\n'
-                     'Start is aligned: keep fingers above/below the horizontal handle. Approach with small translations.\n'
+                text=f'Handle contact: {count}/2 fingers | command: {"CLOSE" if grip_closed else "OPEN"}\n' +
+                     ('Common stowed start: align fingers above/below handle after docking.\n' if self.pilot.get('paired_protocol_version')=='human-eda-v2-stowed' else 'Start is aligned: keep fingers above/below the horizontal handle. Approach with small translations.\n') +
                      'Sampled contact only; not proof of secure grasp. Esc pauses; Space closes/opens.',
                 fg='#9c3100' if warning else '#16364a')
         self.status_label.config(fg='#ffbf47' if margin<.15 else 'white',
@@ -414,6 +418,7 @@ def prepare(batch,scene,task,seed,resume_source=None):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=['prepare','ui','record-smoke']);parser.add_argument('--batch',type=Path,required=True)
     parser.add_argument('--scene',required=True);parser.add_argument('--task',choices=['CloseSingleDoor','CloseDrawer']);parser.add_argument('--seed',type=int);parser.add_argument('--resume-source',type=Path)
+    parser.add_argument('--route',choices=['A','E','D'],default='A',help='Initial human route; switching remains explicit')
     parser.add_argument('--config',type=Path,help='Explicit versioned pilot config; original Source/config remains immutable')
     args=parser.parse_args();batch=args.batch.resolve()
     if args.mode=='prepare':
@@ -426,7 +431,7 @@ def main():
     output.mkdir(parents=True,exist_ok=True)
     ref=PilotReference(make_args(output,config['task'],config['environment_seed'],source,interactive=args.mode=='ui'),config)
     try:
-        ref.evidence_camera=config['main_camera'];ref.panoramic_camera=config['panoramic_camera'];ref.restore();ref.bind()
+        ref.evidence_camera=config['main_camera'];ref.panoramic_camera=config['panoramic_camera'];ref.restore();ref.bind();ref.route=args.route
         ref.message='Pilot ready, PAUSED. Enter operator ID, click outside field, then F2.'
         write_json(output/'process.json',dict(started_at=stamp(),pid=os.getpid(),command=sys.argv,code_commit=code_commit(),python=sys.executable,
             CUDA_VISIBLE_DEVICES=os.environ.get('CUDA_VISIBLE_DEVICES'),DISPLAY=os.environ.get('DISPLAY'),source=str(source),mode=args.mode,
