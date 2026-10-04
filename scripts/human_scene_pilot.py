@@ -23,6 +23,7 @@ from mobiwam.task_video_identity import observe_native
 from mobiwam.dr_v04_r2 import prepare_camera
 from mobiwam.reference_formal_substep import FormalSubstepMonitor, FormalSafetyStop
 from mobiwam.reference_prefix_safety import JointMarginMonitor, JointMarginStop, GuardedIntegration
+from mobiwam.teleop_feedback import signed_planar_angle_deg
 
 
 def load(p): return json.loads(Path(p).read_text())
@@ -214,6 +215,10 @@ class PilotReference(Reference):
         import tkinter as tk
         self.panel.title(self.pilot['scene_id']+' | Human pilot')
         self.panel.geometry('410x1000+1200+0')
+        for widget in self.panel.winfo_children():
+            if isinstance(widget,tk.Label) and str(widget.cget('text')).startswith('ARM:'):
+                widget.configure(text='MOVE ARM: arrows = horizontal shift\n; / . = raise / lower\nTURN GRIPPER: O / P = yaw + / -\nO counterclockwise, P clockwise (top view)\nY / H = pitch, E / R = roll\nMOVE BASE: W/A/S/D; Z/X turns BASE\nSpace = open / close gripper\n\nMove along the door arc AND turn the wrist.\nTap keys briefly; Esc pauses to inspect.',
+                    fg='#ffe08a',font=('sans',12))
         tk.Label(self.panel,text='Operator ID (required before F2)',bg='#243447',fg='white').pack()
         self.operator_entry=tk.Entry(self.panel,font=('sans',14));self.operator_entry.pack(fill='x',padx=12)
         self.operator_entry.bind('<Button-1>',lambda event:self.operator_entry.focus_force())
@@ -253,8 +258,16 @@ class PilotReference(Reference):
         margin=float(margins[j]);joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joints[j])
         wall=time.monotonic()-getattr(self,'recording_wall_started',time.monotonic()) if self.recording else 0.
         caution='\nNEAR LIMIT: reverse arm / reposition base' if margin<.15 else ''
+        yaw_gap=None;turn_text=''
+        if self.native['fixture_class']=='Microwave':
+            hid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_GEOM,self.native['fixture_name']+'_door_handle')
+            sid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_SITE,'gripper0_right_grip_site')
+            if min(hid,sid)>=0:
+                yaw_gap=signed_planar_angle_deg(d.site_xmat[sid].reshape(3,3)[:,2],d.geom_xmat[hid].reshape(3,3)[:,1])
+            turn_text=('\nDoor/wrist yaw gap: tilted' if yaw_gap is None else
+                       f'\nDoor/wrist yaw gap: {yaw_gap:+.1f} deg\nO turns + | P turns - (top view)')
         self.status_label.config(fg='#ffbf47' if margin<.15 else 'white',
-            text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}\n{self.message}')
+            text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}{turn_text}\n{self.message}')
         now=time.monotonic()
         m,d=self.model_data()
         view_key=(id(m),float(d.time),json.dumps(self.live_camera,sort_keys=True))
@@ -270,7 +283,8 @@ class PilotReference(Reference):
                 scene_id=self.pilot['scene_id'],source=str(self.source),route=self.route,sim_time=native['sim_time'],
                 opening=native['target'],native_success=native['success'],operator_id=self.operator_id,
                 complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry,
-                minimum_arm_joint_margin_rad=margin,nearest_limit_joint=joint,wall_seconds=wall))
+                minimum_arm_joint_margin_rad=margin,nearest_limit_joint=joint,wall_seconds=wall,
+                door_wrist_planar_yaw_gap_deg=yaw_gap))
             self.last_ui_status=now
         self.panel.update()
         self.panel.lift()
