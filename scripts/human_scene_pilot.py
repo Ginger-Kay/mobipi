@@ -23,7 +23,7 @@ from mobiwam.task_video_identity import observe_native
 from mobiwam.dr_v04_r2 import prepare_camera
 from mobiwam.reference_formal_substep import FormalSubstepMonitor, FormalSafetyStop
 from mobiwam.reference_prefix_safety import JointMarginMonitor, JointMarginStop, GuardedIntegration
-from mobiwam.teleop_feedback import signed_planar_angle_deg
+from mobiwam.teleop_feedback import signed_planar_angle_deg, touching_fingers
 
 
 def load(p): return json.loads(Path(p).read_text())
@@ -229,9 +229,19 @@ class PilotReference(Reference):
         self.live_label=tk.Label(self.live_window,bg='black');self.live_label.pack()
         self.live_camera=json.loads(json.dumps(self.evidence_camera));self.last_live_frame=0.;self.last_ui_status=0.
         tk.Label(self.live_window,text='Mouse drag: view angle | Wheel: zoom | Buttons below: view only. Recording uses fixed target + panorama cameras.').pack()
+        self.contact_label=tk.Label(self.live_window,text='',font=('sans',14),justify='left',wraplength=1150)
+        self.contact_label.pack(fill='x')
         def select_camera(camera):self.live_camera=json.loads(json.dumps(camera));self.last_live_frame=0.
         tk.Button(self.live_window,text='Target view',command=lambda:select_camera(self.evidence_camera)).pack(side='left')
         tk.Button(self.live_window,text='Base overview',command=lambda:select_camera(self.panoramic_camera)).pack(side='left')
+        if self.native['fixture_class']=='Microwave':
+            def handle_closeup():
+                m,d=self.model_data()
+                hid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_GEOM,self.native['fixture_name']+'_door_handle')
+                if hid>=0:
+                    camera=dict(self.evidence_camera,lookat=d.geom_xpos[hid].tolist(),distance=.85)
+                    select_camera(camera)
+            tk.Button(self.live_window,text='Handle close-up (recenter)',command=handle_closeup).pack(side='left')
         self.camera_drag=None
         def drag_start(event):self.camera_drag=(event.x,event.y)
         def drag(event):
@@ -258,7 +268,8 @@ class PilotReference(Reference):
         margin=float(margins[j]);joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joints[j])
         wall=time.monotonic()-getattr(self,'recording_wall_started',time.monotonic()) if self.recording else 0.
         caution='\nNEAR LIMIT: reverse arm / reposition base' if margin<.15 else ''
-        yaw_gap=None;turn_text=''
+        yaw_gap=None;turn_text='';finger_contacts=None
+        grip_closed=bool(self.keyboard and self.keyboard.grasp)
         if self.native['fixture_class']=='Microwave':
             hid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_GEOM,self.native['fixture_name']+'_door_handle')
             sid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_SITE,'gripper0_right_grip_site')
@@ -266,6 +277,15 @@ class PilotReference(Reference):
                 yaw_gap=signed_planar_angle_deg(d.site_xmat[sid].reshape(3,3)[:,2],d.geom_xmat[hid].reshape(3,3)[:,1])
             turn_text=('\nDoor/wrist yaw gap: tilted' if yaw_gap is None else
                        f'\nDoor/wrist yaw gap: {yaw_gap:+.1f} deg\nO turns + | P turns - (top view)')
+            geoms=self.robot.gripper['right'].important_geoms
+            finger_contacts=touching_fingers(native['contacts'],self.native['fixture_name']+'_door_handle',
+                                             (geoms['left_finger'],geoms['right_finger']))
+            count=sum(finger_contacts)
+            warning=grip_closed and count<2
+            contact_text=(f'Handle contact: {count}/2 fingers | command: {"CLOSE" if grip_closed else "OPEN"}'
+                          '\nSampled contact only; not proof of secure grasp. '+
+                          ('Fewer than 2: Esc to inspect before moving.' if warning else 'Watch both fingers as the door turns.'))
+            self.contact_label.config(text=contact_text,fg='#9c3100' if warning else '#16364a')
         self.status_label.config(fg='#ffbf47' if margin<.15 else 'white',
             text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}{turn_text}\n{self.message}')
         now=time.monotonic()
@@ -284,7 +304,8 @@ class PilotReference(Reference):
                 opening=native['target'],native_success=native['success'],operator_id=self.operator_id,
                 complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry,
                 minimum_arm_joint_margin_rad=margin,nearest_limit_joint=joint,wall_seconds=wall,
-                door_wrist_planar_yaw_gap_deg=yaw_gap))
+                door_wrist_planar_yaw_gap_deg=yaw_gap,handle_finger_contacts=finger_contacts,
+                gripper_close_command=grip_closed,live_camera=self.live_camera))
             self.last_ui_status=now
         self.panel.update()
         self.panel.lift()

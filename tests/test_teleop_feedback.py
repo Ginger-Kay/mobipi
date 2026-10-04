@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from mobiwam.teleop_feedback import signed_planar_angle_deg
+from mobiwam.teleop_feedback import signed_planar_angle_deg, touching_fingers
 
 
 def direction(degrees):
@@ -21,3 +21,16 @@ def test_tilted_or_invalid_direction_does_not_offer_yaw_hint():
     assert signed_planar_angle_deg([0,0,1],[1,0,0]) is None
     assert signed_planar_angle_deg([1,0,0],[0,0,-1]) is None
     assert signed_planar_angle_deg([np.nan,0,0],[1,0,0]) is None
+
+
+def test_contact_identity_order_proximity_and_duplicate_points():
+    groups = (('finger1', 'pad1'), ('finger2', 'pad2'))
+    def contact(a, b, distance=-.001):
+        return dict(geom1=a, geom2=b, distance=distance)
+    contacts = [contact('handle', 'pad1'), contact('finger1', 'handle'),
+                contact('handle', 'pad2', .0001), contact('other_handle', 'pad2'),
+                contact('handle', 'palm'), contact('handle', 'pad2', np.nan)]
+    assert touching_fingers(contacts, 'handle', groups) == (True, False)
+    assert touching_fingers(contacts + [contact('pad2', 'handle', 0)],
+                            'handle', groups) == (True, True)
+    assert touching_fingers([], 'handle', groups) == (False, False)
