@@ -712,6 +712,13 @@ class Reference:
         assert max(errors) < 1e-5, 'Restore/action replay diverged'
         print('SELF TEST PASSED', result['base_displacement'], max(errors), flush=True)
 
+    def mark_event(self, cmd):
+        self.recording['events'].append({'step': self.recording['n'], 'event': 'contact' if cmd=='f4' else 'docked'})
+        if cmd == 'f5': self.docked = True
+
+    def prepare_live_action(self, parts):
+        return parts
+
     def run(self):
         self.create_panel()
         if self.source:
@@ -732,8 +739,7 @@ class Reference:
                         elif cmd == 'f3': self.finish('human_stop')
                         elif self.recording:
                             if cmd in ('f4', 'f5'):
-                                self.recording['events'].append({'step': self.recording['n'], 'event': 'contact' if cmd=='f4' else 'docked'})
-                                if cmd == 'f5': self.docked = True
+                                self.mark_event(cmd)
                         elif cmd == 'f1': self.freeze()
                         elif cmd == 'f2': self.begin()
                         elif cmd == 'f6':
@@ -748,7 +754,7 @@ class Reference:
                         print('COMMAND:', e, flush=True)
                 ac, keys = self.keyboard.read(self.route == 'E' or (self.route == 'D' and self.docked))
                 if not self.paused:
-                    self.step(self.robot.create_action_vector(ac), keys)
+                    self.step(self.robot.create_action_vector(self.prepare_live_action(ac)), keys)
                 self.update_panel()
                 time.sleep(max(0, .05 - (time.monotonic() - tick)))
         finally:

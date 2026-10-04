@@ -19,9 +19,8 @@ def saved(m,d):
     mujoco.mj_getState(m,d,x,mujoco.mjtState.mjSTATE_INTEGRATION);return x
 def box_xml(xml,position,size):
     tree=ET.fromstring(xml);world=tree.find('worldbody')
-    body=ET.SubElement(world,'body',name='human_scene_obstacle',pos=' '.join(map(str,position)))
     # One geom serves visual and collision representations; no hidden collision edits.
-    ET.SubElement(body,'geom',name='human_scene_obstacle_box',type='box',size=' '.join(map(str,size)),
+    ET.SubElement(world,'geom',name='human_scene_obstacle_box',pos=' '.join(map(str,position)),type='box',size=' '.join(map(str,size)),
                   contype='1',conaffinity='1',group='1',rgba='.85 .25 .12 1',friction='1 .005 .0001')
     return ET.tostring(tree,encoding='unicode')
 def obstacle_check(m,d,target,joint):
@@ -38,6 +37,8 @@ def obstacle_check(m,d,target,joint):
     closest=int(np.argmin(vals));minimum=float(vals[closest])
     targets=[i for i in ids if names[i].startswith(target)]
     qid=m.jnt_qposadr[joint];q0=float(d.qpos[qid]);limit=0.
+    if m.jnt_type[joint]!=mujoco.mjtJoint.mjJNT_SLIDE:
+        assert max(np.linalg.norm(d.geom_xpos[i]-d.xanchor[joint])+m.geom_rbound[i] for i in targets)<=2.
     # 101 fixed configurations plus a conservative intervening displacement bound.
     # Drawer translates; microwave target geometry radius <= 2m from hinge.
     bound=abs(q0-limit)/100*(1 if m.jnt_type[joint]==mujoco.mjtJoint.mjJNT_SLIDE else 2.)/2
@@ -50,7 +51,16 @@ def obstacle_check(m,d,target,joint):
                 target_sweep_samples=101,accepted=minimum>=.005 and swept-bound>=.0005)
 def publish(batch,run,cfg,base_xml,state,category,obstacle,index):
     scene=cfg['scene_id'].split('-')[0]+'-'+category+'-01'
-    root=batch/'scenes'/scene/'draft-v1';root.mkdir(parents=True,exist_ok=False)
+    root=batch/'scenes'/scene/'draft-v1'
+    if root.exists():
+        # Resume only the already completed no-obstacle draft after the recorded
+        # static-obstacle integration-layout error. Never overwrite a Source.
+        prior=load(root/'pilot.json')
+        assert category=='O' and prior['primary_enabled'] is False and prior['obstacle'] is None
+        assert np.array_equal(np.load(Path(prior['source'])/'integration.npy'),state)
+        return dict(scene_id=scene,config=str(root/'pilot.json'),source=prior['source'],category=category,
+                    route_order=''.join(prior['route_order']),initial_static_clearance_m=prior['initial_static_clearance_m'],obstacle=None,status='draft_unfrozen')
+    root.mkdir(parents=True,exist_ok=False)
     source=root/('source-'+run.name.split('-')[0]+'-'+scene);source.mkdir()
     xml=box_xml(base_xml,obstacle['position'],obstacle['half_size']) if obstacle else base_xml
     m,d=model(xml,state)

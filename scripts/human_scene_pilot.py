@@ -97,6 +97,29 @@ class PilotReference(Reference):
         write_json(self.root/'current-source.json', dict(source=str(result), created_at=stamp(), config_version=self.pilot['config_version']))
         return result
 
+    def prepare_live_action(self, parts):
+        if self.pilot.get('paired_protocol_version')!='human-eda-v2-stowed':
+            return parts
+        from mobiwam.human_paired_protocol import route_inputs
+        if self.route=='D' and not self.docked and self.keyboard:
+            self.keyboard.grasp=False
+        return route_inputs(parts,self.route,self.docked)
+
+    def mark_event(self, cmd):
+        if self.pilot.get('paired_protocol_version')=='human-eda-v2-stowed':
+            if cmd=='f4' and self.route=='D' and not self.docked:
+                raise ValueError('D: dock with F5 before approach/contact')
+            if cmd=='f5':
+                from mobiwam.human_paired_protocol import validate_dock
+                m,d=self.model_data();base=self.robot.part_controllers['base'];arm=self.robot.part_controllers['right']
+                target=self.native['fixture_name']
+                contact=any(any((c.get(k) or '').startswith(target) for k in ('geom1','geom2'))
+                    and any((c.get(k) or '').startswith(('robot0_','gripper0_','mobilebase0_')) for k in ('geom1','geom2'))
+                    for c in self.trace()['contacts'])
+                validate_dock(self.route,self.docked,d.qvel[base.qvel_index],d.qpos[arm.qpos_index],
+                              self.pilot['common_stow_qpos'],bool(self.keyboard and self.keyboard.grasp),contact)
+        return super().mark_event(cmd)
+
     def begin(self):
         if hasattr(self, 'operator_entry'):
             self.operator_id = self.operator_entry.get().strip()
@@ -298,7 +321,7 @@ class PilotReference(Reference):
                      'Sampled contact only; not proof of secure grasp. Esc pauses; Space closes/opens.',
                 fg='#9c3100' if warning else '#16364a')
         self.status_label.config(fg='#ffbf47' if margin<.15 else 'white',
-            text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}{turn_text}\n{self.message}')
+            text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | {self.record_type}\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}{turn_text}\n{self.message}')
         now=time.monotonic()
         m,d=self.model_data()
         view_key=(id(m),float(d.time),json.dumps(self.live_camera,sort_keys=True))
