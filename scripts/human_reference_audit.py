@@ -146,6 +146,28 @@ def load_attempt(attempt):
     return result, metadata, actions, states, integration, events
 
 
+def load_partial_tail(attempt, result):
+    partial = attempt / "partial-control-step.npz"
+    safety = attempt / "safety-stop.json"
+    if not partial.exists() and not safety.exists():
+        if result.get("reason") in ("native_forbidden_contact_stop", "joint_margin_stop"):
+            raise ValueError("Safety stop missing partial-step evidence")
+        return None
+    if not partial.exists() or not safety.exists():
+        raise ValueError("Incomplete safety tail")
+    record = json.loads(safety.read_text())
+    with np.load(partial) as z:
+        tail = {k: z[k] for k in ("initial_integration","terminal_integration","attempted_action")}
+    if record["step"] != result["steps"] or record["failure"]["step"] != result["steps"]:
+        raise ValueError("Partial-step boundary differs")
+    if tail["attempted_action"].shape != (12,) or any(not np.isfinite(v).all() for v in tail.values()):
+        raise ValueError("Invalid partial-step numeric evidence")
+    if tail["initial_integration"].shape != tail["terminal_integration"].shape:
+        raise ValueError("Partial integration shape mismatch")
+    tail["record"] = record
+    return tail
+
+
 def replay(attempt, output, pilot_path, video=False):
     import mujoco
     import imageio.v2 as imageio
@@ -163,6 +185,8 @@ def replay(attempt, output, pilot_path, video=False):
     actual, errors, success = [], [], []
     guard = joint = None
     stop = None
+    tail = load_partial_tail(attempt, result)
+    tail_check = None
     started = stamp()
     try:
         ref.route = result["route"]
@@ -215,6 +239,30 @@ def replay(attempt, output, pilot_path, video=False):
                                   state_error=errors[-1], checker_success=success[-1])
                     write(output / "progress.json", status)
                     print("HUMAN_REPLAY", result["route"], json.dumps(status), flush=True)
+        if tail is not None and stop is None and len(errors) == len(actions):
+            # Replay the originally attempted residual action once, from the
+            # organically reached state. Never inject its terminal state.
+            i = len(actions)
+            initial_error = float(np.max(np.abs(ref.integration()-tail["initial_integration"])))
+            if initial_error > 1e-10:
+                raise ValueError("Partial-step start integration mismatch")
+            phase = phase_at(result, i)
+            guard.set_boundary(i, phase)
+            try:
+                with guard:
+                    with GuardedIntegration(ref.env.sim, d, joint, lite_physics=ref.env.lite_physics,
+                                            step=i, phase=phase):
+                        ref.env.step(tail["attempted_action"])
+            except (FormalSafetyStop, JointMarginStop) as exc:
+                stop = dict(step=i, failure=exc.failure)
+            terminal_error = float(np.max(np.abs(ref.integration()-tail["terminal_integration"])))
+            same_failure = stop is not None and stop["failure"] == tail["record"]["failure"]
+            tail_check = dict(initial_integration_error=initial_error,terminal_integration_error=terminal_error,
+                expected_stop=tail["record"],actual_stop=stop,same_failure=same_failure,
+                reproduced=bool(same_failure and terminal_error <= 1e-10))
+            write(output / "partial-tail-replay.json",tail_check)
+            np.savez_compressed(output / "partial-control-step.npz",terminal_integration=ref.integration(),
+                                attempted_action=tail["attempted_action"])
         actual = np.asarray(actual)
         expected = states[:len(actual)]
         np.savez_compressed(output / "replayed-states-and-field-errors.npz",
@@ -231,7 +279,9 @@ def replay(attempt, output, pilot_path, video=False):
                    checker_success=bool(ref.env._check_success()),
                    terminal_success_streak_10=bool(len(success)>=10 and all(success[-10:])),
                    expected_checker_success=result["checker_success"], safety_stop=stop,
-                   reproducible=bool(match and success and success[-1]==result["checker_success"]),
+                   reproducible=bool(match and success and success[-1]==result["checker_success"] and
+                       (tail is None or (tail_check is not None and tail_check["reproduced"]))),
+                   partial_tail_replay=tail_check,
                    replay_kind="saved human actions; no per-step state injection or new human input",
                    replay_video=str(output / "replay.mp4") if video else None,
                    rendering_enabled=video, scientific_route_outcomes=0,

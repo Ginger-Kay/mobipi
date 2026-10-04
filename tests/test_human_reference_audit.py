@@ -84,3 +84,19 @@ def test_e_admits_fixed_base_and_rejects_motion():
 def test_primary_cannot_be_admitted_without_freeze():
     r,m,a,s=original();m["record_type"]="primary"
     with pytest.raises((KeyError,ValueError)):validate_human_recording(r,m,a,s)
+
+from human_reference_audit import load_partial_tail
+import json
+
+def test_missing_safety_tail_fails_closed(tmp_path):
+    with pytest.raises(ValueError,match="missing"):
+        load_partial_tail(tmp_path,dict(reason="native_forbidden_contact_stop",steps=3))
+
+def test_partial_tail_boundary_and_action_integrity(tmp_path):
+    result=dict(reason="native_forbidden_contact_stop",steps=3)
+    stop=dict(step=3,failure=dict(step=3,kind="native_forbidden_contact"))
+    (tmp_path/"safety-stop.json").write_text(json.dumps(stop))
+    np.savez(tmp_path/"partial-control-step.npz",initial_integration=np.zeros(10),terminal_integration=np.ones(10),attempted_action=np.zeros(12))
+    assert load_partial_tail(tmp_path,result)["record"]==stop
+    stop["step"]=2;(tmp_path/"safety-stop.json").write_text(json.dumps(stop))
+    with pytest.raises(ValueError,match="boundary"):load_partial_tail(tmp_path,result)
