@@ -1,0 +1,239 @@
+"""Development human-A reference checks; never create a primary route or train."""
+from __future__ import annotations
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+import time
+from datetime import datetime, timezone
+import h5py
+import numpy as np
+
+
+def stamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def write(path, value):
+    Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+
+
+def validate_human_a(result, metadata, actions, states):
+    if result.get("route") != "A" or metadata.get("route") != "A":
+        raise ValueError("Only human A replay is supported")
+    if metadata.get("record_type") != "practice" or metadata.get("version") != "human-scene-pilot-v1":
+        raise ValueError("Expected original development human practice")
+    n = result.get("steps")
+    if type(n) is not int or n < 1 or actions.shape != (n, 12) or states.shape[0] != n + 1:
+        raise ValueError("Incomplete action/state alignment")
+    if not np.isfinite(actions).all() or not np.isfinite(states).all():
+        raise ValueError("Nonfinite recorded state/action")
+    events = result.get("events", [])
+    if not events or events[0].get("event") != "collection_begin":
+        raise ValueError("Missing human collection event")
+    last = -1
+    paused = False
+    for i, event in enumerate(events):
+        kind, step = event.get("event"), event.get("step")
+        if type(step) is not int or not 0 <= step <= n or step < last:
+            raise ValueError("Invalid human event boundary")
+        if kind == "collection_begin":
+            if i != 0 or step != 0 or event.get("operator_id") != metadata.get("operator_id"):
+                raise ValueError("Mismatched human collection provenance")
+        elif kind == "pause":
+            if paused:
+                raise ValueError("Repeated pause")
+            paused = True
+        elif kind == "resume":
+            if not paused:
+                raise ValueError("Resume without pause")
+            paused = False
+        elif kind != "contact":
+            raise ValueError("Unknown human event; cannot silently discard controller transitions")
+        last = step
+    # A pause changes wall-clock scheduling only. All physical inputs, including
+    # gripper and base mode, are in saved actions; there are no D reset events.
+    return events
+
+
+def load_attempt(attempt):
+    result = json.loads((attempt / "result.json").read_text())
+    metadata = json.loads((attempt / "collection-metadata.json").read_text())
+    with h5py.File(attempt / "demo.hdf5") as f:
+        g = f["data/demo_0"]
+        actions, states, integration = g["actions"][:], g["states"][:], g["initial_integration"][:]
+    events = validate_human_a(result, metadata, actions, states)
+    return result, metadata, actions, states, integration, events
+
+
+def replay(attempt, output, pilot_path):
+    import mujoco
+    import imageio.v2 as imageio
+    from human_scene_pilot import PilotReference, make_args
+    from mobiwam.reference_formal_substep import FormalSubstepMonitor, FormalSafetyStop
+    from mobiwam.reference_prefix_safety import JointMarginMonitor, GuardedIntegration, JointMarginStop
+    from mobiwam.replay_diagnostics import state_fields, summarize_drift
+    result, metadata, actions, states, integration, events = load_attempt(attempt)
+    pilot = json.loads(pilot_path.read_text())
+    source = attempt.parent.parent
+    if Path(pilot["source"]).resolve() != source or pilot["config_version"] != metadata["config_version"]:
+        raise ValueError("Pilot/recording Source version differs")
+    ref = PilotReference(make_args(output / "environment", pilot["task"],
+                                   pilot["environment_seed"], source, interactive=False), pilot)
+    actual, errors, success = [], [], []
+    guard = joint = None
+    stop = None
+    started = stamp()
+    try:
+        ref.evidence_camera = pilot["main_camera"]
+        ref.restore()
+        ref.bind()
+        initial = ref.env.sim.get_state().flatten().copy()
+        restore_error = float(np.max(np.abs(initial - states[0])))
+        integration_error = float(np.max(np.abs(ref.integration() - integration)))
+        write(output / "restore.json", dict(state_error=restore_error, integration_error=integration_error,
+              source=str(source), receipt=ref.restore_receipt))
+        if max(restore_error, integration_error) > 1e-10:
+            raise ValueError("Original initial state/integration differs")
+        m, d = ref.model_data()
+        guard = FormalSubstepMonitor(ref, ref.native["fixture_name"])
+        guard.set_boundary(0, "precontact")
+        if list(guard.forbidden_contacts()):
+            raise ValueError("Original initial native contact unsafe")
+        arm = ref.robot.part_controllers["right"]
+        jids = [int(np.flatnonzero(m.jnt_qposadr == i)[0]) for i in arm.qpos_index]
+        joint = JointMarginMonitor(arm.qpos_index, m.jnt_range[jids],
+                    [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) for j in jids])
+        actual.append(initial)
+        ref.env._get_observations(force_update=True)
+        write(output / "human-events.json", dict(events=events, interpretation="Original human A markers retained. Pause/resume have zero simulated duration; no controller reset and no correction."))
+        with imageio.get_writer(output / "replay.mp4", fps=20, codec="libx264", quality=7,
+                                macro_block_size=None) as writer:
+            for i, action in enumerate(actions):
+                guard.set_boundary(i, "manipulate")
+                try:
+                    with guard:
+                        with GuardedIntegration(ref.env.sim, d, joint, lite_physics=ref.env.lite_physics,
+                                                step=i, phase="manipulate"):
+                            ref.env.step(action)
+                except (FormalSafetyStop, JointMarginStop) as exc:
+                    stop = dict(step=i, failure=exc.failure)
+                    np.savez_compressed(output / "partial-control-step.npz",
+                                        terminal_integration=ref.integration(), attempted_action=action)
+                    break
+                value = ref.env.sim.get_state().flatten().copy()
+                actual.append(value)
+                errors.append(float(np.max(np.abs(value - states[i+1]))))
+                success.append(bool(ref.env._check_success()))
+                ref.env._get_observations(force_update=True)
+                writer.append_data(ref.frame(pilot["main_camera"]))
+                if i % 100 == 0:
+                    status = dict(at=stamp(), complete_steps=i+1, total=len(actions),
+                                  state_error=errors[-1], checker_success=success[-1])
+                    write(output / "progress.json", status)
+                    print("HUMAN_A_REPLAY", json.dumps(status), flush=True)
+        actual = np.asarray(actual)
+        expected = states[:len(actual)]
+        np.savez_compressed(output / "replayed-states-and-field-errors.npz",
+                            actual=actual, absolute_field_errors=np.abs(actual-expected))
+        write(output / "field-errors.json",
+              summarize_drift(expected, actual, state_fields(m), threshold=1e-5))
+        write(output / "formal-native-substeps-receipt.json", guard.save(output))
+        write(output / "joint-margin-monitor.json", joint.receipt())
+        match = len(errors) == len(actions) and max(errors, default=0.) <= 1e-5
+        out = dict(started_at=started, ended_at=stamp(), status="completed" if stop is None else "safety_stopped",
+                   attempt=str(attempt), steps=len(errors), expected_steps=len(actions),
+                   max_state_abs_error=max(errors, default=None),
+                   first_state_error_gt_1e_5=next((i for i,x in enumerate(errors) if x>1e-5), None),
+                   checker_success=bool(ref.env._check_success()),
+                   terminal_success_streak_10=bool(len(success)>=10 and all(success[-10:])),
+                   expected_checker_success=result["checker_success"], safety_stop=stop,
+                   reproducible=bool(match and success and success[-1]==result["checker_success"]),
+                   replay_kind="saved human A actions; no per-step state injection or new human input",
+                   replay_video=str(output / "replay.mp4"), scientific_route_outcomes=0,
+                   formal_train_ready=False)
+        write(output / "result.json", out)
+        print(json.dumps(out), flush=True)
+    finally:
+        for name in ("observation_renderer", "renderer"):
+            obj = getattr(ref, name, None)
+            if obj is not None:
+                obj.close()
+        ref.env.close()
+
+
+def sweep(attempt, output):
+    from mobiwam.task_video_identity import source_model, sha
+    from mobiwam.reference_collision import SweptGeometry
+    from mobiwam.contact_rules import RULE_VERSION
+    result, metadata, actions, states, integration, events = load_attempt(attempt)
+    source = attempt.parent.parent
+    m = source_model(str(source / "model.xml"), sha(source / "model.xml"))
+    with np.load(attempt / "formal-native-substeps.npz") as z:
+        q, phases, times, indices = z["qpos"], z["phases"].tolist(), z["sim_time"], z["step_index"]
+    if len(q) != len(phases)+1 or len(indices) != len(phases) or len(q) != len(times):
+        raise ValueError("Native trajectory alignment differs")
+    if q.shape[1] != m.nq or set(phases) != {"manipulate"}:
+        raise ValueError("Unexpected human A native trajectory")
+    geom = SweptGeometry(m, target_prefix=json.loads((source / "target-binding.json").read_text())["fixture_name"],
+                         margin=.0005)
+    minimum, leaves, checked = .1, 0, 0
+    started = stamp()
+    for begin in range(0, len(phases), 250):
+        end = min(begin+250, len(phases))
+        out = geom.path(q[begin:end+1], phases[begin:end])
+        if not out["valid"]:
+            segment = begin + out["segment"]
+            out.update(segment=segment, original_control_step=int(indices[segment]),
+                       simulated_time_interval=[float(times[segment]), float(times[segment+1])])
+            if out.get("pair"):
+                witnesses = []
+                for at in (segment, segment+1):
+                    pairs, distances = geom.distances(q[at], phases[segment])
+                    matches=[i for i,pair in enumerate(pairs) if [geom.names[x] for x in pair]==out["pair"]]
+                    witnesses.append(dict(native_state_index=at,
+                                          distance_m=float(distances[matches[0]]) if matches else None))
+                out["endpoint_pair_witnesses"] = witnesses
+            checked = segment
+            break
+        checked = end
+        minimum = min(minimum, out["lower_bound_m"])
+        leaves += out["leaf_intervals"]
+        write(output / "progress.json", dict(at=stamp(), checked_native_intervals=checked,
+              total=len(phases), lower_bound_m=minimum))
+        print("SWEPT_PROGRESS", checked, len(phases), minimum, flush=True)
+    else:
+        out = dict(valid=True, lower_bound_m=minimum, segments=checked, leaf_intervals=leaves)
+    out.update(started_at=started, ended_at=stamp(), attempt=str(attempt), checked_native_intervals=checked,
+               total_native_intervals=len(phases), evaluations=geom.evaluations,
+               contact_rule_version=RULE_VERSION, required_clearance_m=.0005,
+               new_physics_steps=0, scope="Original native substep qpos path with conservative joint-linear / rigid quaternion-geodesic interpolation; original contact rules; not a proof about unsampled physical paths",
+               formal_train_ready=False)
+    write(output / "result.json", out)
+    print(json.dumps(out), flush=True)
+
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("replay","sweep"))
+    parser.add_argument("--attempt",type=Path,required=True)
+    parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--pilot",type=Path)
+    args=parser.parse_args()
+    args.output.mkdir(parents=True,exist_ok=False)
+    write(args.output / "process.json",dict(started_at=stamp(),pid=os.getpid(),command=sys.argv,python=sys.executable))
+    try:
+        if args.mode=="replay":
+            if args.pilot is None:
+                raise ValueError("Replay needs exact pilot config")
+            replay(args.attempt.resolve(),args.output.resolve(),args.pilot)
+        else:
+            sweep(args.attempt.resolve(),args.output.resolve())
+    except Exception as exc:
+        write(args.output / "mechanical-error.json",dict(at=stamp(),type=type(exc).__name__,detail=str(exc)))
+        raise
+
+
+if __name__=="__main__":
+    main()
