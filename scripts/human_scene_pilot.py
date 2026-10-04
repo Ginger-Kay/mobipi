@@ -150,6 +150,10 @@ class PilotReference(Reference):
             controller='unchanged keyboard key_actions',control_dt=.05,
             independent_cameras=True,reference_selected=False,formal_train_ready=False)
         self.collect_meta['source_lineage'] = self.pilot.get('source_lineage')
+        if self.pilot.get('paired_protocol_version')=='human-eda-v2-stowed':
+            self.recording['initial_stow_required']=self.route=='D'
+            self.collect_meta['paired_protocol_version']='human-eda-v2-stowed'
+            self.collect_meta['common_stow_qpos']=self.pilot['common_stow_qpos']
         self.recording_wall_started = time.monotonic()
         self.recording['group'].attrs['collection_metadata'] = json.dumps(self.collect_meta)
         write_json(self.recording['path']/'collection-metadata.json',self.collect_meta)
