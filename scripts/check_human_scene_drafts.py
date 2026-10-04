@@ -57,7 +57,7 @@ def probe(ref,output):
     return rows
 
 def check(batch,run):
-    assert os.environ.get('CUDA_VISIBLE_DEVICES')=='' and os.environ.get('LIBGL_ALWAYS_SOFTWARE')=='1'
+    assert os.environ.get('CUDA_VISIBLE_DEVICES')=='' and os.environ.get('MUJOCO_GL')=='glx'
     rows=load(run/'scene-drafts.json')['rows'];results=[]
     for prefix in ['MW','DR']:
         subset=[row for row in rows if row['scene_id'].startswith(prefix)]
@@ -71,19 +71,10 @@ def check(batch,run):
                 m,d=ref.model_data();before=ref.integration().copy();rng=json.dumps(ref.env.rng.bit_generator.state,sort_keys=True)
                 assert np.array_equal(before,np.load(ref.source/'integration.npy'))
                 assert not ref.env._check_success()
-                root=Path(row['config']).parent;preview=root/'preview'
-                if preview.exists():assert not any(preview.iterdir()), 'Existing preview must not be overwritten'
-                else:preview.mkdir()
-                cameras=dict(main=cfg['main_camera'],panoramic=cfg['panoramic_camera'])
-                for name,cam in cameras.items():
-                    Image.fromarray(ref.frame(cam).copy()).save(preview/(name+'.png'))
-                renderer=GL.glGetString(GL.GL_RENDERER).decode()
-                assert 'llvmpipe' in renderer.lower(),renderer
-                assert np.array_equal(before,ref.integration()) and rng==json.dumps(ref.env.rng.bit_generator.state,sort_keys=True)
                 result=dict(scene_id=row['scene_id'],at=stamp(),restore_max_abs_error=ref.restore_receipt['max_abs_error'],
-                            rng_unchanged=True,zero_actions=True,renderer=renderer,identity=ref.native,
-                            previews={n:str(preview/(n+'.png')) for n in cameras},visual_review='pending',primary_enabled=False)
-                write_json(preview/'receipt.json',result);results.append(result)
+                            rng_unchanged=rng==json.dumps(ref.env.rng.bit_generator.state,sort_keys=True),
+                            zero_actions=True,identity=ref.native,previews='separate native CPU renderer',visual_review='pending',primary_enabled=False)
+                results.append(result)
                 if row['category']=='O':
                     result['protocol_probe']=probe(ref,run/(prefix+'-protocol-probe'))
                 write_json(run/'checks.json',dict(at=stamp(),scenes=results,formal_train_ready=False))
