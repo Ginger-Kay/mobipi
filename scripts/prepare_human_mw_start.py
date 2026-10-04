@@ -25,7 +25,7 @@ def search(source, output):
     original = d.qpos.copy()
     site = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, 'gripper0_right_grip_site')
     handle = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, 'microwave_main_group_door_handle')
-    base = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'robot0_base')
+    base = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'mobilebase0_base')
     assert min(site, handle, base) >= 0
     joint_names = ['robot0_joint' + str(i) for i in range(1, 8)]
     joints = np.array([mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n) for n in joint_names])
