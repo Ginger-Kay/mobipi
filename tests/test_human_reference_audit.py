@@ -34,3 +34,33 @@ def test_nonhuman_or_unknown_state_transition_fails_closed(mutate):
     args=original();mutate(*args)
     with pytest.raises(ValueError):
         validate_human_a(*args)
+
+from human_reference_audit import validate_human_recording, phase_at
+
+def human_d():
+    r,m,a,s=original()
+    r["route"]=m["route"]="D"
+    dock=dict(event="docked_state",step=1,base_qpos=[0,0,0],base_qvel=[0,0,0])
+    r["events"]=[r["events"][0],dict(event="docked",step=1),dock,dict(event="contact",step=2)]
+    m.update(paired_protocol_version="human-eda-v2-stowed",human_selected_dock={k:v for k,v in dock.items() if k!="event"})
+    a[0,6]=-1; a[1:,11]=-1
+    return r,m,a,s
+
+def test_human_d_phase_and_actions():
+    args=human_d()
+    assert validate_human_recording(*args)==args[0]["events"]
+    assert [phase_at(args[0],i) for i in range(3)]==["navigate","manipulate","manipulate"]
+
+@pytest.mark.parametrize("mutate",[
+ lambda r,m,a,s:r["events"][2].update(step=2),
+ lambda r,m,a,s:r["events"][2].update(base_qvel=[.02,0,0]),
+ lambda r,m,a,s:a.__setitem__((0,6),1),
+ lambda r,m,a,s:a.__setitem__((0,1),.1),
+ lambda r,m,a,s:a.__setitem__((1,7),.1),
+ lambda r,m,a,s:r["events"].append(dict(event="controller_reset",step=2)),
+ lambda r,m,a,s:r["events"].append(dict(event="docked",step=2)),
+ lambda r,m,a,s:m.update(paired_protocol_version="unknown"),
+])
+def test_bad_human_d_fails_closed(mutate):
+    args=human_d();mutate(*args)
+    with pytest.raises(ValueError):validate_human_recording(*args)

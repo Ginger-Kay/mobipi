@@ -58,13 +58,62 @@ def validate_human_a(result, metadata, actions, states):
     return events
 
 
+def validate_human_recording(result, metadata, actions, states):
+    if result.get("route") == "A":
+        return validate_human_a(result, metadata, actions, states)
+    if result.get("route") != "D" or metadata.get("route") != "D" or metadata.get("paired_protocol_version") != "human-eda-v2-stowed":
+        raise ValueError("Unsupported human route/protocol")
+    events = result.get("events", [])
+    docks = [e for e in events if e.get("event") == "docked"]
+    observations = [e for e in events if e.get("event") == "docked_state"]
+    if len(docks) != 1 or len(observations) != 1:
+        raise ValueError("D requires one dock and one dock observation")
+    dock, observation = docks[0], observations[0]
+    step = dock.get("step")
+    if type(step) is not int or not 0 <= step < result["steps"] or observation.get("step") != step:
+        raise ValueError("Dock boundary mismatch")
+    if events.index(observation) != events.index(dock)+1:
+        raise ValueError("Dock observation must immediately follow marker")
+    boundaries = [e.get("step") for e in events]
+    if any(type(x) is not int for x in boundaries) or boundaries != sorted(boundaries):
+        raise ValueError("Unordered event boundary")
+    if any(e.get("event") == "contact" and e["step"] < step for e in events):
+        raise ValueError("Contact marker before D dock")
+    # Reuse strict human scheduling validation after explicitly interpreting D
+    # markers. F5 changes the input filter only; it does not reset controllers.
+    basic = dict(result, route="A", events=[e for e in events if e.get("event") not in ("docked","docked_state")])
+    validate_human_a(basic, dict(metadata, route="A"), actions, states)
+    velocity = np.asarray(observation.get("base_qvel"), dtype=float)
+    position = np.asarray(observation.get("base_qpos"), dtype=float)
+    if velocity.shape != (3,) or position.shape != (3,) or not np.isfinite(position).all() or not np.isfinite(velocity).all():
+        raise ValueError("Invalid dock state")
+    if np.any(np.abs(velocity) > [.01,.01,.02]):
+        raise ValueError("Dock was not stopped")
+    saved = metadata.get("human_selected_dock", {})
+    if saved.get("step") != step or saved.get("base_qpos") != observation["base_qpos"] or saved.get("base_qvel") != observation["base_qvel"]:
+        raise ValueError("Dock metadata differs")
+    if np.any(actions[:step,:6] != 0) or np.any(actions[:step,6] != -1):
+        raise ValueError("D manipulation input before dock")
+    if np.any(actions[step:,7:10] != 0) or np.any(actions[step:,11] != -1):
+        raise ValueError("D base input after dock")
+    return events
+
+
+def phase_at(result, step):
+    if result["route"] == "D":
+        dock = next(e["step"] for e in result["events"] if e["event"] == "docked")
+        if step < dock:
+            return "navigate"
+    return "manipulate"
+
+
 def load_attempt(attempt):
     result = json.loads((attempt / "result.json").read_text())
     metadata = json.loads((attempt / "collection-metadata.json").read_text())
     with h5py.File(attempt / "demo.hdf5") as f:
         g = f["data/demo_0"]
         actions, states, integration = g["actions"][:], g["states"][:], g["initial_integration"][:]
-    events = validate_human_a(result, metadata, actions, states)
+    events = validate_human_recording(result, metadata, actions, states)
     return result, metadata, actions, states, integration, events
 
 
@@ -87,6 +136,7 @@ def replay(attempt, output, pilot_path, video=False):
     stop = None
     started = stamp()
     try:
+        ref.route = result["route"]
         ref.evidence_camera = pilot["main_camera"]
         ref.restore()
         ref.bind()
@@ -108,15 +158,16 @@ def replay(attempt, output, pilot_path, video=False):
                     [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) for j in jids])
         actual.append(initial)
         ref.env._get_observations(force_update=True)
-        write(output / "human-events.json", dict(events=events, interpretation="Original human A markers retained. Pause/resume have zero simulated duration; no controller reset and no correction."))
+        write(output / "human-events.json", dict(events=events, interpretation="Original human markers retained. D F5 switches navigation to manipulation; recorded actions already contain the filter. Pause/resume have zero simulated duration; no controller reset or correction."))
         with (imageio.get_writer(output / "replay.mp4", fps=20, codec="libx264", quality=7,
                                 macro_block_size=None) if video else nullcontext(None)) as writer:
             for i, action in enumerate(actions):
-                guard.set_boundary(i, "manipulate")
+                phase = phase_at(result, i)
+                guard.set_boundary(i, phase)
                 try:
                     with guard:
                         with GuardedIntegration(ref.env.sim, d, joint, lite_physics=ref.env.lite_physics,
-                                                step=i, phase="manipulate"):
+                                                step=i, phase=phase):
                             ref.env.step(action)
                 except (FormalSafetyStop, JointMarginStop) as exc:
                     stop = dict(step=i, failure=exc.failure)
@@ -152,7 +203,7 @@ def replay(attempt, output, pilot_path, video=False):
                    terminal_success_streak_10=bool(len(success)>=10 and all(success[-10:])),
                    expected_checker_success=result["checker_success"], safety_stop=stop,
                    reproducible=bool(match and success and success[-1]==result["checker_success"]),
-                   replay_kind="saved human A actions; no per-step state injection or new human input",
+                   replay_kind="saved human actions; no per-step state injection or new human input",
                    replay_video=str(output / "replay.mp4") if video else None,
                    rendering_enabled=video, scientific_route_outcomes=0,
                    formal_train_ready=False)
@@ -166,7 +217,7 @@ def replay(attempt, output, pilot_path, video=False):
         ref.env.close()
 
 
-def sweep(attempt, output):
+def sweep(attempt, output, begin_interval=0, end_interval=None):
     from mobiwam.task_video_identity import source_model, sha
     from mobiwam.reference_collision import SweptGeometry
     from mobiwam.contact_rules import RULE_VERSION
@@ -177,14 +228,17 @@ def sweep(attempt, output):
         q, phases, times, indices = z["qpos"], z["phases"].tolist(), z["sim_time"], z["step_index"]
     if len(q) != len(phases)+1 or len(indices) != len(phases) or len(q) != len(times):
         raise ValueError("Native trajectory alignment differs")
-    if q.shape[1] != m.nq or set(phases) != {"manipulate"}:
-        raise ValueError("Unexpected human A native trajectory")
+    if q.shape[1] != m.nq or any(p != phase_at(result, int(i)) for p,i in zip(phases, indices)):
+        raise ValueError("Unexpected human native phase trajectory")
     geom = SweptGeometry(m, target_prefix=json.loads((source / "target-binding.json").read_text())["fixture_name"],
                          margin=.0005)
     minimum, leaves, checked = .1, 0, 0
     started = stamp()
-    for begin in range(0, len(phases), 250):
-        end = min(begin+250, len(phases))
+    end_interval = len(phases) if end_interval is None else end_interval
+    if not 0 <= begin_interval < end_interval <= len(phases):
+        raise ValueError("Invalid interval partition")
+    for begin in range(begin_interval, end_interval, 250):
+        end = min(begin+250, end_interval)
         out = geom.path(q[begin:end+1], phases[begin:end])
         if not out["valid"]:
             segment = begin + out["segment"]
@@ -209,7 +263,7 @@ def sweep(attempt, output):
     else:
         out = dict(valid=True, lower_bound_m=minimum, segments=checked, leaf_intervals=leaves)
     out.update(started_at=started, ended_at=stamp(), attempt=str(attempt), checked_native_intervals=checked,
-               total_native_intervals=len(phases), evaluations=geom.evaluations,
+               total_native_intervals=len(phases), begin_interval=begin_interval, end_interval=end_interval, evaluations=geom.evaluations,
                contact_rule_version=RULE_VERSION, required_clearance_m=.0005,
                new_physics_steps=0, scope="Original native substep qpos path with conservative joint-linear / rigid quaternion-geodesic interpolation; original contact rules; not a proof about unsampled physical paths",
                formal_train_ready=False)
@@ -223,6 +277,8 @@ def main():
     parser.add_argument("--attempt",type=Path,required=True)
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--pilot",type=Path)
+    parser.add_argument("--begin-interval", type=int, default=0)
+    parser.add_argument("--end-interval", type=int)
     parser.add_argument("--video",action="store_true",help="Optional replay rendering")
     parser.add_argument("--cpu-only",action="store_true",help="Require masked CUDA and no video renderer")
     args=parser.parse_args()
@@ -238,7 +294,7 @@ def main():
                 raise ValueError("Replay needs exact pilot config")
             replay(args.attempt.resolve(),args.output.resolve(),args.pilot,args.video)
         else:
-            sweep(args.attempt.resolve(),args.output.resolve())
+            sweep(args.attempt.resolve(),args.output.resolve(),args.begin_interval,args.end_interval)
     except Exception as exc:
         write(args.output / "mechanical-error.json",dict(at=stamp(),type=type(exc).__name__,detail=str(exc)))
         raise
