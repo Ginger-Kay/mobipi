@@ -53,8 +53,11 @@ def search(source, output):
     for index, (distance, lateral, flip) in enumerate(itertools.product([.50, .60, .70], [-.12, .12], [1., -1.])):
         d.qpos[:] = original
         xy = (h + distance * outward + lateral * tangent)[:2]
-        d.qpos[:2] += np.linalg.solve(translation, xy - base_origin[:2])
         d.qpos[2] = np.arctan2(-outward[1], -outward[0]) - yaw_origin
+        # The native yaw hinge has an offset pivot. Measure translation after
+        # setting yaw instead of treating it as a rotation about base origin.
+        mujoco.mj_forward(m, d)
+        d.qpos[:2] += np.linalg.solve(translation, xy - d.xpos[base][:2])
         d.qpos[3] = .28  # versioned robot lift initial coordinate, within native range
         target_rot = np.column_stack([flip*tangent, [0., 0., -flip], -outward])
         assert np.linalg.det(target_rot) > .999
@@ -66,6 +69,7 @@ def search(source, output):
             return np.r_[pos, .2*ori, .001*(q-original[qids])]
         fit = least_squares(residual, original[qids], bounds=(limits[:, 0]+.12, limits[:, 1]-.12), max_nfev=160)
         residual(fit.x)
+        assert np.linalg.norm(d.xpos[base][:2]-xy)<1e-7, 'Native base coordinate mapping differs'
         pos_error = float(np.linalg.norm(d.site_xpos[site]-target))
         rot_error = float(Rotation.from_matrix(target_rot @ d.site_xmat[site].reshape(3,3).T).magnitude())
         margin = float(np.min(np.minimum(fit.x-limits[:,0],limits[:,1]-fit.x)))
