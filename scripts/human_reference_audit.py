@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import h5py
 import numpy as np
@@ -67,7 +68,7 @@ def load_attempt(attempt):
     return result, metadata, actions, states, integration, events
 
 
-def replay(attempt, output, pilot_path):
+def replay(attempt, output, pilot_path, video=False):
     import mujoco
     import imageio.v2 as imageio
     from human_scene_pilot import PilotReference, make_args
@@ -108,8 +109,8 @@ def replay(attempt, output, pilot_path):
         actual.append(initial)
         ref.env._get_observations(force_update=True)
         write(output / "human-events.json", dict(events=events, interpretation="Original human A markers retained. Pause/resume have zero simulated duration; no controller reset and no correction."))
-        with imageio.get_writer(output / "replay.mp4", fps=20, codec="libx264", quality=7,
-                                macro_block_size=None) as writer:
+        with (imageio.get_writer(output / "replay.mp4", fps=20, codec="libx264", quality=7,
+                                macro_block_size=None) if video else nullcontext(None)) as writer:
             for i, action in enumerate(actions):
                 guard.set_boundary(i, "manipulate")
                 try:
@@ -127,7 +128,8 @@ def replay(attempt, output, pilot_path):
                 errors.append(float(np.max(np.abs(value - states[i+1]))))
                 success.append(bool(ref.env._check_success()))
                 ref.env._get_observations(force_update=True)
-                writer.append_data(ref.frame(pilot["main_camera"]))
+                if writer is not None:
+                    writer.append_data(ref.frame(pilot["main_camera"]))
                 if i % 100 == 0:
                     status = dict(at=stamp(), complete_steps=i+1, total=len(actions),
                                   state_error=errors[-1], checker_success=success[-1])
@@ -151,7 +153,8 @@ def replay(attempt, output, pilot_path):
                    expected_checker_success=result["checker_success"], safety_stop=stop,
                    reproducible=bool(match and success and success[-1]==result["checker_success"]),
                    replay_kind="saved human A actions; no per-step state injection or new human input",
-                   replay_video=str(output / "replay.mp4"), scientific_route_outcomes=0,
+                   replay_video=str(output / "replay.mp4") if video else None,
+                   rendering_enabled=video, scientific_route_outcomes=0,
                    formal_train_ready=False)
         write(output / "result.json", out)
         print(json.dumps(out), flush=True)
@@ -220,14 +223,20 @@ def main():
     parser.add_argument("--attempt",type=Path,required=True)
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--pilot",type=Path)
+    parser.add_argument("--video",action="store_true",help="Optional replay rendering")
+    parser.add_argument("--cpu-only",action="store_true",help="Require masked CUDA and no video renderer")
     args=parser.parse_args()
+    if args.cpu_only and (args.video or os.environ.get("CUDA_VISIBLE_DEVICES") != ""):
+        raise ValueError("CPU-only mode requires empty CUDA_VISIBLE_DEVICES and no video")
     args.output.mkdir(parents=True,exist_ok=False)
-    write(args.output / "process.json",dict(started_at=stamp(),pid=os.getpid(),command=sys.argv,python=sys.executable))
+    write(args.output / "process.json",dict(started_at=stamp(),pid=os.getpid(),command=sys.argv,
+          python=sys.executable,cpu_only=args.cpu_only,CUDA_VISIBLE_DEVICES=os.environ.get("CUDA_VISIBLE_DEVICES"),
+          MUJOCO_GL=os.environ.get("MUJOCO_GL")))
     try:
         if args.mode=="replay":
             if args.pilot is None:
                 raise ValueError("Replay needs exact pilot config")
-            replay(args.attempt.resolve(),args.output.resolve(),args.pilot)
+            replay(args.attempt.resolve(),args.output.resolve(),args.pilot,args.video)
         else:
             sweep(args.attempt.resolve(),args.output.resolve())
     except Exception as exc:
