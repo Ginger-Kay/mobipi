@@ -52,11 +52,14 @@ def second_tier(cfg):
     side=np.array([-inward[1],inward[0],0.])
     obstacle=copy.deepcopy(cfg['obstacle'])
     if cat=='O':
-        joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in [1,2]]
+        joints=[mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_JOINT,name) for name in
+                ['mobilebase0_joint_mobile_forward','mobilebase0_joint_mobile_side']]
+        assert min(joints)>=0 and all(m.jnt_type[j]==mujoco.mjtJoint.mjJNT_SLIDE for j in joints)
+        addresses=[int(m.jnt_qposadr[j]) for j in joints]
         axes=d.xaxis[joints,:2].T
         delta=np.linalg.solve(axes,.10*side[:2])
-        d.qpos[1:3]+=delta
-        factor=dict(name='base_lateral_offset_from_tier1',value1=0.,value2=.10,unit='m',world_delta=(.10*side).tolist(),allowed_qpos=[1,2])
+        d.qpos[addresses]+=delta
+        factor=dict(name='base_lateral_offset_from_tier1',value1=0.,value2=.10,unit='m',world_delta=(.10*side).tolist(),allowed_qpos=addresses)
     elif cat in ('B','H'):
         if cat=='B': direction=side
         else:
