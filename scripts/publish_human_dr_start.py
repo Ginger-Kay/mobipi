@@ -76,6 +76,7 @@ def publish(batch, run):
                 ref.env.step(action)
             states.append(ref.env.sim.get_state().flatten().copy())
         np.savez_compressed(run/'hold-states.npz',states=np.asarray(states),action=action)
+        (run/'hold-native').mkdir(exist_ok=False)
         write_json(run/'hold-native-monitor.json',guard.save(run/'hold-native'))
         summary = dict(at=stamp(),steps=20,physical_substeps=500,task_outcomes=0,engineering_only=True,cpu_only=True,
             eef_drift_m=float(np.linalg.norm(d.site_xpos[site]-eef)),
