@@ -59,6 +59,28 @@ def validate_human_a(result, metadata, actions, states):
 
 
 def validate_human_recording(result, metadata, actions, states):
+    if metadata.get("record_type") == "primary":
+        from mobiwam.human_primary import verify_freeze
+        receipt = json.loads(Path(metadata["freeze_receipt"]).read_text())
+        config = receipt["config"]
+        verify_freeze(config)
+        if (metadata.get("config_version") != config["config_version"]
+                or metadata.get("source_id") != Path(config["source"]).name
+                or result.get("source") != config["source"]
+                or metadata.get("paired_protocol_version") != config["paired_protocol_version"]
+                or not result.get("events")
+                or result["events"][0].get("record_type") != "primary"):
+            raise ValueError("Primary recording/freeze provenance differs")
+        # The following strict scheduling validator is shared with practice.
+        # This local view changes no stored metadata, events or actions.
+        metadata = dict(metadata, record_type="practice")
+    if result.get("route") == "E":
+        if metadata.get("route") != "E" or metadata.get("paired_protocol_version") != "human-eda-v2-stowed":
+            raise ValueError("Unsupported E protocol")
+        validate_human_a(dict(result,route="A"),dict(metadata,route="A"),actions,states)
+        if np.any(actions[:,7:10] != 0) or np.any(actions[:,11] != -1):
+            raise ValueError("E base input is not locked")
+        return result["events"]
     if result.get("route") == "A":
         return validate_human_a(result, metadata, actions, states)
     if result.get("route") != "D" or metadata.get("route") != "D" or metadata.get("paired_protocol_version") != "human-eda-v2-stowed":
@@ -66,6 +88,13 @@ def validate_human_recording(result, metadata, actions, states):
     events = result.get("events", [])
     docks = [e for e in events if e.get("event") == "docked"]
     observations = [e for e in events if e.get("event") == "docked_state"]
+    if not docks and not observations:
+        if metadata.get("human_selected_dock") is not None:
+            raise ValueError("Dock metadata without event")
+        validate_human_a(dict(result,route="A"),dict(metadata,route="A"),actions,states)
+        if any(e.get("event") == "contact" for e in events) or np.any(actions[:,:6] != 0) or np.any(actions[:,6] != -1):
+            raise ValueError("D manipulation input before dock")
+        return events
     if len(docks) != 1 or len(observations) != 1:
         raise ValueError("D requires one dock and one dock observation")
     dock, observation = docks[0], observations[0]
@@ -101,7 +130,7 @@ def validate_human_recording(result, metadata, actions, states):
 
 def phase_at(result, step):
     if result["route"] == "D":
-        dock = next(e["step"] for e in result["events"] if e["event"] == "docked")
+        dock = next((e["step"] for e in result["events"] if e["event"] == "docked"), result["steps"])
         if step < dock:
             return "navigate"
     return "manipulate"
@@ -185,7 +214,7 @@ def replay(attempt, output, pilot_path, video=False):
                     status = dict(at=stamp(), complete_steps=i+1, total=len(actions),
                                   state_error=errors[-1], checker_success=success[-1])
                     write(output / "progress.json", status)
-                    print("HUMAN_A_REPLAY", json.dumps(status), flush=True)
+                    print("HUMAN_REPLAY", result["route"], json.dumps(status), flush=True)
         actual = np.asarray(actual)
         expected = states[:len(actual)]
         np.savez_compressed(output / "replayed-states-and-field-errors.npz",

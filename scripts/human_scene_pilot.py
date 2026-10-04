@@ -131,7 +131,15 @@ class PilotReference(Reference):
         initial_contacts = list(guard.forbidden_contacts())
         if initial_contacts:
             raise ValueError('Source has forbidden native robot contact; see preparation receipt')
+        self.primary_reservation = None
+        if self.record_type == 'primary':
+            from mobiwam.human_primary import reserve_primary
+            self.primary_reservation = reserve_primary(self.pilot, self.route, self.operator_id)
         super().begin(restore_source=False)
+        if self.primary_reservation:
+            reservation=load(self.primary_reservation)
+            reservation.update(status='recording',attempt=str(self.recording['path']))
+            write_json(self.primary_reservation,reservation)
         if hasattr(self,'operator_entry'):
             self.operator_entry.configure(state='disabled');self.panel.focus_set()
         # Freeze the evidence camera for the whole attempt; mouse view may change.
@@ -150,6 +158,8 @@ class PilotReference(Reference):
             controller='unchanged keyboard key_actions',control_dt=.05,
             independent_cameras=True,reference_selected=False,formal_train_ready=False)
         self.collect_meta['source_lineage'] = self.pilot.get('source_lineage')
+        self.collect_meta['freeze_receipt'] = self.pilot.get('freeze_receipt')
+        self.collect_meta['primary_reservation'] = str(self.primary_reservation) if self.primary_reservation else None
         if self.pilot.get('paired_protocol_version')=='human-eda-v2-stowed':
             self.recording['initial_stow_required']=self.route=='D'
             self.collect_meta['paired_protocol_version']='human-eda-v2-stowed'
@@ -165,6 +175,10 @@ class PilotReference(Reference):
 
     def step(self, action, keys=()):
         if not self.recording:
+            if self.record_type == 'primary':
+                self.paused=True
+                self.message='PRIMARY: press F2 to restore and start the recorded attempt.'
+                return
             # Unrecorded practice stays explicit and never creates training labels.
             return super().step(action, keys)
         path = self.recording['path']; n = self.recording['n']
@@ -227,6 +241,10 @@ class PilotReference(Reference):
             original_video_path=str(path/'original.mp4') if n else '',panoramic_video_path=str(path/'panoramic.mp4') if n else '',
             trajectory_path=str(path/'demo.hdf5'),result_path=str(path/'result.json'),reference_selected=False,
             notes=self.record_type+'; not an automatic strategy label'))
+        if getattr(self,'primary_reservation',None):
+            reservation=load(self.primary_reservation)
+            reservation.update(status='completed',attempt=str(path),ended_at=result['ended_at'],stop_reason=reason)
+            write_json(self.primary_reservation,reservation)
         self.message=f'SAVED {n} steps. {reason}. Safety/semantics review pending.'
         if reason == 'joint_margin_stop':
             failure=load(path/'safety-stop.json')['failure']
@@ -240,9 +258,9 @@ class PilotReference(Reference):
     def create_panel(self):
         super().create_panel()
         import tkinter as tk
-        self.panel.title(self.pilot['scene_id']+' | Human pilot')
+        self.panel.title(self.pilot['scene_id']+' | Human '+self.record_type)
         if self.pilot.get('paired_protocol_version')=='human-eda-v2-stowed':
-            tk.Label(self.panel,text='COMMON STOWED SOURCE / PRACTICE\nD: base only until F5; arm and closing blocked.\nRelease base keys, wait stopped, then F5.\nAfter F5: base locked; approach with arm.\nE: base always locked. A: both available.',
+            tk.Label(self.panel,text=f'COMMON STOWED SOURCE / {self.record_type.upper()}\nD: base only until F5; arm and closing blocked.\nRelease base keys, wait stopped, then F5.\nAfter F5: base locked; approach with arm.\nE: base always locked. A: both available.',
                      bg='#243447',fg='#ffe08a',justify='left').pack()
 
         self.panel.geometry('410x1000+1200+0')
@@ -253,7 +271,7 @@ class PilotReference(Reference):
         tk.Label(self.panel,text='Operator ID (required before F2)',bg='#243447',fg='white').pack()
         self.operator_entry=tk.Entry(self.panel,font=('sans',14));self.operator_entry.pack(fill='x',padx=12)
         self.operator_entry.bind('<Button-1>',lambda event:self.operator_entry.focus_force())
-        tk.Label(self.panel,text='PILOT / practice only\nF2 restores Source and records full attempt\nF4 = human contact mark, F3 = stop/save\nEsc: pause to think (no simulated time passes)\nAuto-save: success, safety stop, or 120 SIM seconds',bg='#243447',fg='white',justify='left').pack(pady=8)
+        tk.Label(self.panel,text=f'{self.record_type.upper()} | order: {" -> ".join(self.pilot["route_order"])}\nF2 restores Source and records full attempt\nF4 = human contact mark, F3 = stop/save\nEsc: pause to think (no simulated time passes)\nAuto-save: success, safety stop, or 120 SIM seconds',bg='#243447',fg='white',justify='left').pack(pady=8)
 
         self.live_window=tk.Toplevel(self.panel);self.live_window.title(self.pilot['scene_id']+' | Live native view')
         self.live_window.geometry('1200x820+0+0');self.live_window.protocol('WM_DELETE_WINDOW',lambda:self.keyboard.commands.put('pause'))
@@ -342,7 +360,8 @@ class PilotReference(Reference):
             self._displayed_frame_key=view_key
         if now-self.last_ui_status>=5:
             write_json(self.root/'ui-status.json',dict(at=stamp(),pid=os.getpid(),paused=self.paused,recording=bool(self.recording),
-                scene_id=self.pilot['scene_id'],source=str(self.source),route=self.route,sim_time=native['sim_time'],
+                scene_id=self.pilot['scene_id'],source=str(self.source),route=self.route,record_type=self.record_type,
+                config_version=self.pilot['config_version'],frozen_at=self.pilot.get('frozen_at'),sim_time=native['sim_time'],
                 opening=native['target'],native_success=native['success'],operator_id=self.operator_id,
                 complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry,
                 minimum_arm_joint_margin_rad=margin,nearest_limit_joint=joint,wall_seconds=wall,
@@ -419,6 +438,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=['prepare','ui','record-smoke']);parser.add_argument('--batch',type=Path,required=True)
     parser.add_argument('--scene',required=True);parser.add_argument('--task',choices=['CloseSingleDoor','CloseDrawer']);parser.add_argument('--seed',type=int);parser.add_argument('--resume-source',type=Path)
     parser.add_argument('--route',choices=['A','E','D'],default='A',help='Initial human route; switching remains explicit')
+    parser.add_argument('--record-type',choices=['practice','primary'],default='practice')
     parser.add_argument('--config',type=Path,help='Explicit versioned pilot config; original Source/config remains immutable')
     args=parser.parse_args();batch=args.batch.resolve()
     if args.mode=='prepare':
@@ -426,13 +446,17 @@ def main():
     config_path=args.config or batch/'scenes'/args.scene/'pilot-v1/pilot.json';config=load(config_path)
     if config['scene_id'] != args.scene or Path(config['batch']).resolve() != batch:
         raise ValueError('Pilot config scene/batch differs from launch')
+    if args.record_type=='primary':
+        if args.mode!='ui':raise ValueError('Primary is human UI only')
+        from mobiwam.human_primary import verify_freeze
+        verify_freeze(config)
     source=Path(config['source']);output=batch/'episodes'/args.scene/'interactive'
     if args.mode=='record-smoke':output=batch/'episodes'/args.scene/'engineering-record-smoke'
     output.mkdir(parents=True,exist_ok=True)
     ref=PilotReference(make_args(output,config['task'],config['environment_seed'],source,interactive=args.mode=='ui'),config)
     try:
-        ref.evidence_camera=config['main_camera'];ref.panoramic_camera=config['panoramic_camera'];ref.restore();ref.bind();ref.route=args.route
-        ref.message='Pilot ready, PAUSED. Enter operator ID, click outside field, then F2.'
+        ref.evidence_camera=config['main_camera'];ref.panoramic_camera=config['panoramic_camera'];ref.restore();ref.bind();ref.route=args.route;ref.record_type=args.record_type
+        ref.message=f'{ref.record_type.upper()} ready, PAUSED. Enter operator ID, click outside field, then F2.'
         write_json(output/'process.json',dict(started_at=stamp(),pid=os.getpid(),command=sys.argv,code_commit=code_commit(),python=sys.executable,
             CUDA_VISIBLE_DEVICES=os.environ.get('CUDA_VISIBLE_DEVICES'),DISPLAY=os.environ.get('DISPLAY'),source=str(source),mode=args.mode,
             config_path=str(config_path.resolve()),config_version=config['config_version']))

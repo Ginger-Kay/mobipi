@@ -64,3 +64,23 @@ def test_human_d_phase_and_actions():
 def test_bad_human_d_fails_closed(mutate):
     args=human_d();mutate(*args)
     with pytest.raises(ValueError):validate_human_recording(*args)
+
+def test_d_failure_before_dock_retains_navigation_only():
+    r,m,a,s=human_d()
+    r["events"]=r["events"][:1]
+    m["human_selected_dock"]=None
+    a[:]=0;a[:,6]=-1
+    validate_human_recording(r,m,a,s)
+    assert all(phase_at(r,i)=="navigate" for i in range(3))
+
+def test_e_admits_fixed_base_and_rejects_motion():
+    r,m,a,s=original();r["route"]=m["route"]="E"
+    m["paired_protocol_version"]="human-eda-v2-stowed"
+    a[:,11]=-1
+    validate_human_recording(r,m,a,s)
+    a[2,8]=.1
+    with pytest.raises(ValueError,match="base input"):validate_human_recording(r,m,a,s)
+
+def test_primary_cannot_be_admitted_without_freeze():
+    r,m,a,s=original();m["record_type"]="primary"
+    with pytest.raises((KeyError,ValueError)):validate_human_recording(r,m,a,s)
