@@ -125,6 +125,8 @@ class PilotReference(Reference):
             human_observation='',safety_status='pending',integrity_status='recording',route_semantics_status='pending',
             controller='unchanged keyboard key_actions',control_dt=.05,
             independent_cameras=True,reference_selected=False,formal_train_ready=False)
+        self.collect_meta['source_lineage'] = self.pilot.get('source_lineage')
+        self.recording_wall_started = time.monotonic()
         self.recording['group'].attrs['collection_metadata'] = json.dumps(self.collect_meta)
         write_json(self.recording['path']/'collection-metadata.json',self.collect_meta)
         self.recording['events'].append(dict(step=0,event='collection_begin',operator_id=self.operator_id,record_type=self.record_type))
@@ -198,6 +200,13 @@ class PilotReference(Reference):
             trajectory_path=str(path/'demo.hdf5'),result_path=str(path/'result.json'),reference_selected=False,
             notes=self.record_type+'; not an automatic strategy label'))
         self.message=f'SAVED {n} steps. {reason}. Safety/semantics review pending.'
+        if reason == 'joint_margin_stop':
+            failure=load(path/'safety-stop.json')['failure']
+            self.message=(f'SAFETY STOP: {failure["joint"]} near limit '
+                          f'({failure["margin_rad"]:.4f} rad). NOT a timeout. '
+                          'Saved. Next attempt: reposition base or reverse arm motion.')
+        elif reason == 'native_forbidden_contact_stop':
+            self.message='SAFETY STOP: forbidden contact. Saved; inspect contact before another attempt.'
         if hasattr(self,'operator_entry'):self.operator_entry.configure(state='normal')
 
     def create_panel(self):
@@ -208,7 +217,7 @@ class PilotReference(Reference):
         tk.Label(self.panel,text='Operator ID (required before F2)',bg='#243447',fg='white').pack()
         self.operator_entry=tk.Entry(self.panel,font=('sans',14));self.operator_entry.pack(fill='x',padx=12)
         self.operator_entry.bind('<Button-1>',lambda event:self.operator_entry.focus_force())
-        tk.Label(self.panel,text='PILOT / practice only\nF2 restores Source and records full attempt\nF4 = human contact mark, F3 = stop/save\nAuto-save after 10 successful steps',bg='#243447',fg='white',justify='left').pack(pady=8)
+        tk.Label(self.panel,text='PILOT / practice only\nF2 restores Source and records full attempt\nF4 = human contact mark, F3 = stop/save\nEsc: pause to think (no simulated time passes)\nAuto-save: success, safety stop, or 120 SIM seconds',bg='#243447',fg='white',justify='left').pack(pady=8)
 
         self.live_window=tk.Toplevel(self.panel);self.live_window.title(self.pilot['scene_id']+' | Live native view')
         self.live_window.geometry('1200x820+0+0');self.live_window.protocol('WM_DELETE_WINDOW',lambda:self.keyboard.commands.put('pause'))
@@ -236,7 +245,16 @@ class PilotReference(Reference):
         native=self.trace(); streak=self.recording['success_streak'] if self.recording else 0
         state='PAUSED' if self.paused else ('RECORDING' if self.recording else 'UNRECORDED PRACTICE')
         steps=self.recording['n'] if self.recording else 0
-        self.status_label.config(text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | {steps*.05:.2f}/120s\n{self.message}')
+        m,d=self.model_data()
+        arm=self.robot.part_controllers['right']
+        joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
+        limits=m.jnt_range[joints];q=d.qpos[arm.qpos_index]
+        margins=np.minimum(q-limits[:,0],limits[:,1]-q);j=int(np.argmin(margins))
+        margin=float(margins[j]);joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joints[j])
+        wall=time.monotonic()-getattr(self,'recording_wall_started',time.monotonic()) if self.recording else 0.
+        caution='\nNEAR LIMIT: reverse arm / reposition base' if margin<.15 else ''
+        self.status_label.config(fg='#ffbf47' if margin<.15 else 'white',
+            text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}\n{self.message}')
         now=time.monotonic()
         m,d=self.model_data()
         view_key=(id(m),float(d.time),json.dumps(self.live_camera,sort_keys=True))
@@ -251,7 +269,8 @@ class PilotReference(Reference):
             write_json(self.root/'ui-status.json',dict(at=stamp(),pid=os.getpid(),paused=self.paused,recording=bool(self.recording),
                 scene_id=self.pilot['scene_id'],source=str(self.source),route=self.route,sim_time=native['sim_time'],
                 opening=native['target'],native_success=native['success'],operator_id=self.operator_id,
-                complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry))
+                complete_control_steps=steps,keyboard_entry_focused=self.panel.focus_get() is self.operator_entry,
+                minimum_arm_joint_margin_rad=margin,nearest_limit_joint=joint,wall_seconds=wall))
             self.last_ui_status=now
         self.panel.update()
         self.panel.lift()
@@ -322,10 +341,13 @@ def prepare(batch,scene,task,seed,resume_source=None):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=['prepare','ui','record-smoke']);parser.add_argument('--batch',type=Path,required=True)
     parser.add_argument('--scene',required=True);parser.add_argument('--task',choices=['CloseSingleDoor','CloseDrawer']);parser.add_argument('--seed',type=int);parser.add_argument('--resume-source',type=Path)
+    parser.add_argument('--config',type=Path,help='Explicit versioned pilot config; original Source/config remains immutable')
     args=parser.parse_args();batch=args.batch.resolve()
     if args.mode=='prepare':
         return prepare(batch,args.scene,args.task,args.seed,args.resume_source)
-    config_path=batch/'scenes'/args.scene/'pilot-v1/pilot.json';config=load(config_path)
+    config_path=args.config or batch/'scenes'/args.scene/'pilot-v1/pilot.json';config=load(config_path)
+    if config['scene_id'] != args.scene or Path(config['batch']).resolve() != batch:
+        raise ValueError('Pilot config scene/batch differs from launch')
     source=Path(config['source']);output=batch/'episodes'/args.scene/'interactive'
     if args.mode=='record-smoke':output=batch/'episodes'/args.scene/'engineering-record-smoke'
     output.mkdir(parents=True,exist_ok=True)
@@ -334,7 +356,8 @@ def main():
         ref.evidence_camera=config['main_camera'];ref.panoramic_camera=config['panoramic_camera'];ref.restore();ref.bind()
         ref.message='Pilot ready, PAUSED. Enter operator ID, click outside field, then F2.'
         write_json(output/'process.json',dict(started_at=stamp(),pid=os.getpid(),command=sys.argv,code_commit=code_commit(),python=sys.executable,
-            CUDA_VISIBLE_DEVICES=os.environ.get('CUDA_VISIBLE_DEVICES'),DISPLAY=os.environ.get('DISPLAY'),source=str(source),mode=args.mode))
+            CUDA_VISIBLE_DEVICES=os.environ.get('CUDA_VISIBLE_DEVICES'),DISPLAY=os.environ.get('DISPLAY'),source=str(source),mode=args.mode,
+            config_path=str(config_path.resolve()),config_version=config['config_version']))
         if args.mode=='record-smoke':
             # Small explicit engineering recording; never a human/main outcome.
             ref.pilot['allow_engineering_record_smoke']=True;ref.record_type='engineering_record_smoke'
