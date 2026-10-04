@@ -151,7 +151,7 @@ def restore_check(batch,run):
                 saved_rng=load(ref.source/'rng.json')
                 # Reuse authoritative restore implementation and explicitly bind the original file.
                 receipt=dict(scene_id=cfg['scene_id'],at=stamp(),restore_max_abs_error=ref.restore_receipt['max_abs_error'],
-                    task=ref.args.task,fixture=ref.native['fixture_name'],opening=ref.native['opening'],
+                    task=ref.args.task,fixture=ref.native['fixture_name'],opening=ref.trace()['target'],
                     model_sha256=hashlib.sha256((ref.source/'model.xml').read_bytes()).hexdigest(),
                     restored_rng=actual_rng,saved_rng=saved_rng,zero_actions=True,checker_initial_success=False,
                     primary_enabled=False,operator_review='pending')
