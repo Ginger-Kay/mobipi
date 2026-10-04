@@ -71,7 +71,9 @@ def check(batch,run):
                 m,d=ref.model_data();before=ref.integration().copy();rng=json.dumps(ref.env.rng.bit_generator.state,sort_keys=True)
                 assert np.array_equal(before,np.load(ref.source/'integration.npy'))
                 assert not ref.env._check_success()
-                root=Path(row['config']).parent;preview=root/'preview';preview.mkdir()
+                root=Path(row['config']).parent;preview=root/'preview'
+                if preview.exists():assert not any(preview.iterdir()), 'Existing preview must not be overwritten'
+                else:preview.mkdir()
                 cameras=dict(main=cfg['main_camera'],panoramic=cfg['panoramic_camera'])
                 for name,cam in cameras.items():
                     Image.fromarray(ref.frame(cam).copy()).save(preview/(name+'.png'))
