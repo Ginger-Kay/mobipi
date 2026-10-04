@@ -217,7 +217,7 @@ class PilotReference(Reference):
         self.panel.geometry('410x1000+1200+0')
         for widget in self.panel.winfo_children():
             if isinstance(widget,tk.Label) and str(widget.cget('text')).startswith('ARM:'):
-                widget.configure(text='MOVE ARM: arrows = horizontal shift\n; / . = raise / lower\nTURN GRIPPER: O / P = yaw + / -\nO counterclockwise, P clockwise (top view)\nY / H = pitch, E / R = roll\nMOVE BASE: W/A/S/D; Z/X turns BASE\nSpace = open / close gripper\n\nMove along the door arc AND turn the wrist.\nTap keys briefly; Esc pauses to inspect.',
+                widget.configure(text='MOVE ARM: arrows = horizontal shift\n; / . = raise / lower\nTURN GRIPPER: O / P = yaw + / -\nO counterclockwise, P clockwise (top view)\nY / H = pitch, E / R = roll\nMOVE BASE: W/A/S/D; Z/X turns BASE\nSpace = open / close gripper\n\nMove along the door arc AND turn the wrist.\nTap keys briefly; Esc pauses to inspect.'.replace('Move along the door arc AND turn the wrist.', 'Drawer: keep wrist aligned; slide straight in.' if self.native['fixture_class']=='Drawer' else 'Move along the door arc AND turn the wrist.'),
                     fg='#ffe08a',font=('sans',12))
         tk.Label(self.panel,text='Operator ID (required before F2)',bg='#243447',fg='white').pack()
         self.operator_entry=tk.Entry(self.panel,font=('sans',14));self.operator_entry.pack(fill='x',padx=12)
