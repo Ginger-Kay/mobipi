@@ -33,7 +33,11 @@ def model_geometry_sha(model):
                 'geom_type','geom_bodyid','geom_dataid','geom_size','geom_pos','geom_quat',
                 'geom_group','geom_contype','geom_conaffinity','geom_rgba','geom_matid',
                 'mesh_vertadr','mesh_vertnum','mesh_faceadr','mesh_facenum','mesh_vert','mesh_face'):
-        value=getattr(model,key);h.update(key.encode());h.update(value if isinstance(value,bytes) else np.asarray(value).tobytes())
+        value=getattr(model,key);h.update(key.encode())
+        if isinstance(value,bytes):h.update(value)
+        else:
+            array=np.asarray(value)
+            h.update(memoryview(array).cast('B') if array.nbytes and array.flags.c_contiguous else array.tobytes())
     return h.hexdigest()
 
 def mesh_shape_sha(model,mesh):
@@ -55,9 +59,9 @@ def geometry_inventory(model,geom_ids=None):
             visible_group=int(model.geom_group[g]),collision_filters=[int(model.geom_contype[g]),int(model.geom_conaffinity[g])]))
     return dict(schema='native-visible-collision-binding-v1',model_geometry_sha256=model_geometry_sha(model),geom_count=model.ngeom,geoms=rows)
 
-def validate_native_geometry(model,baseline,cached_target=None,checker_joint=None):
+def validate_native_geometry(model,baseline,cached_target=None,checker_joint=None,*,geometry_sha=None):
     if baseline.get('schema')!='native-visible-collision-binding-v1':raise VisibleBindingHold('missing native visible geometry baseline')
-    if model_geometry_sha(model)!=baseline.get('model_geometry_sha256'):raise VisibleBindingHold('native visible/collision body/mesh/transform/filter binding changed')
+    if (model_geometry_sha(model) if geometry_sha is None else geometry_sha)!=baseline.get('model_geometry_sha256'):raise VisibleBindingHold('native visible/collision body/mesh/transform/filter binding changed')
     if cached_target is not None:
         geom=int(cached_target['geom_id']);actual=name(model,mujoco.mjtObj.mjOBJ_GEOM,geom) if 0<=geom<model.ngeom else None
         if actual!=cached_target['geom_name']:raise VisibleBindingHold('stale cached geom ID/name')
@@ -68,8 +72,8 @@ def validate_native_geometry(model,baseline,cached_target=None,checker_joint=Non
 def validate_render_model(model,renderer):
     if getattr(renderer,'_model',None) is not model:raise VisibleBindingHold('recorder renderer is bound to another native model instance')
 
-def frame_binding(model,data,frame,camera):
-    return dict(frame_index=int(frame),native_model_geometry_sha256=model_geometry_sha(model),
+def frame_binding(model,data,frame,camera,*,geometry_sha=None):
+    return dict(frame_index=int(frame),native_model_geometry_sha256=model_geometry_sha(model) if geometry_sha is None else geometry_sha,
                 actual_qpos_sha256=hashlib.sha256(np.asarray(data.qpos).tobytes()).hexdigest(),
                 actual_qvel_sha256=hashlib.sha256(np.asarray(data.qvel).tobytes()).hexdigest(),
                 actual_sim_time=float(data.time),camera=camera)

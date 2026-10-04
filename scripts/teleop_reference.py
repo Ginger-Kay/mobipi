@@ -376,19 +376,23 @@ class Reference:
             for attr in ['distance', 'azimuth', 'elevation']:
                 setattr(self.capture_camera, attr, getattr(c, attr))
         if self.recording and self.recording.get('task_video_identity'):
-            from mobiwam.visible_object_binding import validate_native_geometry, validate_render_model, frame_binding
+            from mobiwam.visible_object_binding import validate_native_geometry, validate_render_model, frame_binding, model_geometry_sha
             identity=self.recording['task_video_identity']
-            validate_native_geometry(m,identity['native']['native_geometry_inventory'])
+            # One fresh full geometry hash for this synchronous post-action
+            # render group; no physics/model edits occur between its cameras.
+            geometry_sha=model_geometry_sha(m)
+            validate_native_geometry(m,identity['native']['native_geometry_inventory'],geometry_sha=geometry_sha)
             validate_render_model(m,self.renderer)
-            self.recording['native_frame_binding']=frame_binding(m,d,self.recording['n'],{'lookat':list(self.capture_camera.lookat),'distance':self.capture_camera.distance,'azimuth':self.capture_camera.azimuth,'elevation':self.capture_camera.elevation})
+            self.recording['post_action_geometry_sha']=geometry_sha
+            self.recording['native_frame_binding']=frame_binding(m,d,self.recording['n'],{'lookat':list(self.capture_camera.lookat),'distance':self.capture_camera.distance,'azimuth':self.capture_camera.azimuth,'elevation':self.capture_camera.elevation},geometry_sha=geometry_sha)
         self.renderer.update_scene(d, camera=self.capture_camera, scene_option=self.render_options)
         frame = self.renderer.render()
         if self.recording and self.recording.get('native_frame_binding'):
             self.recording['native_frame_binding']['raw_rgb_sha256'] = hashlib.sha256(frame.tobytes()).hexdigest()
         return frame
 
-    def begin(self):
-        self.restore()
+    def begin(self, *, restore_source=True):
+        if restore_source:self.restore()
         if getattr(self, 'identity_expected', None):
             from mobiwam.task_video_identity import observe_native
             observe_native(self, self.identity_expected)
@@ -464,7 +468,7 @@ class Reference:
                 r['panoramic_raw_frame_sha256'].append(hashlib.sha256(panorama.tobytes()).hexdigest())
                 if 'panoramic_frame_bindings' not in r:r['panoramic_frame_bindings']=[]
                 from mobiwam.visible_object_binding import frame_binding
-                binding=frame_binding(m,d,n,c);binding['raw_rgb_sha256']=r['panoramic_raw_frame_sha256'][-1]
+                binding=frame_binding(m,d,n,c,geometry_sha=r.get('post_action_geometry_sha'));binding['raw_rgb_sha256']=r['panoramic_raw_frame_sha256'][-1]
                 r['panoramic_frame_bindings'].append(binding)
             r['n'] += 1
             r['success_streak'] = r['success_streak'] + 1 if after['success'] else 0

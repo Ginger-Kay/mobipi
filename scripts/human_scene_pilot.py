@@ -65,7 +65,18 @@ class PilotReference(Reference):
         self.paused = True
 
     def restore(self):
+        self._live_frame_cache=None
+        self._displayed_frame_key=None
         return restore_saved_integration(self)
+
+    def frame(self,camera=None):
+        # Reuse the already recorded main-camera RGB only for screen display.
+        # The base recorder still renders/validates every original video frame.
+        rgb=super().frame(camera)
+        m,d=self.model_data()
+        actual=camera if camera is not None else self.camera_state()
+        self._live_frame_cache=((id(m),float(d.time),json.dumps(actual,sort_keys=True)),rgb.copy())
+        return rgb
 
     def bind(self):
         binding = load(self.source/'target-binding.json')
@@ -96,7 +107,7 @@ class PilotReference(Reference):
         initial_contacts = list(guard.forbidden_contacts())
         if initial_contacts:
             raise ValueError('Source has forbidden native robot contact; see preparation receipt')
-        super().begin()
+        super().begin(restore_source=False)
         if hasattr(self,'operator_entry'):
             self.operator_entry.configure(state='disabled');self.panel.focus_set()
         # Freeze the evidence camera for the whole attempt; mouse view may change.
@@ -227,10 +238,15 @@ class PilotReference(Reference):
         steps=self.recording['n'] if self.recording else 0
         self.status_label.config(text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | {steps*.05:.2f}/120s\n{self.message}')
         now=time.monotonic()
-        if now-self.last_live_frame>=.2:
+        m,d=self.model_data()
+        view_key=(id(m),float(d.time),json.dumps(self.live_camera,sort_keys=True))
+        if now-self.last_live_frame>=.05 and view_key!=getattr(self,'_displayed_frame_key',None):
             from PIL import ImageTk
-            self.live_photo=ImageTk.PhotoImage(Image.fromarray(self.frame(self.live_camera).copy()).resize((1200,675)))
+            cache=getattr(self,'_live_frame_cache',None)
+            rgb=cache[1] if cache is not None and cache[0]==view_key else self.frame(self.live_camera)
+            self.live_photo=ImageTk.PhotoImage(Image.fromarray(rgb).resize((1200,675)))
             self.live_label.configure(image=self.live_photo);self.last_live_frame=now
+            self._displayed_frame_key=view_key
         if now-self.last_ui_status>=5:
             write_json(self.root/'ui-status.json',dict(at=stamp(),pid=os.getpid(),paused=self.paused,recording=bool(self.recording),
                 scene_id=self.pilot['scene_id'],source=str(self.source),route=self.route,sim_time=native['sim_time'],
