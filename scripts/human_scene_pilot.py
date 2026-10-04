@@ -234,10 +234,10 @@ class PilotReference(Reference):
         def select_camera(camera):self.live_camera=json.loads(json.dumps(camera));self.last_live_frame=0.
         tk.Button(self.live_window,text='Target view',command=lambda:select_camera(self.evidence_camera)).pack(side='left')
         tk.Button(self.live_window,text='Base overview',command=lambda:select_camera(self.panoramic_camera)).pack(side='left')
-        if self.native['fixture_class']=='Microwave':
+        if self.native['fixture_class'] in ('Microwave','Drawer'):
             def handle_closeup():
                 m,d=self.model_data()
-                hid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_GEOM,self.native['fixture_name']+'_door_handle')
+                hid=mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_GEOM,self.native['fixture_name']+('_door_handle_handle' if self.native['fixture_class']=='Drawer' else '_door_handle'))
                 if hid>=0:
                     camera=dict(self.evidence_camera,lookat=d.geom_xpos[hid].tolist(),distance=.85)
                     select_camera(camera)
@@ -286,6 +286,17 @@ class PilotReference(Reference):
                           '\nSampled contact only; not proof of secure grasp. '+
                           ('Fewer than 2: Esc to inspect before moving.' if warning else 'Watch both fingers as the door turns.'))
             self.contact_label.config(text=contact_text,fg='#9c3100' if warning else '#16364a')
+        if self.native['fixture_class']=='Drawer':
+            geoms=self.robot.gripper['right'].important_geoms
+            finger_contacts=touching_fingers(native['contacts'],self.native['fixture_name']+'_door_handle_handle',
+                                             (geoms['left_finger'],geoms['right_finger']))
+            count=sum(finger_contacts)
+            warning=grip_closed and count<2
+            self.contact_label.config(
+                text=f'Handle contact: {count}/2 fingers | command: {"CLOSE" if grip_closed else "OPEN"}\n'
+                     'Start is aligned: keep fingers above/below the horizontal handle. Approach with small translations.\n'
+                     'Sampled contact only; not proof of secure grasp. Esc pauses; Space closes/opens.',
+                fg='#9c3100' if warning else '#16364a')
         self.status_label.config(fg='#ffbf47' if margin<.15 else 'white',
             text=f'{self.pilot["scene_id"]} | {state}\nHuman {self.route} | practice\nOpening {native["target"]["door"]:.5f}\nNative success: {native["success"]}\nHold: {streak}/10 | SIM {steps*.05:.2f}/120s\nWALL {wall:.0f}s | joint margin {margin:.3f} rad\n{joint}{caution}{turn_text}\n{self.message}')
         now=time.monotonic()
