@@ -438,7 +438,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=['prepare','ui','record-smoke']);parser.add_argument('--batch',type=Path,required=True)
     parser.add_argument('--scene',required=True);parser.add_argument('--task',choices=['CloseSingleDoor','CloseDrawer']);parser.add_argument('--seed',type=int);parser.add_argument('--resume-source',type=Path)
     parser.add_argument('--route',choices=['A','E','D'],default='A',help='Initial human route; switching remains explicit')
-    parser.add_argument('--record-type',choices=['practice','primary'],default='practice')
+    parser.add_argument('--record-type',choices=['practice','primary','reference_supplement'],default='practice')
     parser.add_argument('--config',type=Path,help='Explicit versioned pilot config; original Source/config remains immutable')
     args=parser.parse_args();batch=args.batch.resolve()
     if args.mode=='prepare':
@@ -446,8 +446,8 @@ def main():
     config_path=args.config or batch/'scenes'/args.scene/'pilot-v1/pilot.json';config=load(config_path)
     if config['scene_id'] != args.scene or Path(config['batch']).resolve() != batch:
         raise ValueError('Pilot config scene/batch differs from launch')
-    if args.record_type=='primary':
-        if args.mode!='ui':raise ValueError('Primary is human UI only')
+    if args.record_type in ('primary', 'reference_supplement'):
+        if args.mode!='ui':raise ValueError('Primary/reference supplement is human UI only')
         from mobiwam.human_primary import verify_freeze
         verify_freeze(config)
     source=Path(config['source']);output=batch/'episodes'/args.scene/'interactive'
