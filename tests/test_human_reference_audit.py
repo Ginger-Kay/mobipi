@@ -100,3 +100,37 @@ def test_partial_tail_boundary_and_action_integrity(tmp_path):
     assert load_partial_tail(tmp_path,result)["record"]==stop
     stop["step"]=2;(tmp_path/"safety-stop.json").write_text(json.dumps(stop))
     with pytest.raises(ValueError,match="boundary"):load_partial_tail(tmp_path,result)
+
+
+def supplement(tmp_path):
+    from test_human_primary import frozen
+    from pathlib import Path
+    cfg=frozen(tmp_path)
+    cfg['paired_protocol_version']='human-eda-v2-stowed'
+    receipt_path=Path(cfg['freeze_receipt'])
+    receipt=json.loads(receipt_path.read_text());receipt['config']=cfg
+    receipt_path.write_text(json.dumps(receipt))
+    r,m,a,s=original()
+    r['source']=cfg['source'];r['events'][0]['record_type']='reference_supplement'
+    m.update(record_type='reference_supplement',freeze_receipt=cfg['freeze_receipt'],
+             config_version=cfg['config_version'],source_id=Path(cfg['source']).name,
+             paired_protocol_version=cfg['paired_protocol_version'])
+    return r,m,a,s
+
+
+def test_reference_supplement_keeps_record_classification_and_original_inputs(tmp_path):
+    args=supplement(tmp_path);before=copy.deepcopy(args)
+    assert validate_human_recording(*args)==before[0]['events']
+    assert args[:2]==before[:2]
+    assert args[1]['record_type']=='reference_supplement'
+    assert np.array_equal(args[2],before[2]) and np.array_equal(args[3],before[3])
+
+
+@pytest.mark.parametrize('bad_field',['source','event_classification','frozen_source'])
+def test_reference_supplement_rejects_identity_or_freeze_changes(tmp_path,bad_field):
+    from pathlib import Path
+    args=supplement(tmp_path);r,m,a,s=args
+    if bad_field=='source':r['source']='/wrong-source'
+    elif bad_field=='event_classification':r['events'][0]['record_type']='primary'
+    else:(Path(r['source'])/'integration.npy').write_text('changed')
+    with pytest.raises(ValueError):validate_human_recording(*args)

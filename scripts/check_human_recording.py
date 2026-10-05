@@ -22,7 +22,7 @@ def inspect(attempt, output, expected_scene, expected_route):
         raise ValueError('Source path differs')
     if not result.get('ended_at') or not meta.get('ended_at'):
         raise ValueError('Recording is still open')
-    if meta['record_type']=='primary':
+    if meta['record_type'] in ('primary', 'reference_supplement'):
         cfg=read_json(meta['freeze_receipt'])['config']
         if any(meta.get(k)!=cfg.get(k) for k in ('scene_id','scene_family_id','config_version','environment_seed')):
             raise ValueError('Primary scene/family/seed differs from frozen configuration')

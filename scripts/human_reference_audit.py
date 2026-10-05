@@ -59,7 +59,7 @@ def validate_human_a(result, metadata, actions, states):
 
 
 def validate_human_recording(result, metadata, actions, states):
-    if metadata.get("record_type") == "primary":
+    if metadata.get("record_type") in ("primary", "reference_supplement"):
         from mobiwam.human_primary import verify_freeze
         receipt = json.loads(Path(metadata["freeze_receipt"]).read_text())
         config = receipt["config"]
@@ -69,7 +69,7 @@ def validate_human_recording(result, metadata, actions, states):
                 or result.get("source") != config["source"]
                 or metadata.get("paired_protocol_version") != config["paired_protocol_version"]
                 or not result.get("events")
-                or result["events"][0].get("record_type") != "primary"):
+                or result["events"][0].get("record_type") != metadata["record_type"]):
             raise ValueError("Primary recording/freeze provenance differs")
         # The following strict scheduling validator is shared with practice.
         # This local view changes no stored metadata, events or actions.
