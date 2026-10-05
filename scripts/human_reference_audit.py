@@ -130,8 +130,10 @@ def validate_human_recording(result, metadata, actions, states):
 
 def phase_at(result, step):
     if result["route"] == "D":
-        dock = next((e["step"] for e in result["events"] if e["event"] == "docked"), result["steps"])
-        if step < dock:
+        dock = next((e["step"] for e in result["events"] if e["event"] == "docked"), None)
+        # A safety-stop partial step uses index == completed steps. Without an
+        # actual dock event it remains navigation, including this native tail.
+        if dock is None or step < dock:
             return "navigate"
     return "manipulate"
 

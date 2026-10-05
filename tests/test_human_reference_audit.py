@@ -72,6 +72,9 @@ def test_d_failure_before_dock_retains_navigation_only():
     a[:]=0;a[:,6]=-1
     validate_human_recording(r,m,a,s)
     assert all(phase_at(r,i)=="navigate" for i in range(3))
+    # Native safety tails carry the index after the last complete control.
+    assert phase_at(r,r["steps"])=="navigate"
+    assert phase_at(r,r["steps"]+1)=="navigate"
 
 def test_e_admits_fixed_base_and_rejects_motion():
     r,m,a,s=original();r["route"]=m["route"]="E"
