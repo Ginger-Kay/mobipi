@@ -63,7 +63,7 @@ def process(row,root,ledger,workers):
     cfg=read_json(row['freeze_receipt'])['config'];atomic_json(out/'pilot.json',cfg)
     command=[sys.executable,str(scripts/'check_human_recording.py'),'--attempt',str(attempt),'--scene',row['scene'],
              '--route',row['route'],'--output',str(out/'integrity')]
-    run_stage(attempt,'integrity',ledger,sig,[('integrity',command)],out,1)
+    run_stage(attempt,'integrity-mw-handle-v2',ledger,sig,[('integrity',command)],out,1)
     checked=read_json(out/'integrity/result.json')
     command=[sys.executable,str(scripts/'human_reference_audit.py'),'replay','--cpu-only','--attempt',str(attempt),
              '--output',str(out/'replay'),'--pilot',str(out/'pilot.json')]

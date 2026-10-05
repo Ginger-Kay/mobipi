@@ -69,7 +69,7 @@ def inspect(attempt, output, expected_scene, expected_route):
         if count!=n:raise ValueError('Decoded original video frame count differs')
         decoded[name]=count
     target=binding['fixture_name']
-    handle=target+('_door_handle_handle' if binding['task']=='CloseDrawer' else '_handle')
+    handle=target+('_door_handle_handle' if binding['task']=='CloseDrawer' else '_door_handle')
     candidates=[m.geom(i).name for i in range(m.ngeom) if m.geom(i).name==handle]
     joint_ids=[m.joint(j['name']).id for j in binding['joints']]
     if candidates:
