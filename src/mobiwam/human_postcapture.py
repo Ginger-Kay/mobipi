@@ -146,3 +146,23 @@ def summarize_sweeps(parts, total):
                 lower_bound_m=min(p['lower_bound_m'] for p in parts) if valid else None,
                 failures=[p for p in parts if not p['valid']],
                 scope='Conservative native-state interpolation; failure partitions stop at first witness')
+
+
+def merge_audit_caches(paths):
+    """Combine disjoint queues; equal inherited entries deduplicate, conflicts hold."""
+    merged={}
+    for path in paths:
+        for entry in read_json(path)['entries']:
+            attempt=entry['attempt']
+            if attempt in merged and merged[attempt] != entry:
+                raise ValueError('Conflicting audit cache entry; retain both and inspect: '+attempt)
+            if entry['input_signature'] != signature(attempt):
+                raise ValueError('Audit cache input changed: '+attempt)
+            checked=read_json(entry['integrity']);qualified=read_json(entry['qualification'])
+            for receipt in [checked,qualified]:
+                if receipt.get('attempt') != attempt or receipt.get('input_signature') != entry['input_signature']:
+                    raise ValueError('Audit cache receipt binding differs: '+attempt)
+            if not checked.get('integrity_pass'):
+                raise ValueError('Audit cache integrity did not pass: '+attempt)
+            merged[attempt]=entry
+    return dict(at=stamp(),entries=list(merged.values()))

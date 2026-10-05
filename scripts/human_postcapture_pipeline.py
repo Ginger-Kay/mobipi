@@ -11,7 +11,10 @@ from mobiwam.human_postcapture import (read_json, atomic_json, signature, claim,
                                       summarize_sweeps, pair_records, stamp)
 
 
-def discover(batch):
+def discover(batch, scenes=None):
+    selected = None if scenes is None else set(scenes)
+    if selected is not None and not selected:
+        raise ValueError("Scene scope must not be empty")
     records=[];errors=[]
     for row in csv.DictReader((batch/'attempt-index.csv').open()):
         if row['record_type']!='primary':continue
@@ -20,6 +23,7 @@ def discover(batch):
             if not attempt.is_relative_to(batch.resolve()):raise ValueError('Attempt outside requested batch')
             if attempt.name!=row['attempt_id']:raise ValueError('Index attempt identity differs')
             result=read_json(attempt/'result.json');meta=read_json(attempt/'collection-metadata.json')
+            if selected is not None and meta.get('scene_id') not in selected:continue
             if not result.get('ended_at') or not meta.get('ended_at'):raise ValueError('Attempt not finalized')
             if meta['record_type']!='primary' or result['route']!=row['route']:raise ValueError('Index/metadata classification differs')
             records.append(dict(attempt=str(attempt),scene=meta['scene_id'],route=meta['route'],
@@ -90,12 +94,13 @@ def process(row,root,ledger,workers):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--batch',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--cache',type=Path,required=True);p.add_argument('--ledger',type=Path,required=True)
+    p.add_argument('--scene',action='append',help='Restrict this queue to exact scene IDs; repeat for multiple scenes')
     p.add_argument('--execute-new',action='store_true');p.add_argument('--workers',type=int,default=4);a=p.parse_args()
     if not 1<=a.workers<=4:raise ValueError('CPU workers must be 1..4')
     if a.execute_new and os.environ.get('CUDA_VISIBLE_DEVICES')!='':raise ValueError('CPU-only execution requires masked CUDA')
     a.output.mkdir(parents=True,exist_ok=False)
     cache=read_json(a.cache);cached={e['attempt']:e for e in cache['entries']}
-    records,errors=discover(a.batch);planned=[];completed=[];pairs=[]
+    records,errors=discover(a.batch,a.scene);planned=[];completed=[];pairs=[]
     for row in records:
         entry=cached.get(row['attempt'])
         if entry:
@@ -109,7 +114,7 @@ def main():
             pairs.append(checked)
             planned.append(dict(**row,action='reuse_existing_audit',qualification=entry['qualification']))
         else:planned.append(dict(**row,action='new_integrity_then_single_replay_and_clearance'))
-    atomic_json(a.output/'plan.json',dict(at=stamp(),records=planned,errors=errors,execute_new=a.execute_new,training=False))
+    atomic_json(a.output/'plan.json',dict(at=stamp(),records=planned,queue_scope_scene_ids=a.scene,errors=errors,execute_new=a.execute_new,training=False))
     if a.execute_new:
         for row in planned:
             if row['action']=='reuse_existing_audit':continue
@@ -125,7 +130,7 @@ def main():
         paired=[];errors.append(dict(error=str(e),scope='pairing'))
     atomic_json(a.output/'next-cache.json',dict(at=stamp(),entries=list(cached.values())))
     atomic_json(a.output/'summary.json',dict(at=stamp(),mode='execute_new' if a.execute_new else 'plan_only',
-        finalized_primary_records=len(records),reused_audits=sum(r['action']=='reuse_existing_audit' for r in planned),
+        queue_scope_scene_ids=a.scene,finalized_primary_records=len(records),reused_audits=sum(r['action']=='reuse_existing_audit' for r in planned),
         new_audits_completed=len(completed),new_replay_attempts=sum((a.output/Path(r['attempt']).name/'replay-process.json').is_file() for r in planned),
         paired=paired,errors=errors,review_status='pending',training_started=False,formal_train_ready=False))
     print('POSTCAPTURE',len(records),'primary records;',len(completed),'new audits;',len(errors),'holds',flush=True)

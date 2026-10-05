@@ -58,3 +58,64 @@ def test_live_json_transient(monkeypatch,tmp_path):
     monkeypatch.setattr(type(p),'read_text',read)
     assert read_json(p,delay=0)=={'ok':True}
     assert len(calls)==2
+
+
+def discovery_fixture(tmp_path,monkeypatch):
+    import csv
+    import human_postcapture_pipeline as pipeline
+    rows=[]
+    def add(scene,route,kind='primary',suffix='',success=False):
+        attempt=tmp_path/(scene+'-'+route+'-'+kind+suffix);attempt.mkdir()
+        (attempt/'result.json').write_text(json.dumps(dict(route=route,ended_at='now',checker_success=success)))
+        (attempt/'collection-metadata.json').write_text(json.dumps(dict(scene_id=scene,route=route,
+          record_type=kind,ended_at='now',source_id=scene+'-source',config_version='v1',freeze_receipt='freeze')))
+        rows.append(dict(attempt_id=attempt.name,result_path=str(attempt/'result.json'),record_type=kind,route=route))
+    for scene in ['MW-H-01','DR-H-01']:
+        for route in 'EDA':add(scene,route,success=route=='A')
+    add('MW-H-01','A','reference_supplement',success=True)
+    add('DR-H-01','A','practice',success=True)
+    def save():
+        with (tmp_path/'attempt-index.csv').open('w') as stream:
+            writer=csv.DictWriter(stream,fieldnames=rows[0].keys());writer.writeheader();writer.writerows(rows)
+    save();monkeypatch.setattr(pipeline,'signature',lambda a:{'attempt':str(a)})
+    return pipeline,add,save
+
+
+def test_two_scene_queues_are_disjoint_and_exclude_supplements(tmp_path,monkeypatch):
+    p,add,save=discovery_fixture(tmp_path,monkeypatch)
+    mw,e1=p.discover(tmp_path,['MW-H-01']);dr,e2=p.discover(tmp_path,['DR-H-01'])
+    all_rows,e3=p.discover(tmp_path)
+    assert not e1 and not e2 and not e3
+    assert len(mw)==len(dr)==3 and len(all_rows)==6
+    assert {r['attempt'] for r in mw}.isdisjoint(r['attempt'] for r in dr)
+    assert all(r['scene']=='MW-H-01' for r in mw)
+    assert set(r['route'] for r in mw)==set('EDA')
+    with pytest.raises(ValueError,match='empty'):p.discover(tmp_path,[])
+
+
+def test_scoped_duplicate_holds_only_affected_group(tmp_path,monkeypatch):
+    p,add,save=discovery_fixture(tmp_path,monkeypatch)
+    add('MW-H-01','A',suffix='duplicate',success=True);save()
+    mw,e1=p.discover(tmp_path,['MW-H-01']);dr,e2=p.discover(tmp_path,['DR-H-01'])
+    assert not mw and 'Duplicate primary' in e1[0]['error']
+    assert len(dr)==3 and not e2
+
+
+def test_cache_merge_preserves_failures_and_rejects_conflicts(tmp_path,monkeypatch):
+    import mobiwam.human_postcapture as h
+    monkeypatch.setattr(h,'signature',lambda a:{'attempt':a})
+    def entry(name,success):
+        attempt=str(tmp_path/name);sig={'attempt':attempt}
+        i=tmp_path/(name+'-integrity');q=tmp_path/(name+'-qualification')
+        i.write_text(json.dumps(dict(attempt=attempt,input_signature=sig,integrity_pass=True,checker_success=success)))
+        q.write_text(json.dumps(dict(attempt=attempt,input_signature=sig,machine_qualified_success=success)))
+        return dict(attempt=attempt,input_signature=sig,integrity=str(i),qualification=str(q))
+    old=entry('old',True);failure=entry('failed',False);success=entry('success',True)
+    c1=tmp_path/'c1';c2=tmp_path/'c2'
+    c1.write_text(json.dumps({'entries':[old,failure]}));c2.write_text(json.dumps({'entries':[old,success]}))
+    result=h.merge_audit_caches([c1,c2]);assert len(result['entries'])==3
+    assert failure in result['entries']
+    altered=dict(old,qualification='other');c2.write_text(json.dumps({'entries':[altered]}))
+    with pytest.raises(ValueError,match='Conflicting'):h.merge_audit_caches([c1,c2])
+    c2.write_text(json.dumps({'entries':[dict(old,input_signature={})]}))
+    with pytest.raises(ValueError,match='changed'):h.merge_audit_caches([c2])
