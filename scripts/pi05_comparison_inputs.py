@@ -8,10 +8,9 @@ from mobiwam.sim_sprint_learning import ActiveHead,scale,transform,select,ridge
 from mobiwam.scene004 import geometry_rule_select
 
 def physical_transform(raw,heads):
-    values=transform(raw,heads)
-    for j,h in enumerate(heads):
-        if h['status']!='learnable':values[:,j]=np.nan if h['mean'] is None else h['mean']
-    return values
+    # support() stores empirical means in normalized target units. transform()
+    # restores all heads, including constants, to their physical units once.
+    return transform(raw,heads)
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args();r=a.run;out=r/'evaluation';out.mkdir(exist_ok=True)
@@ -50,8 +49,6 @@ def main():
             values=physical_transform(raw,cp['head_support']);idx=select(values,eligible,cp['active']);chosen[name]='EDA'[idx] if idx is not None else 'X';predicted[name]=[[float(v) if np.isfinite(v) else None for v in row] for row in values]
         heads=models['MLP'][1]['head_support'];values,raw,fit=ridge(z['X'],z['y'],z['mask'],z['group_id'],X,heads)
         ridge_fits=fit
-        for j,h in enumerate(heads):
-            if h['status']!='learnable':values[:,j]=np.nan if h['mean'] is None else h['mean']
         active=[i for i,h in enumerate(heads) if h['status']=='learnable'];idx=select(values,eligible,active);chosen['ridge']='EDA'[idx] if idx is not None else 'X';predicted['ridge']=[[float(v) if np.isfinite(v) else None for v in row] for row in values]
         geometry=[dict(rows[route],stage_eligible=eligible[i]) for i,route in enumerate('EDA') if route in rows]
         choice=geometry_rule_select(geometry);chosen['geometry']='X' if choice=='X' else choice.split('-',1)[0];chosen['train-best-fixed']=fixed
