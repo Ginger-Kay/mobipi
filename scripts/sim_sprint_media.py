@@ -16,6 +16,31 @@ def csvwrite(p,rows):
     with Path(p).open('w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
 
+def watch_failures(r):
+    """Annotate the preselected native online failures; never synthesize success."""
+    selected=load(r/'videos/demo-selection.json')
+    assert selected['success_demos_available']==0 and not selected['selected']
+    for x in selected['selected_failure_cases']:
+        assert x['method']=='learned' and not x['native_success'] and not x['safety_qualified_success']
+        original=Path(x['video']);out=r/'videos'/('online-'+x['group_id']);out.mkdir(exist_ok=False)
+        labeled=out/'watch-labeled.mp4'
+        caption=f"REFERENCE feedback | MLP selector | {x['route']} | FAIL joint margin | NO HUMAN | 1x SIM 20Hz"
+        filt='drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='+caption+':x=12:y=12:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.7'
+        subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(original),'-vf',filt,'-c:v','libx264','-crf','18','-an',str(labeled)],check=True)
+        def probe(p):
+            q=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-count_frames',
+                '-show_entries','stream=nb_read_frames,r_frame_rate,width,height','-of','json',str(p)],text=True))
+            return q['streams'][0]
+        native,copy=probe(original),probe(labeled);assert native==copy
+        subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(labeled),'-frames:v','1',str(out/'preview.jpg')],check=True)
+        write(out/'watch-binding.json',dict(created_at=datetime.now(timezone.utc).isoformat(),task=x['task'],route=x['route'],method=x['method'],
+            group_id=x['group_id'],attempt=x['attempt'],source_receipt=x['record'],original_video=str(original),original_sha256=sha(original),
+            watch_video=str(labeled),watch_sha256=sha(labeled),media=copy,reason=x['reason'],native_success=False,safety_qualified_success=False,
+            controller='reference feedback',human_intervention=False,state_reset='initial Source reset only; none during execution',
+            playback_speed='unchanged native movie20Hz; 1x complete control cycles; native partial stop state remains in state/trace receipts',
+            caption=caption,new_execution=False,originals_retained=True,successful_demo=False))
+        print('failure viewing copy',labeled,flush=True)
+
 def diagnostic(receipt,out):
     """Render saved qpos only. No env.step, inference, or episode continuation."""
     attempt=Path(receipt['attempt']);source=attempt.parents[1]
@@ -74,8 +99,9 @@ def render_diagnostic(receipt,out,azimuth):
     print('diagnostic',labeled,flush=True)
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--stage',choices=['index','preview','render'],default='index')
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--stage',choices=['index','preview','render','watch'],default='index')
     ap.add_argument('--slot',type=int);ap.add_argument('--azimuth',type=float);ap.add_argument('--index-version',type=int,default=1);a=ap.parse_args();r=a.run
+    if a.stage=='watch':watch_failures(r);return
     receipts=[load(p) for p in sorted((r/'policy').glob('ability-*/completed.json'))]
     if a.stage!='index':
         x=next(x for x in receipts if x['slot']==a.slot);out=r/'videos'/f"diagnostic-slot-{a.slot}"
@@ -87,13 +113,26 @@ def main():
     verified_cache={x['original_path']:x for x in previous if x.get('validation') in ('full decode pass','full decode pass; reused immutable receipt')}
     inventory_path=Path(load(r/'data/inventory-current.json')['inventory']) if (r/'data/inventory-current.json').exists() else r/'data/inventory.json'
     for x in load(inventory_path):
-        if x['view'] not in ('A_reference_auto','B_human'):continue
+        if x['view'] not in ('A_reference_auto','B_human','A_R4_historical_repetition'):continue
         p=x.get('video_path','')
         if not p:continue
-        rows.append(dict(record_id=x['record_id'],view=x['view'],task=x.get('task'),route=x['route'],controller=x['controller'],
-            result=x['stop_reason'],original_path=p,sha256=x.get('video_sha256',''),exists=Path(p).exists(),
-            validation='inherited integrity receipt reused' if x.get('existing_receipt') or x.get('qualification_receipt') else 'historical integrity unknown; original retained',
-            new_execution=False,human_intervention=x['human_or_auto']=='human',state_reset='initial only',diagnostic=False))
+        choices=[('original',Path(p))]
+        if x.get('attempt'):choices.append(('panoramic',Path(x.get('panoramic_path') or str(Path(x['attempt'])/'panoramic.mp4'))))
+        if x.get('labeled_path'):choices.append(('historical_labeled',Path(x['labeled_path'])))
+        for camera,media in choices:
+            if camera!='original' and not media.exists():continue
+            digest=x.get('video_sha256','') if camera=='original' else ''
+            receipt=''
+            if x.get('manifest_path') and Path(x['manifest_path']).exists():
+                manifest=load(x['manifest_path']);item=manifest.get('files',{}).get(media.name,{})
+                if item.get('path')==str(media):digest=item.get('sha256',digest);receipt=x['manifest_path']
+            if camera=='panoramic' and (media.parent/'panoramic-binding.json').exists():
+                digest=load(media.parent/'panoramic-binding.json').get('sha256',digest);receipt=str(media.parent/'panoramic-binding.json')
+            if camera=='historical_labeled' and media.exists():digest=sha(media)
+            rows.append(dict(record_id=x['record_id'],view=x['view'],task=x.get('task'),route=x['route'],controller=x['controller'],camera=camera,
+                result=x['stop_reason'],original_path=str(media),sha256=digest,exists=media.exists(),binding_receipt=receipt,
+                validation='inherited integrity receipt reused' if x.get('existing_receipt') or x.get('qualification_receipt') or receipt else 'historical integrity unknown; original retained',
+                new_execution=False,human_intervention=x['human_or_auto']=='human',state_reset='initial only',diagnostic=False))
     actual=receipts+[load(p) for p in sorted((r/'episodes').glob('*/*/completed.json'))]
     for x in actual:
         attempt=Path(x['attempt']);base=dict(record_id=attempt.name,view='C_policy_auto' if 'slot' in x else 'reference_online',task=x['task'],route=x['route'],
@@ -116,6 +155,11 @@ def main():
     for p in sorted((r/'videos').glob('diagnostic-*/diagnostic-binding.json')):
         x=load(p);rows.append(dict(record_id=p.parent.name,view='diagnostic',task='see source binding',route='E',controller='saved-state renderer',result='BC failure supplement',
             original_path=x['diagnostic_video'],sha256=x['diagnostic_sha256'],exists=True,validation='labeled diagnostic',new_execution=False,human_intervention=False,state_reset='saved-state rendering',diagnostic=True))
+    for p in sorted((r/'videos').glob('online-*/watch-binding.json')):
+        x=load(p);rows.append(dict(record_id=p.parent.name,view='new_reference_online_labeled',task=x['task'],route=x['route'],controller='reference feedback, '+x['method']+' selector',result=x['reason'],
+            original_path=x['watch_video'],sha256=x['watch_sha256'],exists=True,validation='annotated viewing copy; raw originals retained',new_execution=False,
+            human_intervention=False,state_reset='initial Source reset only; none during execution',diagnostic=False,
+            playback_speed='1x simulation20Hz, no intentional pause',source_attempt=x['attempt']))
     index_out=r/'videos'/f'index-v{a.index_version}';index_out.mkdir(exist_ok=False)
     csvwrite(index_out/'videos.csv',rows);write(index_out/'videos.json',rows)
     cells=['<!doctype html><meta charset=utf-8><title>Simulation sprint videos</title><h1>Simulation sprint video index</h1><p>Human, reference, policy, and diagnostic views retain distinct evidence levels.</p>']
