@@ -12,7 +12,7 @@ from mobiwam.pi05_motion import whole_body_action,QPProtectionStop,observed_arti
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--attempt',type=int,default=0);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--attempt',type=int,default=0);p.add_argument('--actuated-grip',action='store_true');a=p.parse_args()
     receipt=next((a.run/'episodes/policy-dev-step-2500-adapter-v2').glob('slot-01*/engineering-attempt-0/completed.json'))
     q=json.loads(receipt.read_text());attempt=Path(q['attempt']);source=attempt.parents[1];out=a.run/'preflight'/('v2-failure-coupling-diagnostic' if a.attempt==0 else f'v2-failure-grip-diagnostic-{a.attempt}');out.mkdir(exist_ok=False)
     ref=Reference(argparse.Namespace(output=str(out),task='CloseDrawer',layout=1,style=0,seed=109,self_test=True,source=str(source),replay_attempt=None,resume_attempt=None,width=640,height=360))
@@ -32,6 +32,12 @@ def main():
                 action,proof,v=whole_body_action(ref,intent,d.qpos[base.qpos_index].copy(),locked_base=True,co_motion=enabled)
                 result['comparisons'][str(enabled)]=dict(status='feasible',proof=proof,action=action.tolist())
             except QPProtectionStop as exc:result['comparisons'][str(enabled)]=dict(status='protected',reason=str(exc))
+        if a.actuated_grip:
+            physical_before=d.qpos.copy()
+            try:
+                action,proof,v=whole_body_action(ref,intent,d.qpos[base.qpos_index].copy(),locked_base=True,co_motion=True,actuated_grip=True)
+                result['actuated_grip']=dict(status='feasible',proof=proof,action=action.tolist(),physical_qpos_exactly_unchanged=bool(np.array_equal(physical_before,d.qpos)))
+            except QPProtectionStop as exc:result['actuated_grip']=dict(status='protected',reason=str(exc),physical_qpos_exactly_unchanged=bool(np.array_equal(physical_before,d.qpos)))
         from mobiwam.pi05_grip_projection import protect_grip
         m,d=ref.model_data();q_before=d.qpos.copy();original=ref.robot.gripper['right'].current_action.copy()
         command,hold,proof=protect_grip(ref,1.)

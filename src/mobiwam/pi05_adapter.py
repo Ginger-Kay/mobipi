@@ -67,14 +67,14 @@ def execute_static(ref,action,anchor,base_target):
     return actual,point
 
 
-def execute_projected(ref,action,anchor,base_target,co_motion=False):
+def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_grip=False,locked_base=True):
     """Native constrained arm QP and existing palm guard, with locked base."""
     from mobiwam.pi05_motion import whole_body_action
     from reference_geometry import PalmClearance
     point=world_intent(action,anchor)
-    ref.base_locked=True
+    ref.base_locked=locked_base
     grip_record=None;grip_command=point['grasp']
-    if co_motion:
+    if co_motion and not actuated_grip:
         from mobiwam.pi05_grip_projection import protect_grip
         grip,hold,grip_record=protect_grip(ref,point['grasp'])
         grip_command=grip
@@ -82,14 +82,20 @@ def execute_projected(ref,action,anchor,base_target,co_motion=False):
             actual=np.zeros(12);actual[6]=grip;actual[11]=-1.;ref.pi05_previous_velocity=np.zeros(10)
             point['projection']=dict(gripper=grip_record,body_hold=True,role='physical opening goal resolves finger constraints; no qpos injection')
             return actual,point
-    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=True,co_motion=co_motion)
+    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=locked_base,co_motion=co_motion,actuated_grip=actuated_grip)
     ref.pi05_previous_velocity=velocity
     ref.robot.part_controllers['right'].initial_joint=np.asarray(projection['arm_nullspace_goal'])
+    if actuated_grip:
+        grip_record=projection['actuated_gripper']
+        ref.robot.gripper['right'].current_action=np.asarray(grip_record['normalized_position_goal'])
+        grip_command=0.
     if not getattr(ref,'pi05_palm_projection',None):ref.pi05_palm_projection=PalmClearance(ref)
     before=actual.copy();actual,palm=ref.pi05_palm_projection.apply(actual)
-    actual[6]=grip_command;actual[7:10]=0.;actual[10]=0.;actual[11]=-1.
+    actual[6]=grip_command
+    if locked_base:actual[7:10]=0.
+    actual[10]=0.;actual[11]=-1.
     point['projection']=dict(qp=projection,palm=palm,native_action_correction=(actual-before).tolist(),
         gripper=grip_record,
-        controller_nullspace_goal=projection['arm_nullspace_goal'],base_velocity_locked=True,
+        controller_nullspace_goal=projection['arm_nullspace_goal'],base_velocity_locked=locked_base,
         role='constraints applied to pi05 intent; no teacher points or threshold relaxation')
     return actual,point

@@ -18,7 +18,7 @@ def main():
     passed=bool(sweep['valid'] and not native_contact and margin['minimum'] and margin['minimum']['margin_rad']>.015)
     result=dict(created_at=datetime.now(timezone.utc).isoformat(),attempt=str(attempt),model_sha256=sha,
         actual_native_swept_geometry=sweep,clearance_pass=bool(sweep['valid']),native_collision=native_contact,
-        joint_margin=margin,all_safety_pass=passed,native_success=bool(q['native_success']),safety_qualified_success=bool(passed and q['native_success']),
+        joint_margin=margin,all_safety_pass=passed,native_success=bool(q['native_success']),safety_qualified_success=bool(passed and q['native_success'] and q.get('route_semantics_pass',True)),
         elapsed_seconds=time.monotonic()-start,full_replay_performed=False,formal_train_ready=False,
         evidence_scope='conservative recorded native interval0.5mm sweep plus native forbidden-contact/joint monitor; no formal Gate or human acceptance')
     out.write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result),flush=True)

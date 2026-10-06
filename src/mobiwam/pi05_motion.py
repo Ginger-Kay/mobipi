@@ -114,6 +114,7 @@ def docks(ref):
                 policy_view_note='computed Source/endpoint fraction of three camera frusta containing initial EEF near handle; no occlusion or learned-policy compatibility claim',
                 total_planned_base_path_m=length,total_planned_time_s=length/(.015 if ref.args.task=='CloseDrawer' else .09),
                 endpoint_ik=ik,stow_sweep=stow_sweep,navigation_sweep=navigation,reach_sweep=reach_sweep)
+            candidate['endpoint_arm_qpos']=q.tolist()
         except Exception as exc:candidate['reason']=str(exc)
         candidates.append(candidate)
     primary=None
@@ -121,6 +122,44 @@ def docks(ref):
     assert np.array_equal(q0,live.qpos)
     return dict(version=VERSION,environment_step_calls=0,live_qpos_unchanged=True,proposal_count=5,candidates=candidates,primary=primary,stow=stow,
         provenance='existing native primitives and fixture geometry; no reference manipulation trajectory; geometry only, actual runtime still needs qualification')
+
+
+def collaborative_paths(ref):
+    """Five outcome-blind base paths while retaining the initially observed EEF.
+
+    Endpoint geometry defines only a mobile candidate, never online manipulation
+    points. Runtime EEF intentions still come entirely from new policy queries.
+    """
+    m,live=ref.model_data();q0=live.qpos.copy();base=ref.robot.part_controllers['base'];bids=np.asarray(base.qpos_index)
+    qids,dofs,limits=arm_indices(ref);site=ref.robot.eef_site_id['right']
+    target=dict(pos=live.site_xpos[site].copy(),rot=live.site_xmat[site].reshape(3,3).copy())
+    fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
+    check=SweptGeometry(m,target_prefix=fixture.name,margin=.0005);candidates=[]
+    for i,offset in enumerate(DOCK_OFFSETS):
+        goal=q0[bids].copy();goal[:2]+=offset
+        rec=dict(candidate_id=f'collaborative-{i}',base_goal=goal.tolist(),hard_valid=False)
+        try:
+            base_path=densify_path(np.array([q0[bids[:2]],goal[:2]]),.01);states=[q0.copy()]
+            scratch=mujoco.MjData(m);margin=.1;view=1.;errors=[]
+            for xy in base_path[1:]:
+                scratch.qpos[:]=states[-1];scratch.qpos[bids[:2]]=xy;mujoco.mj_forward(m,scratch)
+                q,pe,re,ik=constrained_pose_ik(m,scratch,site,qids,dofs,target,scratch.qpos[qids].copy(),limits,check,phase='manipulate')
+                if pe>=.01 or re>=.10:raise ValueError('initial-EEF geometric reach failure')
+                states.append(scratch.qpos.copy());errors.append([pe,re])
+                margin=min(margin,float(np.min(np.minimum(q-limits[:,0],limits[:,1]-q))))
+                view=min(view,frustum_compatibility(m,scratch,target['pos'],ref.policy_cameras))
+            swept=check.path(states,['manipulate']*(len(states)-1));length=float(np.linalg.norm(np.diff(base_path,axis=0),axis=1).sum())
+            rec.update(hard_valid=bool(swept['valid']),reason='geometry_pass' if swept['valid'] else 'swept_failure',
+                minimum_continuous_clearance_m=float(swept.get('lower_bound_m',0)),minimum_manipulability_or_joint_margin=margin,
+                minimum_policy_view_compatibility=view,total_planned_base_path_m=length,
+                total_planned_time_s=length/(.015 if ref.args.task=='CloseDrawer' else .09),predicted_sweep=swept,
+                base_path=np.c_[base_path,np.full(len(base_path),goal[2])].tolist(),endpoint_errors=errors)
+        except Exception as exc:rec['reason']=str(exc)
+        candidates.append(rec)
+    assert np.array_equal(q0,live.qpos)
+    return dict(version=VERSION+'-collaborative',environment_step_calls=0,live_qpos_unchanged=True,proposal_count=5,candidates=candidates,
+        primary=rank_primary(candidates) if any(x['hard_valid'] for x in candidates) else None,
+        provenance='simulator-oracle geometry, observed initial EEF only; no policy or task rollout')
 
 
 def prefix_action(ref,plan,phase,index=0):
@@ -131,9 +170,17 @@ def prefix_action(ref,plan,phase,index=0):
     return action,dict(phase=phase,geometric_stow_position_error_m=pe,geometric_stow_rotation_error_rad=re,base_error_generalized=be,base_goal=goal.tolist())
 
 
-def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False):
+def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False,actuated_grip=False):
     m,d=ref.model_data();arm=ref.robot.part_controllers['right'];base=ref.robot.part_controllers['base'];qids,ad,limits=arm_indices(ref)
     bd=np.asarray(base.qvel_index);dofs=np.r_[bd,ad];site=ref.robot.eef_site_id['right'];dt=.05
+    grip=None
+    if actuated_grip:
+        gripper=ref.robot.gripper['right']
+        gj=np.asarray([mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_JOINT,n) for n in gripper.joints])
+        gq=m.jnt_qposadr[gj];gd=m.jnt_dofadr[gj];gl=m.jnt_range[gj]
+        directions=np.sign(np.where(abs(gl[:,1])>abs(gl[:,0]),gl[:,1],gl[:,0]))
+        grip=dict(qids=gq,dofs=gd,limits=gl,directions=directions)
+        dofs=np.r_[dofs,gd]
     jp=np.zeros((3,m.nv));jr=np.zeros_like(jp);mujoco.mj_jacSite(m,d,jp,jr,site);J=np.vstack([jp[:,dofs],jr[:,dofs]])
     ep=np.asarray(intent['pos'])-d.site_xpos[site]
     er=Rotation.from_matrix(np.asarray(intent['rot'])@d.site_xmat[site].reshape(3,3).T).as_rotvec()
@@ -142,13 +189,22 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     twist=np.r_[np.clip(ep*4,-.1,.1),np.clip(er*4,-.1,.1)]
     # The fixed base goal is planner output; only the frozen policy supplies EEF
     # intent. This is one convex tracking QP through the existing primitive.
-    augmented=np.vstack([J,np.c_[np.eye(3)*.1,np.zeros((3,len(ad)))]])
+    augmented=np.vstack([J,np.c_[np.eye(3)*.1,np.zeros((3,len(dofs)-3))]])
     target=np.r_[twist,desired_base*.1]
     lower=np.r_[np.full(3,-speed),np.maximum(-1.,(limits[:,0]+.01501-d.qpos[qids])/dt)]
     upper=np.r_[np.full(3,speed),np.minimum(1.,(limits[:,1]-.01501-d.qpos[qids])/dt)]
     if locked_base:lower[:3]=0.;upper[:3]=0.;desired_base[:]=0.;target[-3:]=0.
+    if grip is not None:
+        # Include the two physically actuated finger slides in the same
+        # distance constraints. Arm/base cannot change a rigid finger gap.
+        # Preserve the inherited 1mm solver buffer and 0.5mm actual sweep.
+        gv=-grip['directions']*np.sign(intent['grasp'])*.01
+        augmented=np.vstack([augmented,np.c_[np.zeros((2,10)),np.eye(2)]])
+        target=np.r_[target,gv]
+        lower=np.r_[lower,np.maximum(-.01,(gl[:,0]-d.qpos[gq])/dt)]
+        upper=np.r_[upper,np.minimum(.01,(gl[:,1]-d.qpos[gq])/dt)]
     if previous_velocity is not None:
-        acceleration=np.r_[np.full(3,.2),np.full(len(ad),2.)]
+        acceleration=np.r_[np.full(3,.2),np.full(len(ad),2.),np.full(2,.2) if grip is not None else np.empty(0)]
         lower=np.maximum(lower,previous_velocity-acceleration*dt);upper=np.minimum(upper,previous_velocity+acceleration*dt)
     fixture=ref.env.drawer if task=='CloseDrawer' else ref.env.door_fxtr
     if getattr(ref,'pi05_qp_geometry_model',None)!=id(m):
@@ -159,7 +215,8 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     inequalities=(rows,(.001-distances)/dt) if len(rows) else None
     velocity,receipt=velocity_level_qp(augmented,target,lower,upper,base_weight=1.,damping=.001,inequalities=inequalities)
     if not receipt['feasible']:raise QPProtectionStop('whole-body QP constraints infeasible')
-    predicted=d.qpos.copy();predicted[np.r_[base.qpos_index,qids]]+=velocity*dt
+    predicted=d.qpos.copy();controlled=np.r_[base.qpos_index,qids,grip['qids'] if grip is not None else np.empty(0,dtype=int)]
+    predicted[controlled]+=velocity*dt
     coupling_record=None
     if coupling is not None:
         proposed=float((coupling['matrix']@velocity)[0])*dt;fq=coupling['qpos'];joint=coupling['joint']
@@ -168,7 +225,7 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     swept=check.path([d.qpos.copy(),predicted],['manipulate'])
     if not swept['valid']:raise QPProtectionStop('whole-body predicted swept clearance failure')
     # Express the arm part of QP motion through the unchanged native OSC.
-    arm_twist=J[:,3:]@velocity[3:]
+    arm_twist=J[:,3:10]@velocity[3:10]
     point=dict(pos=d.site_xpos[site]+arm_twist[:3]*dt,rot=Rotation.from_rotvec(arm_twist[3:]*dt).as_matrix()@d.site_xmat[site].reshape(3,3),grasp=intent['grasp'])
     action,pe,re,be=mapped_action(ref,point,d.qpos[base.qpos_index]+velocity[:3]/1.5,arm_enabled=True)
     # QP output is velocity, not a tiny position-servo error. Preserve the
@@ -180,5 +237,11 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     theta=np.arctan2(ori[1,0],ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0])
     mapping=np.array([[-np.sin(theta),np.cos(theta),0],[np.cos(theta),np.sin(theta),0],[0,0,1]])
     action[7:10]=np.linalg.solve(mapping,goal)
-    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:]*dt).tolist(),observed_contact_coupling=coupling_record)
+    grip_record=None
+    if grip is not None:
+        goals=predicted[grip['qids']]
+        normalized=2*(goals-gl[:,0])/(gl[:,1]-gl[:,0])-1
+        grip_record=dict(target_qpos=goals.tolist(),normalized_position_goal=normalized.tolist(),velocity_m_s=velocity[10:].tolist(),
+            control='native gripper position goal; action0 preserves the goal; never assign live qpos',solver_buffer_m=.001)
+    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:10]*dt).tolist(),observed_contact_coupling=coupling_record,actuated_gripper=grip_record)
     return action,receipt,velocity
