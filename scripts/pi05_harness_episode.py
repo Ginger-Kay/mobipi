@@ -37,7 +37,8 @@ def finish_zero(ref,status):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
     p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag')
-    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');a=p.parse_args()
+    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2'],default='A1');a=p.parse_args()
+    if a.A_private_version=='A2' and a.route!='A':raise ValueError('A2 only applies to route A')
     roster=json.loads((a.roster or a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
     evaluation=a.evaluation_tag or f'policy-dev-step-{a.checkpoint_step}{version_suffix}'
@@ -80,6 +81,9 @@ def main():
         driver=None
         if a.route!='E':
             from mobiwam.pi05_route import RouteDriver
+            if a.A_private_version=='A2':
+                from mobiwam.pi05_A2 import A2Driver
+                RouteDriver=A2Driver
             driver=RouteDriver(ref,a.route);write_json(out/'route-plan.json',driver.plan)
         ref.begin(restore_source=False);attempt=ref.recording['path'];guard=FormalSubstepMonitor(ref,native['fixture_name'])
         deadline=wall_start+1200;start_time=float(d.time);max_drift=0.;raw=None
@@ -95,6 +99,9 @@ def main():
                     np.savez_compressed(out/f'query-{queries:04d}.npz',**inputs,**answer,base_world_p=anchor['base_world_p'],base_world_R=anchor['base_world_R'],eef_world_p=anchor['eef_world_p'],eef_world_R=anchor['eef_world_R'],query_sim_time=anchor['sim_time'])
                     assert raw.shape==(10,32) and np.isfinite(raw).all()
                 mapper=execute_static if a.adapter_version=='v1' else execute_projected
+                if a.A_private_version=='A2':
+                    from mobiwam.pi05_A2 import execute_A2
+                    mapper=execute_A2
                 try:
                     if not legal:raise QPProtectionStop('no hard-valid geometric route candidate')
                     if not manipulating:
@@ -111,8 +118,11 @@ def main():
                 controller_targets=dict(arm_nullspace_goal=arm.initial_joint.tolist(),native_gripper_current_action=ref.robot.gripper['right'].current_action.tolist())
                 guard.set_boundary(step,control_phase);initial=ref.integration().copy()
                 try:
-                    with guard:
-                        with GuardedIntegration(ref.env.sim,d,margin,lite_physics=ref.env.lite_physics,step=step,phase=control_phase):ref.step(actual)
+                    from contextlib import nullcontext
+                    if a.A_private_version=='A2':driver.boundary(np.asarray(point.get('projection',{}).get('qp',{}).get('velocity',np.zeros(3)))[:3])
+                    with (driver if a.A_private_version=='A2' else nullcontext()):
+                        with guard:
+                            with GuardedIntegration(ref.env.sim,d,margin,lite_physics=ref.env.lite_physics,step=step,phase=control_phase):ref.step(actual)
                 except (FormalSafetyStop,JointMarginStop) as exc:
                     np.savez_compressed(attempt/'partial-control-step.npz',initial_integration=initial,terminal_integration=ref.integration(),attempted_action=actual)
                     write_json(attempt/'safety-stop.json',dict(at=now(),step=step,failure=exc.failure));status='native_forbidden_contact_stop' if isinstance(exc,FormalSafetyStop) else 'joint_margin_stop'
@@ -135,6 +145,7 @@ def main():
             else:status='policy_budget_stop_120s';ref.finish(status)
         write_json(attempt/'formal-native-substeps-receipt.json',guard.save(attempt));write_json(attempt/'joint-margin-monitor.json',margin.receipt())
         semantics=driver.receipt(queries) if driver else dict(route='E',constant_base_target=True)
+        if a.A_private_version=='A2':driver.save_native(attempt)
         write_json(out/'route-semantics.json',semantics)
         semantic_pass=(a.route=='E' or semantics.get('D_fresh_query_after_settle',False) or semantics.get('A_semantics_observed',False))
         result=json.loads((attempt/'result.json').read_text());write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False))
