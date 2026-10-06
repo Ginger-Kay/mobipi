@@ -170,7 +170,7 @@ def prefix_action(ref,plan,phase,index=0):
     return action,dict(phase=phase,geometric_stow_position_error_m=pe,geometric_stow_rotation_error_rad=re,base_error_generalized=be,base_goal=goal.tolist())
 
 
-def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False,actuated_grip=False):
+def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False,actuated_grip=False,coupled_grip=False):
     m,d=ref.model_data();arm=ref.robot.part_controllers['right'];base=ref.robot.part_controllers['base'];qids,ad,limits=arm_indices(ref)
     bd=np.asarray(base.qvel_index);dofs=np.r_[bd,ad];site=ref.robot.eef_site_id['right'];dt=.05
     grip=None
@@ -181,7 +181,18 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
         directions=np.sign(np.where(abs(gl[:,1])>abs(gl[:,0]),gl[:,1],gl[:,0]))
         grip=dict(qids=gq,dofs=gd,limits=gl,directions=directions)
         dofs=np.r_[dofs,gd]
+    transform=np.eye(len(dofs));offset=np.zeros(len(dofs))
+    if coupled_grip:
+        if grip is None:raise ValueError('coupled gripper requires actuated grip')
+        # Native Panda consumes one aperture and opposite finger goals. Keep
+        # that controller manifold, including its physical position bounds.
+        aperture=float(np.mean(directions*d.qpos[gq]))
+        aperture_low=float(max(np.minimum(directions*gl[:,0],directions*gl[:,1])))
+        aperture_high=float(min(np.maximum(directions*gl[:,0],directions*gl[:,1])))
+        transform=np.zeros((12,11));transform[:10,:10]=np.eye(10);transform[10:,10]=directions
+        offset[10:]=directions*aperture-d.qpos[gq]
     jp=np.zeros((3,m.nv));jr=np.zeros_like(jp);mujoco.mj_jacSite(m,d,jp,jr,site);J=np.vstack([jp[:,dofs],jr[:,dofs]])
+    J=J@transform
     ep=np.asarray(intent['pos'])-d.site_xpos[site]
     er=Rotation.from_matrix(np.asarray(intent['rot'])@d.site_xmat[site].reshape(3,3).T).as_rotvec()
     task=ref.args.task;speed=.015 if task=='CloseDrawer' else .09
@@ -189,7 +200,8 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     twist=np.r_[np.clip(ep*4,-.1,.1),np.clip(er*4,-.1,.1)]
     # The fixed base goal is planner output; only the frozen policy supplies EEF
     # intent. This is one convex tracking QP through the existing primitive.
-    augmented=np.vstack([J,np.c_[np.eye(3)*.1,np.zeros((3,len(dofs)-3))]])
+    width=transform.shape[1]
+    augmented=np.vstack([J,np.c_[np.eye(3)*.1,np.zeros((3,width-3))]])
     target=np.r_[twist,desired_base*.1]
     lower=np.r_[np.full(3,-speed),np.maximum(-1.,(limits[:,0]+.01501-d.qpos[qids])/dt)]
     upper=np.r_[np.full(3,speed),np.minimum(1.,(limits[:,1]-.01501-d.qpos[qids])/dt)]
@@ -198,13 +210,19 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
         # Include the two physically actuated finger slides in the same
         # distance constraints. Arm/base cannot change a rigid finger gap.
         # Preserve the inherited 1mm solver buffer and 0.5mm actual sweep.
-        gv=-grip['directions']*np.sign(intent['grasp'])*.01
-        augmented=np.vstack([augmented,np.c_[np.zeros((2,10)),np.eye(2)]])
-        target=np.r_[target,gv]
-        lower=np.r_[lower,np.maximum(-.01,(gl[:,0]-d.qpos[gq])/dt)]
-        upper=np.r_[upper,np.minimum(.01,(gl[:,1]-d.qpos[gq])/dt)]
+        if coupled_grip:
+            augmented=np.vstack([augmented,np.r_[np.zeros(10),1.][None]])
+            target=np.r_[target,-np.sign(intent['grasp'])*.01]
+            lower=np.r_[lower,max(-.01,(aperture_low-aperture)/dt)]
+            upper=np.r_[upper,min(.01,(aperture_high-aperture)/dt)]
+        else:
+            gv=-grip['directions']*np.sign(intent['grasp'])*.01
+            augmented=np.vstack([augmented,np.c_[np.zeros((2,10)),np.eye(2)]])
+            target=np.r_[target,gv]
+            lower=np.r_[lower,np.maximum(-.01,(gl[:,0]-d.qpos[gq])/dt)]
+            upper=np.r_[upper,np.minimum(.01,(gl[:,1]-d.qpos[gq])/dt)]
     if previous_velocity is not None:
-        acceleration=np.r_[np.full(3,.2),np.full(len(ad),2.),np.full(2,.2) if grip is not None else np.empty(0)]
+        acceleration=np.r_[np.full(3,.2),np.full(len(ad),2.),np.full(1 if coupled_grip else 2,.2) if grip is not None else np.empty(0)]
         lower=np.maximum(lower,previous_velocity-acceleration*dt);upper=np.minimum(upper,previous_velocity+acceleration*dt)
     fixture=ref.env.drawer if task=='CloseDrawer' else ref.env.door_fxtr
     if getattr(ref,'pi05_qp_geometry_model',None)!=id(m):
@@ -212,14 +230,15 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     check=ref.pi05_qp_geometry
     coupling=observed_articulation_coupling(ref,dofs) if co_motion and intent['grasp']>0 else None
     rows,distances=coupled_distance_rows(check,d.qpos.copy(),dofs,coupling) if coupling is not None else distance_rows(check,d.qpos.copy(),'manipulate',dofs)
-    inequalities=(rows,(.001-distances)/dt) if len(rows) else None
+    inequalities=(rows@transform,(.001-distances-rows@offset)/dt) if len(rows) else None
     velocity,receipt=velocity_level_qp(augmented,target,lower,upper,base_weight=1.,damping=.001,inequalities=inequalities)
     if not receipt['feasible']:raise QPProtectionStop('whole-body QP constraints infeasible')
     predicted=d.qpos.copy();controlled=np.r_[base.qpos_index,qids,grip['qids'] if grip is not None else np.empty(0,dtype=int)]
-    predicted[controlled]+=velocity*dt
+    physical_delta=transform@velocity*dt+offset
+    predicted[controlled]+=physical_delta
     coupling_record=None
     if coupling is not None:
-        proposed=float((coupling['matrix']@velocity)[0])*dt;fq=coupling['qpos'];joint=coupling['joint']
+        proposed=float((coupling['matrix']@physical_delta)[0]);fq=coupling['qpos'];joint=coupling['joint']
         predicted[fq]=np.clip(predicted[fq]+proposed,*m.jnt_range[joint])
         coupling_record=dict(joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joint),pads=list(coupling['pads'].values()),predicted_fixture_delta=float(predicted[fq]-d.qpos[fq]),note=coupling['note'])
     swept=check.path([d.qpos.copy(),predicted],['manipulate'])
@@ -241,7 +260,8 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     if grip is not None:
         goals=predicted[grip['qids']]
         normalized=2*(goals-gl[:,0])/(gl[:,1]-gl[:,0])-1
-        grip_record=dict(target_qpos=goals.tolist(),normalized_position_goal=normalized.tolist(),velocity_m_s=velocity[10:].tolist(),
+        grip_record=dict(target_qpos=goals.tolist(),normalized_position_goal=normalized.tolist(),velocity_m_s=(transform@velocity)[10:].tolist(),
+            coupled_native_aperture=bool(coupled_grip),aperture_velocity_m_s=float(velocity[10]) if coupled_grip else None,
             control='native gripper position goal; action0 preserves the goal; never assign live qpos',solver_buffer_m=.001)
     receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:10]*dt).tolist(),observed_contact_coupling=coupling_record,actuated_gripper=grip_record)
     return action,receipt,velocity

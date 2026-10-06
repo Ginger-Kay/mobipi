@@ -28,7 +28,7 @@ def now():return datetime.now(timezone.utc).isoformat()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
-    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4'],default='v1');p.add_argument('--evaluation-tag');a=p.parse_args()
+    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5'],default='v1');p.add_argument('--evaluation-tag');a=p.parse_args()
     roster=json.loads((a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
     evaluation=a.evaluation_tag or f'policy-dev-step-{a.checkpoint_step}{version_suffix}'
@@ -43,6 +43,8 @@ def main():
     for name in ('model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json'):shutil.copy2(src/name,source/name)
     shutil.copy2(src.parent/'env_config.json',out/'env_config.json')
     write_json(out/'process.json',dict(started_at=started,pid=os.getpid(),argv=__import__('sys').argv,python=__import__('sys').executable,code_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip(),
+        source_worktree_clean=not bool(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'status','--porcelain'],text=True).strip()),
+        source_module_sha256={n:hashlib.sha256((Path(__file__).resolve().parents[1]/n).read_bytes()).hexdigest() for n in ('scripts/pi05_harness_episode.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py','src/mobiwam/pi05_route.py')},
         task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261006,evaluation_seed=20261006,environment_seed=slot['environment_seed']))
     ref=None;attempt=None;guard=None;margin=None;queries=0;steps=0;query_seconds=0.;status='engineering_unknown'
     try:
@@ -89,7 +91,7 @@ def main():
                         actual,prefix=driver.prefix();point=dict(pos=np.zeros(3),rot=np.eye(3),grasp=-1.,projection=dict(geometric_prefix=prefix,no_manipulation_teacher=True))
                     else:
                         goal,locked=driver.base_control() if driver else (base_target,True)
-                        actual,point=mapper(ref,raw[manip_step%5],anchor,goal,co_motion=True,actuated_grip=a.adapter_version=='v4',locked_base=locked) if a.adapter_version in ('v3','v4') else mapper(ref,raw[manip_step%5],anchor,goal)
+                        actual,point=mapper(ref,raw[manip_step%5],anchor,goal,co_motion=True,actuated_grip=a.adapter_version in ('v4','v5'),locked_base=locked,coupled_grip=a.adapter_version=='v5') if a.adapter_version in ('v3','v4','v5') else mapper(ref,raw[manip_step%5],anchor,goal)
                 except QPProtectionStop as exc:
                     status='qp_protective_stop' if legal else 'X_no_legal_candidate';write_json(attempt/'qp-protective-stop.json',dict(at=now(),step=step,reason=str(exc),actual_native_steps=steps))
                     if steps:ref.finish(status)
@@ -100,7 +102,8 @@ def main():
                         write_json(attempt/'result.json',dict(started_at=record['started'],ended_at=now(),steps=0,checker_success=False,reason=status,usable_scientific_outcome=True,media='zero-action previews only; no executed video'))
                         ref.recording=None
                     break
-                control_phase='precontact' if driver and not manipulating and driver.phase in ('navigate','settle') else 'manipulate'
+                control_phase='precontact' if driver and not manipulating and prefix['phase']=='navigate' else 'manipulate'
+                controller_targets=dict(arm_nullspace_goal=arm.initial_joint.tolist(),native_gripper_current_action=ref.robot.gripper['right'].current_action.tolist())
                 guard.set_boundary(step,control_phase);initial=ref.integration().copy()
                 try:
                     with guard:
@@ -115,6 +118,7 @@ def main():
                     adapter_version=a.adapter_version,policy_raw_normalized=answer['normalized'][manip_step%5].tolist() if manipulating else None,
                     policy_nominal=raw[manip_step%5].tolist() if manipulating else None,world_target=dict(pos=point['pos'].tolist(),rot=point['rot'].tolist(),grasp=point['grasp']) if manipulating else None,
                     projection=point.get('projection'),actual_action=actual.tolist(),base_locked_target=base_target.tolist(),base_generalized_drift=drift,
+                    auxiliary_controller_targets_before_step=controller_targets,
                     actual_base_path_m=base_path,route_feedback=route_feedback,sim_time=float(d.time),checker_success=bool(ref.env._check_success()))
                 if manipulating:manip_step+=1
                 log.write(json.dumps(row)+'\n');log.flush()

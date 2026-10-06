@@ -67,7 +67,7 @@ def execute_static(ref,action,anchor,base_target):
     return actual,point
 
 
-def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_grip=False,locked_base=True):
+def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_grip=False,locked_base=True,coupled_grip=False):
     """Native constrained arm QP and existing palm guard, with locked base."""
     from mobiwam.pi05_motion import whole_body_action
     from reference_geometry import PalmClearance
@@ -82,7 +82,7 @@ def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_gri
             actual=np.zeros(12);actual[6]=grip;actual[11]=-1.;ref.pi05_previous_velocity=np.zeros(10)
             point['projection']=dict(gripper=grip_record,body_hold=True,role='physical opening goal resolves finger constraints; no qpos injection')
             return actual,point
-    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=locked_base,co_motion=co_motion,actuated_grip=actuated_grip)
+    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=locked_base,co_motion=co_motion,actuated_grip=actuated_grip,coupled_grip=coupled_grip)
     ref.pi05_previous_velocity=velocity
     ref.robot.part_controllers['right'].initial_joint=np.asarray(projection['arm_nullspace_goal'])
     if actuated_grip:
