@@ -3,20 +3,16 @@ import argparse,csv,json
 from pathlib import Path
 from datetime import datetime,timezone
 import numpy as np
+from mobiwam.pi05_outcome_metrics import native_metrics
 
 def outcome(receipt):
     if receipt is None:return dict(status='unrun',native_success=None,safety_success=None,collision=None,progress=None,path_m=None,duration_s=None,receipt=None)
     q=json.loads(receipt.read_text());attempt=Path(q['attempt']);audit=attempt/'sprint-safety-audit.json';safe=json.loads(audit.read_text()) if audit.exists() else {}
     usable=q['usable_scientific_outcome'] and not q['status'].startswith('X_')
     success=(safe.get('safety_qualified_success') if q['native_success'] else False) if usable else None
-    z=np.load(attempt/'formal-native-substeps.npz',allow_pickle=False);trace=attempt/'trace.jsonl';progress=None
-    if q['steps'] and trace.exists():
-        rows=trace.read_text().splitlines();first=json.loads(rows[0]);last=json.loads(rows[-1]);initial=float(first['before']['target']['door']);terminal=float(last['after']['target']['door'])
-        if initial>1e-6:progress=float(np.clip((initial-terminal)/initial,0,1))
-    elif len(z['phases'])==0:progress=0.
+    z=np.load(attempt/'formal-native-substeps.npz',allow_pickle=False);metrics=native_metrics(attempt,q['task'],z)
     contact=json.loads((attempt/'formal-native-substeps-receipt.json').read_text())
-    return dict(status=q['status'],native_success=q['native_success'] if usable else None,safety_success=success,collision=(contact.get('forbidden_contact') is not None) if usable else None,progress=progress,
-        path_m=float(np.linalg.norm(np.diff(z['qpos'][:,:2],axis=0),axis=1).sum()),duration_s=float(z['sim_time'][-1]-z['sim_time'][0]),receipt=str(receipt))
+    return dict(status=q['status'],native_success=q['native_success'] if usable else None,safety_success=success,collision=(contact.get('forbidden_contact') is not None) if usable else None,**metrics,receipt=str(receipt))
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args();r=a.run

@@ -58,7 +58,7 @@ def main():
     bound_paths=['policy/frozen-public-components.json','policy/collection-compatibility.json','policy/harness-route-release.json','data/paired-source-roster.json','training/dataset-binding.json',
         'runtime/mobipi-v6-collection/scripts/pi05_harness_episode.py','runtime/mobipi-v6-collection/src/mobiwam/pi05_adapter.py','runtime/mobipi-v6-collection/src/mobiwam/pi05_grip_projection.py',
         'runtime/mobipi-v6-collection/src/mobiwam/pi05_motion.py','runtime/mobipi/src/mobiwam/sim_sprint_learning.py','runtime/mobipi/src/mobiwam/scene004.py',
-        'runtime/mobipi/scripts/pi05_comparison_inputs.py','runtime/mobipi/scripts/pi05_final_queue.py','runtime/mobipi/scripts/sim_sprint_safety.py']
+        'runtime/mobipi/scripts/pi05_comparison_inputs.py','runtime/mobipi/scripts/pi05_final_queue.py','runtime/mobipi/scripts/sim_sprint_safety.py','runtime/mobipi/src/mobiwam/pi05_outcome_metrics.py']
     provenance=dict(file_sha256={path:hashlib.sha256((r/path).read_bytes()).hexdigest() for path in bound_paths},
         code_commits={name:subprocess.check_output(['git','-C',str(r/'runtime'/name),'rev-parse','HEAD'],text=True).strip() for name in ['mobipi','mobipi-v6','mobipi-v6-collection','openpi']},
         inference_weights=json.loads((r/'preflight/frozen-policy-files.json').read_text()),

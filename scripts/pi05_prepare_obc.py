@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime,timezone
 import numpy as np
 from mobiwam.sim_sprint_learning import require_group_split,ROUTES
+from mobiwam.pi05_outcome_metrics import native_metrics
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args();r=a.run
@@ -20,16 +21,8 @@ def main():
         y=np.full(5,np.nan,np.float32);mask=np.zeros(5,bool)
         if q['status']!='X_no_legal_candidate' and q['usable_scientific_outcome']:
             y[0]=q['native_success'];y[1]=monitor.get('forbidden_contact') is not None;mask[:2]=True
-            trace=attempt/'trace.jsonl'
-            if q['steps'] and trace.exists():
-                lines=trace.read_text().splitlines();first=json.loads(lines[0]);last=json.loads(lines[-1])
-                before=float(first['before']['target']['door']);after=float(last['after']['target']['door'])
-                if before>1e-6:y[2]=np.clip((before-after)/before,0,1);mask[2]=True
-            elif len(z['phases'])==0:y[2]=0.;mask[2]=True
-            # PandaOmron's two allocation-native base slide coordinates are
-            # verified by the preflight/controller binding; no fixture coords.
-            y[3]=float(np.linalg.norm(np.diff(z['qpos'][:,:2],axis=0),axis=1).sum())
-            y[4]=float(z['sim_time'][-1]-z['sim_time'][0]);mask[3:]=True
+            metrics=native_metrics(attempt,q['task'],z)
+            y[2:]=[metrics['progress'],metrics['path_m'],metrics['duration_s']];mask[2:]=True
         audit=attempt/'sprint-safety-audit.json';safe=json.loads(audit.read_text()) if audit.exists() else {}
         records.append(dict(slot=q['slot'],route=q['route'],role=slot['role'],parent_group=q['parent_group'],config_id=q['config_id'],family_id=q['family_id'],
             task=q['task'],status=q['status'],X=np.load(Xpath,allow_pickle=False),y=y,mask=mask,receipt=str(receipt),
