@@ -53,11 +53,20 @@ def main():
         if not rows:continue
         np.savez_compressed(out/(name+'.npz'),X=np.stack([x['X'] for x in rows]),y=np.stack([x['y'] for x in rows]),mask=np.stack([x['mask'] for x in rows]),
             group_id=np.array([x['parent_group'] for x in rows]),route=np.array([x['route'] for x in rows]),task=np.array([x['task'] for x in rows]))
+    route_diagnostics={}
+    for role in ('train','dev'):
+        byparent={}
+        for x in records:
+            if x['role']==role and x['mask'][0]:byparent.setdefault(x['parent_group'],{})[x['route']]=bool(x['y'][0])
+        common=[v for v in byparent.values() if all(route in v for route in ('E','D'))]
+        route_diagnostics[role]=dict(native_success_by_parent=byparent,E_D_common_parents=len(common),D_success_E_failure=sum(v['D'] and not v['E'] for v in common),
+            E_success_D_failure=sum(v['E'] and not v['D'] for v in common),native_oracle_gain_over_E=sum(any(v.values()) and not v.get('E',False) for v in byparent.values()),
+            qualification='native outcomes only; full safety audits remain separate; missing A is unrun')
     binding=dict(at=datetime.now(timezone.utc).isoformat(),controller='frozen_pi05',policy_checkpoint=frozen['policy_checkpoint'],public_components='policy/frozen-public-components.json',
         feature_version='geometry-prefix-v2',schema='1024 context+21 measured geometric prefix+3 route indicators',train_parent_groups=len(groups),supervised_train_routes=sorted(routes),
         train_records=len(train),dev_records=len(dev),final_labels_accessed=False,old_outcomes_used=False,unknown_labels='NaN and mask false; no outcome substitution',
         scaler_input='all three preoutcome routes of train-only participating parents; includes masked unrun rows, no outcome fill',
         records=[{k:v for k,v in x.items() if k not in ('X','y','mask')}|dict(y=[float(v) if m else None for v,m in zip(x['y'],x['mask'])],mask=x['mask'].tolist()) for x in records],
-        train_sha256=hashlib.sha256((out/'train-only.npz').read_bytes()).hexdigest(),formal_train_ready=False)
+        train_sha256=hashlib.sha256((out/'train-only.npz').read_bytes()).hexdigest(),pre_fit_route_diagnostics=route_diagnostics,formal_train_ready=False)
     (out/'dataset-binding.json').write_text(json.dumps(binding,indent=2)+'\n');print(json.dumps({k:v for k,v in binding.items() if k!='records'}),flush=True)
 if __name__=='__main__':main()

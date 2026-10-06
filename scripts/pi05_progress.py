@@ -41,22 +41,29 @@ def main():
     if readiness.exists():
         summary['task_readiness']={k:v['passed'] for k,v in json.loads(readiness.read_text())['tasks'].items()}
         (paper/'progress-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
-    phase=json.loads((r/'phase-state.json').read_text());phase.update(updated_at=now,agent_last_active_at=now,phase='P1_native_capability_development',
+    current_phase='P4_frozen_prospective_and_online' if (r/'evaluation/final-freeze.json').exists() else 'P3_fixed_OBC_fits' if (r/'training/dataset-binding.json').exists() else 'P3_partial_CloseDrawer_paired' if summary['paired_valid'] else 'P1_native_capability_development'
+    phase=json.loads((r/'phase-state.json').read_text());phase.update(updated_at=now,agent_last_active_at=now,phase=current_phase,
         development_valid_episodes=summary['valid_development'],code_commits={k:subprocess.check_output(['git','-C',str(r/'runtime'/k),'rev-parse','HEAD'],text=True).strip() for k in ('control','mobipi','openpi')})
     for key,fit in [('fit1','20261006T154000Z-unified-dual-lora-fit1'),('relative-fit2','20261006T181000Z-query-relative-fit2')]:
         path=r/'policy'/fit;status=path/'status.json';result=path/'result.json'
         if status.exists():phase['jobs'].setdefault(key,{}).update(actual=json.loads(status.read_text()))
         if result.exists():phase['jobs'].setdefault(key,{}).update(status='completed',result=str(result.relative_to(r)),actual_result=json.loads(result.read_text()))
-    phase['development_rounds']=len([d for d in (r/'episodes').iterdir() if d.is_dir() and d.name.startswith(('policy-dev-step','relative-fit2-step')) and list(d.glob('slot-*/engineering-attempt-*/process.json'))])
+    phase['development_rounds']=len([d for d in (r/'episodes').iterdir() if d.is_dir() and d.name.startswith(('policy-dev-step','relative-fit2-step','harness-dev-v6-A2','harness-dev-v6-A3')) and list(d.glob('slot-*/engineering-attempt-*/process.json'))])
     phase['paired_valid_episodes']=summary['paired_valid'];phase['online_valid_episodes']=summary['online_valid']
     for d in (r/'episodes').iterdir():
         if not d.is_dir():continue
         receipts=list(d.glob('slot-*/engineering-attempt-*/completed.json'))
         processes=list(d.glob('slot-*/engineering-attempt-*/process.json'))
         audited=sum((Path(json.loads(p.read_text())['attempt'])/'sprint-safety-audit.json').exists() for p in receipts)
-        phase['jobs'][d.name]=dict(status='audited' if len(receipts)==6 and audited==6 else 'outcomes_recorded_audits_pending' if len(receipts)==6 else 'running',
-            declared_budget=6,started_slots=len(processes),completed_receipts=len(receipts),audited=audited)
-    phase['next_action']='Observe immutable v5 and native-response v6 closed loops; use2/3 safe readiness per task before paired data; continue D/A and fixed OBC preparation without old labels'
+        budget=6
+        if d.name.startswith(('paired-v6-final-','online-v6-')):
+            budget=len(json.loads((r/'evaluation/final-freeze.json').read_text())['predictions'])
+        phase['jobs'][d.name]=dict(status='audited' if len(receipts)==budget and audited==budget else 'outcomes_recorded_audits_pending' if len(receipts)==budget else 'running',
+            declared_budget=budget,started_slots=len(processes),completed_receipts=len(receipts),audited=audited)
+    for name in ('MLP','Linear'):
+        done=r/'training'/name/'completed.json'
+        if done.exists():phase['jobs']['OBC-'+name]=dict(status='completed',result=str(done.relative_to(r)),actual=json.loads(done.read_text()))
+    phase['next_action']='Complete the fixed OBC fits, freeze all prospective selections before outcomes, execute released routes and three real online methods, then deliver full failures/media/costs by01:00UTC'
     phase['engineering_issues']['CONVERT-ASSET-001']['status']='resolved; all failed versions retained'
     phase['engineering_issues']['TRAIN-NNX-001']['status']='resolved; both50step diagnostics passed'
     phase['engineering_issues']['E-CONTROL-001'].update(status='v3 Drawer1/3 audited safe success; later relative/native-response versions remain separate',revision_round=phase['development_rounds'])
