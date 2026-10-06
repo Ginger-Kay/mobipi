@@ -3,11 +3,18 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+import random
 from mobiwam.dr_v04_r3_learning import source_weights, support, fit_scaler, scale
 
 SCALES=np.array([1.,1.,1.,2.,120.])
 HEADS=['success','collision','progress','base_path_m','terminal_duration_s']
 ROUTES=['E','D','A']
+
+def restore_fit(model,optimizer,scheduler,checkpoint):
+    model.load_state_dict(checkpoint['model']);optimizer.load_state_dict(checkpoint['optimizer']);scheduler.load_state_dict(checkpoint['scheduler'])
+    rng=checkpoint['rng'];torch.set_rng_state(rng['torch']);np.random.set_state(rng['numpy']);random.setstate(rng['python'])
+    if torch.cuda.is_available() and rng['cuda']:torch.cuda.set_rng_state_all(rng['cuda'])
+    return int(checkpoint['step'])
 
 def require_group_split(train, validation):
     if set(train)&set(validation):raise ValueError('Source appears in both splits')

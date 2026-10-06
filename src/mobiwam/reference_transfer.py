@@ -194,7 +194,7 @@ def compile_transferred_path(ref, attempt):
         old.qpos[:] = state['qpos']
         mujoco.mj_forward(old_model, old)
         old_q = float(old.qpos[old_address])
-        if ref.args.task == 'CloseDrawer':
+        if ref.args.task == 'CloseDrawer' or getattr(ref,'sprint_closed_progress',False):
             new_q = _map_drawer_joint_by_closed_progress(
                 old_q, old_initial, new_initial, old_range, new_range)
             target_q = new_q
@@ -246,6 +246,7 @@ def compile_transferred_path(ref, attempt):
         old_site_rot = old.site_xmat[old_site].reshape(3, 3)
         target_opening = (_drawer_opening_from_joint(new_q, drawer_slide_extent)
                           if ref.args.task == 'CloseDrawer' else
+                          float(np.clip(-new_q/(np.pi/2),0,1)) if getattr(ref,'sprint_closed_progress',False) else
                           float(np.clip(new_opening + float(state['target']['door']) - old_opening, 0, 1)))
         point = dict(reference_step=i,
                      pos=new_handle_pos + rotation @ (old_site_pos - old_handle_pos),

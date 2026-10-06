@@ -11,12 +11,13 @@ from mobiwam.reference_transfer import compile_transferred_path
 
 def load(p):return json.loads(Path(p).read_text())
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--group',required=True);a=ap.parse_args();r=a.run
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--group',required=True);ap.add_argument('--attempt',type=int,default=1);a=ap.parse_args();r=a.run
     slots=load(r/'freeze.json')['main_slots'];slot=next(x for x in slots if x['group_id']==a.group)
     assert slot['split']=='development-validation'
     mirrors=load('/share/personal/chensiyu/haokaijiang/MobiWAM/artifacts/MMWAM-OBC-002-DR/DR-v0.4/20260930T115330Z-live-preflight/reference-mirror-receipt.json')['records']
     reference=Path(next(x for x in mirrors if x['task']==slot['task'])['mirror_attempt'])
-    out=r/'reference-plans'/a.group;out.mkdir(parents=True,exist_ok=False);source=Path(slot['source']);dest=out/source.name;dest.mkdir()
+    out=r/'reference-plans'/a.group if a.attempt==1 else r/'reference-plans'/f'repair-{a.attempt}'/a.group
+    out.mkdir(parents=True,exist_ok=False);source=Path(slot['source']);dest=out/source.name;dest.mkdir()
     for name in ('model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json'):shutil.copy2(source/name,dest/name)
     shutil.copy2(source.parent/'env_config.json',out/'env_config.json')
     ref=None;t0=time.monotonic()
@@ -27,13 +28,15 @@ def main():
         ref=Reference(argparse.Namespace(output=str(out),task=slot['task'],layout=1,style=0,seed=slot['environment_seed'],self_test=True,
             source=str(dest),replay_attempt=None,resume_attempt=None,width=1280,height=720))
         restore_saved_integration(ref);before=ref.integration().copy();ref.dock_proposal_cap=5
+        ref.sprint_closed_progress=a.attempt>1
         points,transfer=compile_transferred_path(ref,reference);write_json(out/'transfer-receipt.json',transfer);write_json(out/'waypoints.json',points)
         ref.dock_plan=plan_dock(ref,points);assert len(ref.dock_plan['candidates'])<=5
         candidates=compile_candidates(ref,points,ref.dock_plan,out/'planning');write_json(out/'dock-plan.json',ref.dock_plan)
         error=float(np.max(abs(ref.integration()-before),initial=0));assert error<=1e-6
         write_json(out/'completed.json',dict(ended_at=datetime.now(timezone.utc).isoformat(),task=slot['task'],group_id=a.group,
             source=str(source),reference=str(reference),routes=[dict(route=x['route'],hard_valid=x['hard_valid']) for x in candidates['records']],
-            restore_error=error,preflight_seconds=time.monotonic()-t0,actual_route_outcomes=0,formal_train_ready=False))
+            restore_error=error,preflight_seconds=time.monotonic()-t0,actual_route_outcomes=0,
+            target_joint_mapping='closed-progress-v1' if ref.sprint_closed_progress else 'inherited-task-specific-transfer',formal_train_ready=False))
         print(json.dumps(load(out/'completed.json')),flush=True)
     except Exception as e:
         write_json(out/'failure.json',dict(ended_at=datetime.now(timezone.utc).isoformat(),exception=repr(e),traceback=traceback.format_exc(),

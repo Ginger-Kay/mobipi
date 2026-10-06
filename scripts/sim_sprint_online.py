@@ -26,7 +26,8 @@ def main():
     assert load(r/'policy/readiness.json')['main_controller']=='reference_fallback'
     assert (r/'training/MLP/completed.json').exists() and (r/'comparison/final-prediction-receipt.json').exists()
     slot=next(x for x in load(r/'freeze.json')['main_slots'] if x['group_id']==a.group);assert slot['split']=='development-validation'
-    planning_root=r/'reference-plans'/a.group;out=r/'episodes'/a.group/a.method;out.mkdir(parents=True,exist_ok=False)
+    bindings=load(r/'reference-plans/current-bindings.json') if (r/'reference-plans/current-bindings.json').exists() else {}
+    planning_root=Path(bindings.get(a.group,str(r/'reference-plans'/a.group)));out=r/'episodes'/a.group/a.method;out.mkdir(parents=True,exist_ok=False)
     write_json(out/'process.json',dict(started_at=now(),pid=os.getpid(),argv=__import__('sys').argv,
         code_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip(),
         controller='inherited reference feedback; frozen BC not ready; L1 only',method=a.method,group_id=a.group))
