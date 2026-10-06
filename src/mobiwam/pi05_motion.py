@@ -16,6 +16,11 @@ VERSION='pi05-geometric-motion-v1'
 DOCK_OFFSETS=np.array([[.075,0.],[-.075,0.],[0.,.075],[0.,-.075],[.075,.075]])
 
 
+class QPProtectionStop(RuntimeError):
+    """Scientific protective stop from an infeasible policy intent."""
+    pass
+
+
 def frustum_compatibility(model,data,point,cameras):
     visible=[]
     for camera in cameras:
@@ -87,7 +92,7 @@ def prefix_action(ref,plan,phase,index=0):
     return action,dict(phase=phase,geometric_stow_position_error_m=pe,geometric_stow_rotation_error_rad=re,base_error_generalized=be,base_goal=goal.tolist())
 
 
-def whole_body_action(ref,intent,base_goal,previous_velocity=None):
+def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False):
     m,d=ref.model_data();arm=ref.robot.part_controllers['right'];base=ref.robot.part_controllers['base'];qids,ad,limits=arm_indices(ref)
     bd=np.asarray(base.qvel_index);dofs=np.r_[bd,ad];site=ref.robot.eef_site_id['right'];dt=.05
     jp=np.zeros((3,m.nv));jr=np.zeros_like(jp);mujoco.mj_jacSite(m,d,jp,jr,site);J=np.vstack([jp[:,dofs],jr[:,dofs]])
@@ -102,6 +107,7 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None):
     target=np.r_[twist,desired_base*.1]
     lower=np.r_[np.full(3,-speed),np.maximum(-1.,(limits[:,0]+.01501-d.qpos[qids])/dt)]
     upper=np.r_[np.full(3,speed),np.minimum(1.,(limits[:,1]-.01501-d.qpos[qids])/dt)]
+    if locked_base:lower[:3]=0.;upper[:3]=0.;desired_base[:]=0.;target[-3:]=0.
     if previous_velocity is not None:
         acceleration=np.r_[np.full(3,.2),np.full(len(ad),2.)]
         lower=np.maximum(lower,previous_velocity-acceleration*dt);upper=np.minimum(upper,previous_velocity+acceleration*dt)
@@ -112,10 +118,10 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None):
     rows,distances=distance_rows(check,d.qpos.copy(),'manipulate',dofs)
     inequalities=(rows,(.001-distances)/dt) if len(rows) else None
     velocity,receipt=velocity_level_qp(augmented,target,lower,upper,base_weight=1.,damping=.001,inequalities=inequalities)
-    if not receipt['feasible']:raise ValueError('whole-body QP constraints infeasible')
+    if not receipt['feasible']:raise QPProtectionStop('whole-body QP constraints infeasible')
     predicted=d.qpos.copy();predicted[np.r_[base.qpos_index,qids]]+=velocity*dt
     swept=check.path([d.qpos.copy(),predicted],['manipulate'])
-    if not swept['valid']:raise ValueError('whole-body predicted swept clearance failure')
+    if not swept['valid']:raise QPProtectionStop('whole-body predicted swept clearance failure')
     # Express the arm part of QP motion through the unchanged native OSC.
     arm_twist=J[:,3:]@velocity[3:]
     point=dict(pos=d.site_xpos[site]+arm_twist[:3]*dt,rot=Rotation.from_rotvec(arm_twist[3:]*dt).as_matrix()@d.site_xmat[site].reshape(3,3),grasp=intent['grasp'])
@@ -129,5 +135,5 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None):
     theta=np.arctan2(ori[1,0],ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0])
     mapping=np.array([[-np.sin(theta),np.cos(theta),0],[np.cos(theta),np.sin(theta),0],[0,0,1]])
     action[7:10]=np.linalg.solve(mapping,goal)
-    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist())
+    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:]*dt).tolist())
     return action,receipt,velocity
