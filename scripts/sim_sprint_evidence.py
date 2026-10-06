@@ -83,11 +83,12 @@ def main():
     for p in sorted((r/'episodes').glob('*/*/not-executed.json')):
         q=read(p);online.append(dict(group_id=p.parents[1].name,method=p.parent.name,status='not_executed',reason=q['reason'],controller='reference fallback'))
     if online:csvwrite(out/'online-results.csv',online)
+    shutil.copy2(r/'comparison/online-summary.csv',out/'online-summary.csv')
     claims=[dict(claim='Frozen BC autonomous two-task E/D/A manipulation',support='unsupported',evidence='policy/readiness.json',restriction='5 failed outcomes plus1 engineering missing; D/A not released; command-locked E has native residual'),
         dict(claim='Matched-input head comparison on inherited reference outcomes',support='qualified',evidence='offline-baselines.csv',restriction='paired-outcome lookup; old development validation reused; not BC distribution or test'),
-        dict(claim='Learned OBC improves over fixed/geometry/B3',support='unsupported_pending_review',evidence='offline-baselines.csv and online-results.csv',restriction='requires actual measured paired advantage; old formal Gate closed'),
+        dict(claim='Learned OBC improves over fixed/geometry/B3',support='unsupported_measured',evidence='offline-baselines.csv and online-summary.csv',restriction='MLP10/12 ties fixedE/A/B3/oracle; online learned and geometry0/8 planned,0/2 executed each; no measured gain'),
         dict(claim='Simulator oracle geometry reference proof-of-concept',support='qualified_inherited',evidence='R3/R4 original reports; current reference online separately',restriction='L1 only; no deployment perception or true BC autonomous claim'),
-        dict(claim='Long-horizon or independent-environment generalization',support='unsupported',evidence='freeze.json',restriction='two related environment families; no extra stage cases yet'),
+        dict(claim='Long-horizon or independent-environment generalization',support='unsupported',evidence='freeze.json',restriction='two related environment families; optional multistage skipped without successful short-task and safe-retreat prerequisites'),
         dict(claim='Sealed test entirely unread',support='unsupported',evidence='preflight/deviations.jsonl',restriction='one candidate geometry seed103 accidentally read; no test images/outcomes/training/execution')]
     csvwrite(out/'claim-evidence.csv',claims)
     (out/'method-facts.md').write_text('''# Measured method facts
@@ -115,6 +116,23 @@ Scientific routes are never retried after a valid stop. Engineering slot4 consum
 - Retain speed, pauses, failures, camera occlusion and initial-state reset notes.
 - Verify all media captions against videos/videos.csv, native task manifests and exact content hashes.
 - Abstract registration, authorship, manuscript claims and final OpenReview upload require Research review; Compute has not submitted.
+''')
+    videos=read(r/'videos/videos.json')
+    write(out/'media-index-binding.json',dict(video_index=str(r/'videos/index.html'),entries=len(videos),
+        inventory=read(r/'data/inventory-current.json')['inventory'],originals_and_failures_retained=True,
+        duplicate_media_not_independent_cameras=True,diagnostic_not_new_execution=True,
+        successful_online_demos=0,failure_viewing_copies=[str(p) for p in sorted((r/'videos').glob('online-*/watch-labeled.mp4'))]))
+    (out/'README.md').write_text('''# Final measured sprint evidence
+
+BC readiness failed: five scientific failures and one engineering unknown; no D/A qualification. Reference fallback trained exactly two fixed neural fits. On12 reused development-validation Sources, MLP10 ties fixedE/A, train-best-fixed, B3 and oracle; Linear/geometry9 and fixedD9. There is no measured improvement over the strongest controls.
+
+The16 new online validation slots are closed: four native episodes all joint-margin failures and12 preflight X, equally divided between learned and geometry. Each method has0/8 planned and0/2 executed successes,259 complete controls; only microwave task executed. Both methods selected the only valid A in the two executable groups and their recorded actions/states were identical. Success videos0, optional multistage skipped.
+
+Use offline-baselines.csv for paired-outcome lookup, online-results.csv and online-summary.csv for actual new execution and complete coverage. Cost tables report selected-GPU process wall time including I/O/contention and documented failed work; GPU kernel-only timing was not measured. Geometry CLIP capture was an input-audit extra, not a required geometry-selector cost.
+
+Media-index-binding.json points to255 indexed existing clips including human/reference originals, panoramas, six inherited R4 repetitions, new BC/online originals, four mechanical-prefix clips and marked diagnostic/annotated viewing copies. Where primary and panorama bytes are identical, they do not provide independent camera views. Videos remain private; public anonymization and author/abstract registration review are Research responsibilities.
+
+The sealed geometry-metadata access, E physical residual, camera occlusion, exhausted mechanical slot, ENOSPC same-fit resume and B3 invalid initial fit remain disclosed. The original first B3 packet is invalid for its B3 columns; this packet uses corrected train-scaled B3 and unchanged neural weights/predictions. Formal Gate remains closed and Research review pending.
 ''')
     write(r/'paper-evidence/current.json',dict(created_at=datetime.now(timezone.utc).isoformat(),packet=str(out),comparison=str(comparison),review_status='pending',formal_train_ready=False))
     print('evidence packet',out,flush=True)
