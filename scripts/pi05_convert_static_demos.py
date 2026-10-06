@@ -19,7 +19,7 @@ ROOT=Path('/share/personal/chensiyu/haokaijiang/MobiWAM')
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--attempt',type=int,default=0);ap.add_argument('--version',default='static-command-v1');ap.add_argument('--static-suffix',action='store_true');a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--attempt',type=int,default=0);ap.add_argument('--version',default='static-command-v1');ap.add_argument('--static-suffix',action='store_true');ap.add_argument('--all-static-segments',action='store_true');a=ap.parse_args()
     receipt=json.loads((a.run/'preflight/native-interface-retry-1/nominal-target-roundtrip.json').read_text())
     assert receipt['passed']
     candidates=json.loads((a.run/'data/policy-fit-candidates.json').read_text())
@@ -36,7 +36,18 @@ def main():
         normalization='policy-fit-only per-channel quantile01/99; constant channels mapped to zero; no final/dev observations',
         future_base='target world command at t+k is expressed in base at query t; future base never enters input')
     rule['static_suffix']=dict(enabled=a.static_suffix,predeclared='contiguous terminal suffix after last nonzero base/torso or positive mode; at least10 actions; original whole episode safe qualified successful; no chunk crosses prefix cutoff; no failed segments')
+    rule['all_static_segments']=dict(enabled=a.all_static_segments,predeclared='maximal disjoint contiguous runs of zero base/torso and negative mode, >=10 actions, in whole safe-qualified successful original episode; gaps excluded; no chunk across gaps; partial expert segments do not count as independent episodes or full task outcomes')
     (dataset/'conversion-rule.json').write_text(json.dumps(rule,indent=2)+'\n')
+    if a.all_static_segments:
+        expanded=[]
+        for row in candidates:
+            with h5py.File(row['observations_path']) as f: acts=f['data/demo_0/actions'][:]
+            good=(np.max(abs(acts[:,7:11]),axis=1)<=1e-12)&(acts[:,11]<0)
+            changes=np.diff(np.r_[False,good,False].astype(int));starts=np.flatnonzero(changes==1);ends=np.flatnonzero(changes==-1)
+            for start,end in zip(starts,ends):
+                if end-start>=10:
+                    expanded.append(dict(row,original_record_id=row['record_id'],record_id=f"{row['record_id']}-segment-{start}-{end}",_segment_bounds=[int(start),int(end)]))
+        candidates=expanded
     for row in candidates:
         assert row['parent_source'] in fit and row['route']=='E' and row['success']
         path=Path(row['observations_path']);ep=dataset/row['record_id'];ep.mkdir()
@@ -44,7 +55,9 @@ def main():
             g=f['data/demo_0'];all_actions=g['actions'][:]
             unsafe=np.flatnonzero(np.any(abs(all_actions[:,7:11])>1e-12,axis=1)|(all_actions[:,11]>=0))
             start=int(unsafe[-1])+1 if len(unsafe) and a.static_suffix else 0
-            actions=all_actions[start:];T=len(actions)
+            end=len(all_actions)
+            if '_segment_bounds' in row:start,end=row['_segment_bounds']
+            actions=all_actions[start:end];T=len(actions)
             if T<10 or np.max(abs(actions[:,7:11]),initial=0)>1e-12 or np.any(actions[:,11]>=0):
                 rejected.append(dict(record=row['record_id'],reason='not static compatible base/torso/mode'));continue
             # Native RoboCasa performs this path repair during XML restoration.
@@ -88,7 +101,7 @@ def main():
                 cache=np.lib.format.open_memmap(ep/(slot+'.npy'),mode='w+',dtype=np.uint8,shape=(T,224,224,3))
                 for t in range(T):cache[t]=np.asarray(Image.fromarray(g['obs'][key+'_image'][start+t]).resize((224,224),Image.Resampling.BILINEAR))
                 cache.flush();del cache
-            rec=dict(record_id=row['record_id'],task=row['task'],parent_group=row['parent_source'],config_id=row['config_id'],family_id=row['task']+'-layout1-style0',
+            rec=dict(record_id=row['record_id'],original_record_id=row.get('original_record_id',row['record_id']),task=row['task'],parent_group=row['parent_source'],config_id=row['config_id'],family_id=row['task']+'-layout1-style0',
                 original_hdf5=str(path),original_start_timestep=start,original_end_timestep=start+T,derived=str(ep),frames=T,windows=max(0,T-9),sensor_fk_max_error_m=error_obs,sensor_fk_rotation_max_error_rad=cache_rotation_error,
                 source=str(Path(row['attempt']).parents[1]),source_checksum_receipt=row.get('existing_receipt'),
                 sensor_fk_note='mj_step2 cached sites differ from FK recomputed after final integration; labels use recorded sensor poses; no tolerance relaxation or next-state targets',
@@ -102,7 +115,7 @@ def main():
         norm[name]=dict(q01=low.tolist(),q99=high.tolist(),valid_width=width,constant=((high-low)<1e-6).tolist())
     (dataset/'norm-stats.json').write_text(json.dumps(norm,indent=2)+'\n')
     manifest=dict(created_at=datetime.now(timezone.utc).isoformat(),dataset=str(dataset),episodes=index,rejected=rejected,
-        valid_windows=sum(x['windows'] for x in index),independent_episodes=len(index),parent_groups=len({x['parent_group'] for x in index}),family_count=len({x['family_id'] for x in index}),
+        valid_windows=sum(x['windows'] for x in index),independent_episodes=len({x['original_record_id'] for x in index}),segments=len(index),parent_groups=len({x['parent_group'] for x in index}),family_count=len({x['family_id'] for x in index}),
         task_frame_counts={t:sum(x['frames'] for x in index if x['task']==t) for t in ('CloseDrawer','CloseSingleDoor')},
         split_manifest=str(a.run/'data/lineage-split.json'),horizon=10,rule=rule,not_obc_outcome_labels=True)
     (dataset/'dataset.json').write_text(json.dumps(manifest,indent=2)+'\n');(a.run/'data/dataset-binding.json').write_text(json.dumps(manifest,indent=2)+'\n')
