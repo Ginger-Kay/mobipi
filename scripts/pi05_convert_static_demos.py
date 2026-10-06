@@ -58,7 +58,7 @@ def main():
             assert min(base,origin,eef)>=0
             states=g['states'][start:start+T];obs={key:v[start:start+T] for key,v in g['obs'].items() if not key.endswith('_image')};state=np.zeros((T,32),np.float32)
             base_p=np.zeros((T,3));base_R=np.zeros((T,3,3));world_p=np.zeros((T,3));world_R=np.zeros((T,3,3))
-            local_targets=np.zeros((T,32),np.float32);error_obs=0.
+            local_targets=np.zeros((T,32),np.float32);error_obs=0.;cache_rotation_error=0.
             for t in range(T):
                 d.time=states[t,0];d.qpos[:]=states[t,1:1+model.nq];d.qvel[:]=states[t,1+model.nq:1+model.nq+model.nv];mujoco.mj_forward(model,d)
                 bp=d.xpos[base].copy();br=d.xmat[base].reshape(3,3).copy();op=d.site_xpos[origin];oR=d.site_xmat[origin].reshape(3,3);p=d.site_xpos[eef];R=d.site_xmat[eef].reshape(3,3)
@@ -72,7 +72,9 @@ def main():
                 assert np.max(abs(observed_local-obs['robot0_base_to_eef_pos'][t]))<=1e-6
                 # Static selected demos have fixed torso and parallel controller
                 # origin axes, independently checked against the actual model.
-                assert np.max(abs(oR-br))<=1e-5
+                fk_base_R=d.xmat[base].reshape(3,3)
+                assert np.max(abs(oR-fk_base_R))<=1e-6
+                cache_rotation_error=max(cache_rotation_error,float(np.linalg.norm(Rotation.from_matrix(oR@br.T).as_rotvec())))
                 world_p[t]=p+br@(np.clip(actions[t,:3],-1,1)*.05)
                 world_R[t]=br@Rotation.from_rotvec(np.clip(actions[t,3:6],-1,1)*.5).as_matrix()@br.T@R
                 base_p[t]=bp;base_R[t]=br
@@ -87,7 +89,7 @@ def main():
                 for t in range(T):cache[t]=np.asarray(Image.fromarray(g['obs'][key+'_image'][start+t]).resize((224,224),Image.Resampling.BILINEAR))
                 cache.flush();del cache
             rec=dict(record_id=row['record_id'],task=row['task'],parent_group=row['parent_source'],config_id=row['config_id'],family_id=row['task']+'-layout1-style0',
-                original_hdf5=str(path),original_start_timestep=start,original_end_timestep=start+T,derived=str(ep),frames=T,windows=max(0,T-9),sensor_fk_max_error_m=error_obs,
+                original_hdf5=str(path),original_start_timestep=start,original_end_timestep=start+T,derived=str(ep),frames=T,windows=max(0,T-9),sensor_fk_max_error_m=error_obs,sensor_fk_rotation_max_error_rad=cache_rotation_error,
                 source=str(Path(row['attempt']).parents[1]),source_checksum_receipt=row.get('existing_receipt'),
                 sensor_fk_note='mj_step2 cached sites differ from FK recomputed after final integration; labels use recorded sensor poses; no tolerance relaxation or next-state targets',
                 prompt='Close the drawer.' if row['task']=='CloseDrawer' else 'Close the microwave door.')
