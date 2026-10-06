@@ -59,11 +59,17 @@ def main():
         p=r/'training'/name;final=read(p/'completed.json');process=read(p/'process.json')
         attempts=[process]+[read(q) for q in sorted(p.glob('resume-*/process.json'))]
         duration=0
+        documented_updates=0
         for i,proc in enumerate(attempts):
-            end=read(p/'storage-failure.json')['at'] if i<len(attempts)-1 else final['ended_at']
+            if i<len(attempts)-1:
+                logs=logrows(p/'loss.jsonl');end=logs[-1]['at'];documented_updates+=logs[-1]['step']
+            else:
+                end=final['ended_at'];documented_updates+=final['new_updates_this_attempt']
             duration+=(datetime.fromisoformat(end)-datetime.fromisoformat(proc['started_at'])).total_seconds()
         processes.append(dict(model=name,structural_parameters=33733 if name=='MLP' else 5245,
-            trainable_parameters=process['trainable_parameters'],frozen_final_step=2000,recorded_wall_seconds_with_failed_attempt=duration,
+            trainable_parameters=process['trainable_parameters'],frozen_final_step=2000,documented_training_wall_seconds_lower_bound=duration,
+            wall_measurement='failed attempt only through last explicit loss timestamp; successful attempt measured to completion; not kernel-only time',
+            documented_optimizer_updates_with_recomputed_work=documented_updates,
             successful_segment_seconds=final['gpu_wall_seconds'],checkpoint=final['checkpoint'],checkpoint_sha256=final['checkpoint_sha256'],
             fit_count=1,seed=17,includes_io_wall_and_healthy_occupancy_contention=True,failed_attempts=max(0,len(attempts)-1)))
     csvwrite(out/'parameters-training-time.csv',processes)
