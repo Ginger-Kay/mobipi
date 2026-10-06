@@ -1,5 +1,5 @@
 """Freeze model predictions before any prospective final outcome."""
-import argparse,hashlib,json,subprocess
+import argparse,hashlib,json,subprocess,os
 from pathlib import Path
 from datetime import datetime,timezone
 import numpy as np
@@ -16,6 +16,8 @@ def physical_transform(raw,heads):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args();r=a.run;out=r/'evaluation';out.mkdir(exist_ok=True)
     assert not (out/'final-freeze.json').exists()
+    assert not list((r/'episodes').glob('paired-v6-final-*/slot-*/engineering-attempt-*/completed.json'))
+    assert not list((r/'episodes').glob('online-v6-*/slot-*/engineering-attempt-*/completed.json'))
     binding=json.loads((r/'training/dataset-binding.json').read_text());z=np.load(r/'training/train-only.npz',allow_pickle=False)
     release=json.loads((r/'policy/harness-route-release.json').read_text());roster=json.loads((r/'data/paired-source-roster.json').read_text())
     models={};configs={}
@@ -70,5 +72,9 @@ def main():
         train_best_fixed_coverage={route:len(values) for route,values in byroute.items()},
         scope='prospective held-out known-development; partial task/routes declared',final_outcomes_accessed=False,
         maximum_online_episodes=24,online_methods=['MLP','geometry','train-best-fixed'],method_order='cyclic by Source index',formal_train_ready=False)
-    (out/'final-freeze.json').write_text(json.dumps(freeze,indent=2)+'\n');print(json.dumps(dict(final_slots=freeze['final_slots'],train_best_fixed=fixed,selections=[x['selected'] for x in predictions])),flush=True)
+    pending=out/'.final-freeze.pending.json'
+    with pending.open('x') as f:
+        f.write(json.dumps(freeze,indent=2)+'\n');f.flush();os.fsync(f.fileno())
+    os.replace(pending,out/'final-freeze.json')
+    print(json.dumps(dict(final_slots=freeze['final_slots'],train_best_fixed=fixed,selections=[x['selected'] for x in predictions])),flush=True)
 if __name__=='__main__':main()
