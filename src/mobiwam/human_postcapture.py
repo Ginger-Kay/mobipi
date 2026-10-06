@@ -70,7 +70,7 @@ def claim(ledger, attempt, stage, input_signature):
     return path
 
 
-def numeric_alignment(actions, states, rows, native, control_dt=.05):
+def numeric_alignment(actions, states, rows, native, control_dt=.05, terminal_safety_substep=None):
     n = len(rows)
     if n < 1:
         raise ValueError('Zero complete-frame recording needs separate diagnosis; preserve outcome, do not retry')
@@ -86,7 +86,11 @@ def numeric_alignment(actions, states, rows, native, control_dt=.05):
                 raise ValueError('Trace/HDF5 state mismatch')
     q=np.asarray(native['qpos']);times=np.asarray(native['sim_time']);indices=np.asarray(native['step_index'])
     extra=len(indices)-n*25
-    if q.shape != (len(indices)+1,nq) or len(times)!=len(q) or not 0<=extra<25:
+    # The guard can raise on substep 25 before the recorder appends a
+    # completed control/video row. Accept that exact tail only with the
+    # original safety event bound to its final global native substep.
+    valid_tail = 0 <= extra < 25 or (extra == 25 and terminal_safety_substep == len(indices)-1)
+    if q.shape != (len(indices)+1,nq) or len(times)!=len(q) or not valid_tail:
         raise ValueError('Native tail alignment differs')
     if not np.isfinite(q).all() or not np.isfinite(times).all():
         raise ValueError('Nonfinite native data')

@@ -31,13 +31,15 @@ def inspect(attempt, output, expected_scene, expected_route):
     rows=[read_json_line for read_json_line in map(__import__('json').loads,(attempt/'trace.jsonl').read_text().splitlines())]
     with np.load(attempt/'formal-native-substeps.npz') as z:
         native={k:z[k] for k in ('qpos','sim_time','step_index','phases')}
-    dimensions=numeric_alignment(actions,states,rows,native,meta['control_dt'])
+    tail=load_partial_tail(attempt,result)
+    terminal_substep=tail['record']['failure'].get('substep') if tail is not None else None
+    dimensions=numeric_alignment(actions,states,rows,native,meta['control_dt'],
+                                 terminal_safety_substep=terminal_substep)
     m=source_model(str(source/'model.xml'),sha(source/'model.xml'))
     if (m.nq,m.nv)!=(dimensions['nq'],dimensions['nv']):
         raise ValueError('Actual compiled model dimensions differ')
     if len(native['phases'])!=len(native['step_index']) or any(p!=phase_at(result,int(i)) for p,i in zip(native['phases'],native['step_index'])):
         raise ValueError('Native phase differs from original dock boundary')
-    tail=load_partial_tail(attempt,result)
     if dimensions['partial_native_steps'] and tail is None:
         raise ValueError('Native partial tail missing original action evidence')
     receipt=read_json(attempt/'formal-native-substeps-receipt.json')

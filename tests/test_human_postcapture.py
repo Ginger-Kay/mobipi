@@ -119,3 +119,33 @@ def test_cache_merge_preserves_failures_and_rejects_conflicts(tmp_path,monkeypat
     with pytest.raises(ValueError,match='Conflicting'):h.merge_audit_caches([c1,c2])
     c2.write_text(json.dumps({'entries':[dict(old,input_signature={})]}))
     with pytest.raises(ValueError,match='changed'):h.merge_audit_caches([c2])
+
+
+def tail_fixture(extra):
+    rows=[dict(before=dict(qpos=[0,0],qvel=[0,0]),after=dict(qpos=[0,0],qvel=[0,0]))]
+    states=np.zeros((2,5));states[1,0]=.05
+    native=dict(qpos=np.zeros((26+extra,2)),sim_time=np.arange(26+extra)*.002,
+                step_index=np.r_[np.zeros(25,int),np.ones(extra,int)])
+    return np.zeros((1,12)),states,rows,native
+
+
+@pytest.mark.parametrize('extra',[0,11,24])
+def test_existing_native_tail_boundaries(extra):
+    assert numeric_alignment(*tail_fixture(extra))['partial_native_steps']==extra
+
+
+def test_guard_on_last_native_substep_keeps_original_unfinished_control():
+    args=tail_fixture(25)
+    with pytest.raises(ValueError,match='Native tail alignment'):
+        numeric_alignment(*args)
+    dims=numeric_alignment(*args,terminal_safety_substep=49)
+    assert dims['steps']==1 and dims['partial_native_steps']==25
+    assert dims['native_intervals']==50 and dims['simulation_seconds']==.1
+    for wrong_event in (24,48,50):
+        with pytest.raises(ValueError,match='Native tail alignment'):
+            numeric_alignment(*args,terminal_safety_substep=wrong_event)
+    with pytest.raises(ValueError,match='Native tail alignment'):
+        numeric_alignment(*tail_fixture(26),terminal_safety_substep=50)
+    args[-1]['step_index'][-1]=0
+    with pytest.raises(ValueError,match='Partial native boundary'):
+        numeric_alignment(*args,terminal_safety_substep=49)
