@@ -16,6 +16,16 @@ VERSION='pi05-geometric-motion-v1'
 DOCK_OFFSETS=np.array([[.075,0.],[-.075,0.],[0.,.075],[0.,-.075],[.075,.075]])
 
 
+def frustum_compatibility(model,data,point,cameras):
+    visible=[]
+    for camera in cameras:
+        cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,camera)
+        local=data.cam_xmat[cid].reshape(3,3).T@(point-data.cam_xpos[cid])
+        tangent=np.tan(np.deg2rad(float(model.cam_fovy[cid]))/2)
+        visible.append(bool(local[2]<0 and abs(local[0])<=-local[2]*tangent and abs(local[1])<=-local[2]*tangent))
+    return float(np.mean(visible))
+
+
 def arm_indices(ref):
     m,_=ref.model_data();arm=ref.robot.part_controllers['right']
     qids=np.asarray(arm.qpos_index);dofs=np.asarray(arm.qvel_index)
@@ -52,11 +62,12 @@ def docks(ref):
             valid=bool(navigation['valid'] and reach_sweep['valid'] and pe<.01 and re<.10)
             length=float(np.linalg.norm(np.diff(path,axis=0),axis=1).sum())
             margin=float(np.min(np.minimum(q-limits[:,0],limits[:,1]-q)))
+            view=min(frustum_compatibility(m,scratch,target['pos'],ref.policy_cameras),frustum_compatibility(m,live,target['pos'],ref.policy_cameras))
             candidate.update(hard_valid=valid,reason='passed_geometric_prefix_and_endpoint_reach' if valid else 'continuous_or_reach_failure',
                 base_goal=goal.tolist(),base_path=np.c_[path,np.full(len(path),goal[2])].tolist(),
                 minimum_continuous_clearance_m=min(float(stow_sweep.get('lower_bound_m',0)),float(navigation.get('lower_bound_m',0)),float(reach_sweep.get('lower_bound_m',0))),
-                minimum_manipulability_or_joint_margin=margin,minimum_policy_view_compatibility=1.,
-                policy_view_note='same three existing cameras; frustum/occlusion compatibility not certified here',
+                minimum_manipulability_or_joint_margin=margin,minimum_policy_view_compatibility=view,
+                policy_view_note='computed Source/endpoint fraction of three camera frusta containing initial EEF near handle; no occlusion or learned-policy compatibility claim',
                 total_planned_base_path_m=length,total_planned_time_s=length/(.015 if ref.args.task=='CloseDrawer' else .09),
                 endpoint_ik=ik,stow_sweep=stow_sweep,navigation_sweep=navigation,reach_sweep=reach_sweep)
         except Exception as exc:candidate['reason']=str(exc)
@@ -95,7 +106,9 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None):
         acceleration=np.r_[np.full(3,.2),np.full(len(ad),2.)]
         lower=np.maximum(lower,previous_velocity-acceleration*dt);upper=np.minimum(upper,previous_velocity+acceleration*dt)
     fixture=ref.env.drawer if task=='CloseDrawer' else ref.env.door_fxtr
-    check=SweptGeometry(m,target_prefix=fixture.name,margin=.0005)
+    if getattr(ref,'pi05_qp_geometry_model',None)!=id(m):
+        ref.pi05_qp_geometry=SweptGeometry(m,target_prefix=fixture.name,margin=.0005);ref.pi05_qp_geometry_model=id(m)
+    check=ref.pi05_qp_geometry
     rows,distances=distance_rows(check,d.qpos.copy(),'manipulate',dofs)
     inequalities=(rows,(.001-distances)/dt) if len(rows) else None
     velocity,receipt=velocity_level_qp(augmented,target,lower,upper,base_weight=1.,damping=.001,inequalities=inequalities)
@@ -107,5 +120,14 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None):
     arm_twist=J[:,3:]@velocity[3:]
     point=dict(pos=d.site_xpos[site]+arm_twist[:3]*dt,rot=Rotation.from_rotvec(arm_twist[3:]*dt).as_matrix()@d.site_xmat[site].reshape(3,3),grasp=intent['grasp'])
     action,pe,re,be=mapped_action(ref,point,d.qpos[base.qpos_index]+velocity[:3]/1.5,arm_enabled=True)
+    # QP output is velocity, not a tiny position-servo error. Preserve the
+    # inherited friction/actuator/frame map without applying its position deadband.
+    ids=np.asarray(ref.robot._ref_actuators_indexes_dict['base'],int)
+    friction=m.dof_frictionloss[base.qvel_index]/m.actuator_gainprm[ids,0]
+    requested=velocity[:3]+np.where(abs(velocity[:3])>1e-6,np.sign(velocity[:3])*friction,0.)
+    goal=requested/(.5*(base.actuator_max-base.actuator_min));_,ori=base.get_base_pose()
+    theta=np.arctan2(ori[1,0],ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0])
+    mapping=np.array([[-np.sin(theta),np.cos(theta),0],[np.cos(theta),np.sin(theta),0],[0,0,1]])
+    action[7:10]=np.linalg.solve(mapping,goal)
     receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist())
     return action,receipt,velocity
