@@ -155,11 +155,29 @@ def main():
     for p in sorted((r/'videos').glob('diagnostic-*/diagnostic-binding.json')):
         x=load(p);rows.append(dict(record_id=p.parent.name,view='diagnostic',task='see source binding',route='E',controller='saved-state renderer',result='BC failure supplement',
             original_path=x['diagnostic_video'],sha256=x['diagnostic_sha256'],exists=True,validation='labeled diagnostic',new_execution=False,human_intervention=False,state_reset='saved-state rendering',diagnostic=True))
+    for x in load(inventory_path):
+        if x['view']!='C_policy_engineering':continue
+        for camera,key in (('original','video_path'),('panoramic','panoramic_path')):
+            if not x.get(key):continue
+            p=Path(x[key])
+            subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(p),'-f','null','-'],check=True)
+            info=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-count_frames',
+                '-show_entries','stream=nb_read_frames,r_frame_rate,width,height','-of','json',str(p)],text=True))['streams'][0]
+            rows.append(dict(record_id=x['record_id'],view=x['view'],task=x['task'],route=x['route'],controller=x['controller'],camera=camera,
+                result=x['exclusion_reason'],original_path=str(p),sha256=sha(p),exists=True,validation='full decode pass; engineering prefix only',
+                frames=int(info['nb_read_frames']),width=info['width'],height=info['height'],fps=info['r_frame_rate'],new_execution=True,
+                usable_task_outcome=False,human_intervention=False,state_reset='initial only',diagnostic=True,source_receipt=x['failure_receipt']))
     for p in sorted((r/'videos').glob('online-*/watch-binding.json')):
         x=load(p);rows.append(dict(record_id=p.parent.name,view='new_reference_online_labeled',task=x['task'],route=x['route'],controller='reference feedback, '+x['method']+' selector',result=x['reason'],
             original_path=x['watch_video'],sha256=x['watch_sha256'],exists=True,validation='annotated viewing copy; raw originals retained',new_execution=False,
             human_intervention=False,state_reset='initial Source reset only; none during execution',diagnostic=False,
             playback_speed='1x simulation20Hz, no intentional pause',source_attempt=x['attempt']))
+    by_hash={}
+    for x in rows:
+        if x.get('sha256'):by_hash.setdefault(x['sha256'],[]).append(x['original_path'])
+    for x in rows:
+        peers=by_hash.get(x.get('sha256'),[])
+        if len(peers)>1:x['identical_media_paths']=peers;x['independent_camera_claim']=False
     index_out=r/'videos'/f'index-v{a.index_version}';index_out.mkdir(exist_ok=False)
     csvwrite(index_out/'videos.csv',rows);write(index_out/'videos.json',rows)
     cells=['<!doctype html><meta charset=utf-8><title>Simulation sprint videos</title><h1>Simulation sprint video index</h1><p>Human, reference, policy, and diagnostic views retain distinct evidence levels.</p>']
