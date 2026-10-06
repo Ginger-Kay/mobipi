@@ -15,11 +15,16 @@ def main():
         f=d/'freeze.json';p=d/'result.json'
         if not f.exists():continue
         q=json.loads(f.read_text());res=json.loads(p.read_text()) if p.exists() else {}
-        fits.append(dict(fit_id=d.name,diagnostic=q['diagnostic'],planned_steps=q['steps'],actual_steps=res.get('steps'),
-            batch=q['batch'],parents=q['parent_groups'],windows=q['windows'],started_at=q['created_at'],ended_at=res.get('ended_at'),
-            wall_seconds=(datetime.fromisoformat(res['ended_at'])-datetime.fromisoformat(q['created_at'])).total_seconds() if res.get('ended_at') else None,
+        failure_path=d/'failure.json';failure=json.loads(failure_path.read_text()) if failure_path.exists() else {}
+        ended=res.get('ended_at') or failure.get('at')
+        measured=d/'metrics.jsonl';partial=[json.loads(line) for line in measured.read_text().splitlines()] if measured.exists() else []
+        fits.append(dict(fit_id=d.name,diagnostic=q['diagnostic'],planned_steps=q['steps'],actual_steps=res.get('steps',partial[-1]['step'] if partial else 0 if failure else None),
+            batch=q['batch'],parents=q['parent_groups'],windows=q['windows'],started_at=q['created_at'],ended_at=ended,
+            wall_seconds=(datetime.fromisoformat(ended)-datetime.fromisoformat(q['created_at'])).total_seconds() if ended else None,
             median_sync_step_seconds=res.get('median_t_step_seconds'),effective_window_exposure=res.get('effective_window_exposures'),
-            status=res.get('status','failed' if (d/'failure.json').exists() else 'running'),result=str(p),checkpoint=res.get('checkpoint')))
+            status=res.get('status','failed' if failure else 'running'),result=str(p),checkpoint=res.get('checkpoint'),
+            wall_scope='declared fit start through completion/failure, including initialization/JIT/save',failure_receipt=str(failure_path) if failure else None,
+            failure_signature=failure['traceback'].splitlines()[-1] if failure else None))
     with (out/'policy-fit-costs.csv').open('w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=list(fits[0]));w.writeheader();w.writerows(fits)
     fig,ax=plt.subplots(figsize=(7,3.2));present=0
@@ -60,9 +65,11 @@ def main():
     audits=[]
     for p in (r/'episodes').glob('*/slot-*/engineering-attempt-*/source-*/*/attempt-*/sprint-safety-audit.json'):
         q=json.loads(p.read_text());audits.append(q['elapsed_seconds'])
+    review=list(csv.DictReader((out/'review-copies.csv').open())) if (out/'review-copies.csv').exists() else []
     resources=dict(at=now,policy_fit_rows='policy-fit-costs.csv',OBC_fit_rows='OBC-fit-costs.csv' if obc else None,
         completed_unique_episode_wall_seconds=summary['completed_episode_wall_seconds'],completed_control_steps=summary['completed_control_steps'],
         actual_synchronous_policy_query_seconds=summary['query_seconds'],recorded_safety_audit_CPU_wall_seconds=sum(audits),
+        labeled_derivative_process_wall_seconds=sum(float(x['elapsed_seconds']) for x in review),policy_failed_fit_wall_seconds=sum(x['wall_seconds'] or 0 for x in fits if x['status']=='failed'),
         interpretation='sums of process/episode wall duration, including failures; parallel sums are not workflow elapsed time or dedicated GPU-hours; occupancy excluded',
         workflow_started_at='2026-10-06T15:04:49.291352+00:00',workflow_elapsed_seconds=(datetime.now(timezone.utc)-datetime.fromisoformat('2026-10-06T15:04:49.291352+00:00')).total_seconds())
     (out/'resource-costs.json').write_text(json.dumps(resources,indent=2)+'\n')
