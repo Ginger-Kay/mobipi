@@ -20,6 +20,7 @@ def main():
     for p in sorted((r/'episodes').glob('*/slot-*/engineering-attempt-*/completed.json')):
         q=json.loads(p.read_text());attempt=Path(q['attempt'])
         if str(attempt) in done:continue
+        if q['steps']==0:continue
         if not (attempt/'original.mp4').exists():continue
         native=json.loads((attempt/'task-video-manifest.json').read_text());pan=json.loads((attempt/'panoramic-binding.json').read_text())
         main_hashes=native['decoded_frames_sha256'];assert len(main_hashes)==q['steps']

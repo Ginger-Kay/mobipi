@@ -1,8 +1,9 @@
 """Measured costs and publication artifacts, including unsupported claims."""
-import argparse,csv,json
+import argparse,csv,json,os
 from pathlib import Path
 from datetime import datetime,timezone
 import numpy as np
+os.environ.setdefault('MPLCONFIGDIR','/share/personal/chensiyu/haokaijiang/MobiWAM/cache/obc-pi05-v1/matplotlib')
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
