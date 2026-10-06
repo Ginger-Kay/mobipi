@@ -47,6 +47,7 @@ def diagnostic(receipt,out):
 def render_diagnostic(receipt,out,azimuth):
     attempt=Path(receipt['attempt']);source=attempt.parents[1];cfg=load(out/'camera-options.json')
     model=source_model(str(source/'model.xml'),cfg['original_model_sha256']);data=mujoco.MjData(model)
+    model.vis.global_.offwidth=max(model.vis.global_.offwidth,1280);model.vis.global_.offheight=max(model.vis.global_.offheight,720)
     z=np.load(attempt/'formal-native-substeps.npz',allow_pickle=False)
     cam=mujoco.MjvCamera();cam.lookat[:]=cfg['lookat'];cam.distance=cfg['distance'];cam.elevation=cfg['elevation'];cam.azimuth=azimuth
     renderer=mujoco.Renderer(model,height=720,width=1280);option=mujoco.MjvOption();option.geomgroup[0]=0
