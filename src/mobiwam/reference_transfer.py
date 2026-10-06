@@ -186,6 +186,7 @@ def compile_transferred_path(ref, attempt):
     max_target_displacement = 0.
     max_base_basis_condition = 0.
     joint_mapping = ('drawer_closed_progress_v0.2' if ref.args.task == 'CloseDrawer'
+                     else 'sprint_closed_progress_v1' if getattr(ref,'sprint_closed_progress',False)
                      else 'range_scaled_displacement_v0.1')
     for i, record in enumerate(records):
         if i % 6 and i != len(records) - 1 and (i == 0 or grasp_states[i] == grasp_states[i-1]):
