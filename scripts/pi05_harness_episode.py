@@ -28,7 +28,7 @@ def now():return datetime.now(timezone.utc).isoformat()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True)
-    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2'],default='v1');a=p.parse_args()
+    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3'],default='v1');a=p.parse_args()
     roster=json.loads((a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
     out=a.run/'episodes'/f'policy-dev-step-{a.checkpoint_step}{version_suffix}'/f"slot-{a.slot:02d}-{slot['config_id']}"/f'engineering-attempt-{a.attempt}'
@@ -73,7 +73,8 @@ def main():
                     np.savez_compressed(out/f'query-{queries:04d}.npz',**inputs,**answer,base_world_p=anchor['base_world_p'],base_world_R=anchor['base_world_R'],query_sim_time=anchor['sim_time'])
                     assert raw.shape==(10,32) and np.isfinite(raw).all()
                 mapper=execute_static if a.adapter_version=='v1' else execute_projected
-                try:actual,point=mapper(ref,raw[step%5],anchor,base_target)
+                try:
+                    actual,point=mapper(ref,raw[step%5],anchor,base_target,co_motion=True) if a.adapter_version=='v3' else mapper(ref,raw[step%5],anchor,base_target)
                 except QPProtectionStop as exc:
                     status='qp_protective_stop';write_json(attempt/'qp-protective-stop.json',dict(at=now(),step=step,reason=str(exc),actual_native_steps=steps))
                     if steps:ref.finish(status)

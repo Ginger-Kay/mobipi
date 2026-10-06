@@ -31,6 +31,45 @@ def frustum_compatibility(model,data,point,cameras):
     return float(np.mean(visible))
 
 
+def observed_articulation_coupling(ref,dofs):
+    """Infer joint co-motion only from actual bilateral pad/handle contact."""
+    m,d=ref.model_data();fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
+    pads={};positions=[]
+    for c in d.contact:
+        for handle,pad in ((int(c.geom1),int(c.geom2)),(int(c.geom2),int(c.geom1))):
+            hn=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,handle) or ''
+            pn=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,pad) or ''
+            if hn.startswith(fixture.name) and 'handle' in hn and 'pad_collision' in pn:
+                for finger in (1,2):
+                    if f'finger{finger}' in pn:pads[finger]=pad;positions.append(c.pos.copy())
+    if set(pads)!={1,2}:return None
+    joints=[j for j in range(m.njnt) if (mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) or '').startswith(fixture.name) and int(m.jnt_type[j]) in (int(mujoco.mjtJoint.mjJNT_HINGE),int(mujoco.mjtJoint.mjJNT_SLIDE))]
+    if len(joints)!=1:return None
+    joint=joints[0];fd=int(m.jnt_dofadr[joint]);fq=int(m.jnt_qposadr[joint]);point=np.mean(positions,axis=0)
+    jp=np.zeros((3,m.nv));jr=np.zeros_like(jp)
+    mujoco.mj_jac(m,d,jp,jr,point,int(m.geom_bodyid[pads[1]]));robot=jp[:,dofs].copy()
+    mujoco.mj_jac(m,d,jp,jr,point,int(m.jnt_bodyid[joint]));fixture_jac=jp[:,[fd]]
+    coupling=np.linalg.pinv(fixture_jac)@robot
+    return dict(joint=joint,dof=fd,qpos=fq,matrix=coupling,pads=pads,point=point,
+        note='kinematic prediction from current bilateral contact and policy-induced velocity; live fixture state never assigned')
+
+
+def coupled_distance_rows(check,q,dofs,coupling,activation=.02):
+    pairs,distances=check.distances(q,'manipulate');active=np.flatnonzero(distances<activation)
+    ja=np.zeros((3,check.m.nv));jb=ja.copy();jr=ja.copy();rows=[]
+    fd=coupling['dof'];C=coupling['matrix']
+    for i in active:
+        a,b=map(int,pairs[i]);segment=np.zeros(6);distance=check.geom_distance(a,b,.10,segment)
+        normal=segment[3:]-segment[:3];length=np.linalg.norm(normal)
+        if length<1e-12:rows.append(np.zeros(len(dofs)));continue
+        normal/=length
+        if distance<0:normal=-normal
+        mujoco.mj_jac(check.m,check.d,ja,jr,segment[:3],int(check.m.geom_bodyid[a]))
+        mujoco.mj_jac(check.m,check.d,jb,jr,segment[3:],int(check.m.geom_bodyid[b]))
+        rows.append(normal@((jb[:,dofs]+jb[:,[fd]]@C)-(ja[:,dofs]+ja[:,[fd]]@C)))
+    return np.asarray(rows).reshape(-1,len(dofs)),distances[active]
+
+
 def arm_indices(ref):
     m,_=ref.model_data();arm=ref.robot.part_controllers['right']
     qids=np.asarray(arm.qpos_index);dofs=np.asarray(arm.qvel_index)
@@ -92,7 +131,7 @@ def prefix_action(ref,plan,phase,index=0):
     return action,dict(phase=phase,geometric_stow_position_error_m=pe,geometric_stow_rotation_error_rad=re,base_error_generalized=be,base_goal=goal.tolist())
 
 
-def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False):
+def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False):
     m,d=ref.model_data();arm=ref.robot.part_controllers['right'];base=ref.robot.part_controllers['base'];qids,ad,limits=arm_indices(ref)
     bd=np.asarray(base.qvel_index);dofs=np.r_[bd,ad];site=ref.robot.eef_site_id['right'];dt=.05
     jp=np.zeros((3,m.nv));jr=np.zeros_like(jp);mujoco.mj_jacSite(m,d,jp,jr,site);J=np.vstack([jp[:,dofs],jr[:,dofs]])
@@ -115,11 +154,17 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     if getattr(ref,'pi05_qp_geometry_model',None)!=id(m):
         ref.pi05_qp_geometry=SweptGeometry(m,target_prefix=fixture.name,margin=.0005);ref.pi05_qp_geometry_model=id(m)
     check=ref.pi05_qp_geometry
-    rows,distances=distance_rows(check,d.qpos.copy(),'manipulate',dofs)
+    coupling=observed_articulation_coupling(ref,dofs) if co_motion and intent['grasp']>0 else None
+    rows,distances=coupled_distance_rows(check,d.qpos.copy(),dofs,coupling) if coupling is not None else distance_rows(check,d.qpos.copy(),'manipulate',dofs)
     inequalities=(rows,(.001-distances)/dt) if len(rows) else None
     velocity,receipt=velocity_level_qp(augmented,target,lower,upper,base_weight=1.,damping=.001,inequalities=inequalities)
     if not receipt['feasible']:raise QPProtectionStop('whole-body QP constraints infeasible')
     predicted=d.qpos.copy();predicted[np.r_[base.qpos_index,qids]]+=velocity*dt
+    coupling_record=None
+    if coupling is not None:
+        proposed=float((coupling['matrix']@velocity)[0])*dt;fq=coupling['qpos'];joint=coupling['joint']
+        predicted[fq]=np.clip(predicted[fq]+proposed,*m.jnt_range[joint])
+        coupling_record=dict(joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joint),pads=list(coupling['pads'].values()),predicted_fixture_delta=float(predicted[fq]-d.qpos[fq]),note=coupling['note'])
     swept=check.path([d.qpos.copy(),predicted],['manipulate'])
     if not swept['valid']:raise QPProtectionStop('whole-body predicted swept clearance failure')
     # Express the arm part of QP motion through the unchanged native OSC.
@@ -135,5 +180,5 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     theta=np.arctan2(ori[1,0],ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0])
     mapping=np.array([[-np.sin(theta),np.cos(theta),0],[np.cos(theta),np.sin(theta),0],[0,0,1]])
     action[7:10]=np.linalg.solve(mapping,goal)
-    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:]*dt).tolist())
+    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:]*dt).tolist(),observed_contact_coupling=coupling_record)
     return action,receipt,velocity

@@ -64,13 +64,13 @@ def execute_static(ref,action,anchor,base_target):
     return actual,point
 
 
-def execute_projected(ref,action,anchor,base_target):
+def execute_projected(ref,action,anchor,base_target,co_motion=False):
     """Native constrained arm QP and existing palm guard, with locked base."""
     from mobiwam.pi05_motion import whole_body_action
     from reference_geometry import PalmClearance
     point=world_intent(action,anchor)
     ref.base_locked=True
-    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=True)
+    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=True,co_motion=co_motion)
     ref.pi05_previous_velocity=velocity
     ref.robot.part_controllers['right'].initial_joint=np.asarray(projection['arm_nullspace_goal'])
     if not getattr(ref,'pi05_palm_projection',None):ref.pi05_palm_projection=PalmClearance(ref)
