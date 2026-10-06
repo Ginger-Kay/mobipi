@@ -67,7 +67,7 @@ def execute_static(ref,action,anchor,base_target):
     return actual,point
 
 
-def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_grip=False,locked_base=True,coupled_grip=False):
+def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_grip=False,locked_base=True,coupled_grip=False,native_tracking=False):
     """Native constrained arm QP and existing palm guard, with locked base."""
     from mobiwam.pi05_motion import whole_body_action
     from reference_geometry import PalmClearance
@@ -82,12 +82,16 @@ def execute_projected(ref,action,anchor,base_target,co_motion=False,actuated_gri
             actual=np.zeros(12);actual[6]=grip;actual[11]=-1.;ref.pi05_previous_velocity=np.zeros(10)
             point['projection']=dict(gripper=grip_record,body_hold=True,role='physical opening goal resolves finger constraints; no qpos injection')
             return actual,point
-    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=locked_base,co_motion=co_motion,actuated_grip=actuated_grip,coupled_grip=coupled_grip)
+    actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=locked_base,co_motion=co_motion,actuated_grip=actuated_grip,coupled_grip=coupled_grip,native_tracking=native_tracking)
     ref.pi05_previous_velocity=velocity
     ref.robot.part_controllers['right'].initial_joint=np.asarray(projection['arm_nullspace_goal'])
     if actuated_grip:
-        grip_record=projection['actuated_gripper']
-        ref.robot.gripper['right'].current_action=np.asarray(grip_record['normalized_position_goal'])
+        if native_tracking:
+            from mobiwam.pi05_grip_projection import native_coupled_closure
+            grip_record=native_coupled_closure(ref,point['grasp'])
+        else:
+            grip_record=projection['actuated_gripper']
+            ref.robot.gripper['right'].current_action=np.asarray(grip_record['normalized_position_goal'])
         grip_command=0.
     if not getattr(ref,'pi05_palm_projection',None):ref.pi05_palm_projection=PalmClearance(ref)
     before=actual.copy();actual,palm=ref.pi05_palm_projection.apply(actual)

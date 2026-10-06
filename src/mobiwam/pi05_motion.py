@@ -170,7 +170,7 @@ def prefix_action(ref,plan,phase,index=0):
     return action,dict(phase=phase,geometric_stow_position_error_m=pe,geometric_stow_rotation_error_rad=re,base_error_generalized=be,base_goal=goal.tolist())
 
 
-def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False,actuated_grip=False,coupled_grip=False):
+def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=False,co_motion=False,actuated_grip=False,coupled_grip=False,native_tracking=False):
     m,d=ref.model_data();arm=ref.robot.part_controllers['right'];base=ref.robot.part_controllers['base'];qids,ad,limits=arm_indices(ref)
     bd=np.asarray(base.qvel_index);dofs=np.r_[bd,ad];site=ref.robot.eef_site_id['right'];dt=.05
     grip=None
@@ -245,7 +245,17 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     if not swept['valid']:raise QPProtectionStop('whole-body predicted swept clearance failure')
     # Express the arm part of QP motion through the unchanged native OSC.
     arm_twist=J[:,3:10]@velocity[3:10]
-    point=dict(pos=d.site_xpos[site]+arm_twist[:3]*dt,rot=Rotation.from_rotvec(arm_twist[3:]*dt).as_matrix()@d.site_xmat[site].reshape(3,3),grasp=intent['grasp'])
+    goal_horizon=np.full(6,dt);nullspace_horizon=dt
+    if native_tracking:
+        kp=np.asarray(arm.kp);kd=np.asarray(arm.kd)
+        if kp.shape!=(6,) or kd.shape!=(6,) or np.any(kp<=0):raise ValueError('unverified native OSC gains')
+        goal_horizon=kd/kp+dt/2
+        import inspect
+        from robosuite.utils.control_utils import nullspace_torques
+        function=getattr(nullspace_torques,'py_func',nullspace_torques)
+        joint_kp=float(inspect.signature(function).parameters['joint_kp'].default)
+        nullspace_horizon=2/np.sqrt(joint_kp)+dt/2
+    point=dict(pos=d.site_xpos[site]+arm_twist[:3]*goal_horizon[:3],rot=Rotation.from_rotvec(arm_twist[3:]*goal_horizon[3:]).as_matrix()@d.site_xmat[site].reshape(3,3),grasp=intent['grasp'])
     action,pe,re,be=mapped_action(ref,point,d.qpos[base.qpos_index]+velocity[:3]/1.5,arm_enabled=True)
     # QP output is velocity, not a tiny position-servo error. Preserve the
     # inherited friction/actuator/frame map without applying its position deadband.
@@ -263,5 +273,9 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
         grip_record=dict(target_qpos=goals.tolist(),normalized_position_goal=normalized.tolist(),velocity_m_s=(transform@velocity)[10:].tolist(),
             coupled_native_aperture=bool(coupled_grip),aperture_velocity_m_s=float(velocity[10]) if coupled_grip else None,
             control='native gripper position goal; action0 preserves the goal; never assign live qpos',solver_buffer_m=.001)
-    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=(d.qpos[qids]+velocity[3:10]*dt).tolist(),observed_contact_coupling=coupling_record,actuated_gripper=grip_record)
+    nullspace_goal=np.clip(d.qpos[qids]+velocity[3:10]*nullspace_horizon,limits[:,0]+.01501,limits[:,1]-.01501)
+    receipt=dict(receipt,velocity=velocity.tolist(),predicted_sweep=swept,nominal_eef_pos=np.asarray(intent['pos']).tolist(),qp_eef_pos=point['pos'].tolist(),base_goal=np.asarray(base_goal).tolist(),arm_nullspace_goal=nullspace_goal.tolist(),observed_contact_coupling=coupling_record,actuated_gripper=grip_record,
+        native_response_compensation=bool(native_tracking),native_pose_goal_horizon_seconds=goal_horizon.tolist(),
+        native_nullspace_goal_horizon_seconds=float(nullspace_horizon),physical_controller_gains_unchanged=True,
+        native_response_scope='position-goal mapping from existing PD gains; actual velocity and swept safety require recorded execution')
     return action,receipt,velocity

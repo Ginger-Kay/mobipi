@@ -12,7 +12,7 @@ from mobiwam.pi05_motion import whole_body_action,QPProtectionStop,observed_arti
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--attempt',type=int,default=0);p.add_argument('--actuated-grip',action='store_true');p.add_argument('--coupled-grip',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--attempt',type=int,default=0);p.add_argument('--actuated-grip',action='store_true');p.add_argument('--coupled-grip',action='store_true');p.add_argument('--native-tracking',action='store_true');a=p.parse_args()
     receipt=next((a.run/'episodes/policy-dev-step-2500-adapter-v2').glob('slot-01*/engineering-attempt-0/completed.json'))
     q=json.loads(receipt.read_text());attempt=Path(q['attempt']);source=attempt.parents[1];out=a.run/'preflight'/('v2-failure-coupling-diagnostic' if a.attempt==0 else f'v2-failure-grip-diagnostic-{a.attempt}');out.mkdir(exist_ok=False)
     ref=Reference(argparse.Namespace(output=str(out),task='CloseDrawer',layout=1,style=0,seed=109,self_test=True,source=str(source),replay_attempt=None,resume_attempt=None,width=640,height=360))
@@ -35,11 +35,14 @@ def main():
         if a.actuated_grip:
             physical_before=d.qpos.copy()
             try:
-                action,proof,v=whole_body_action(ref,intent,d.qpos[base.qpos_index].copy(),locked_base=True,co_motion=True,actuated_grip=True,coupled_grip=a.coupled_grip)
+                action,proof,v=whole_body_action(ref,intent,d.qpos[base.qpos_index].copy(),locked_base=True,co_motion=True,actuated_grip=True,coupled_grip=a.coupled_grip,native_tracking=a.native_tracking)
                 result['actuated_grip']=dict(status='feasible',proof=proof,action=action.tolist(),physical_qpos_exactly_unchanged=bool(np.array_equal(physical_before,d.qpos)))
                 if a.coupled_grip:
                     goals=np.asarray(proof['actuated_gripper']['target_qpos']);assert abs(goals.sum())<1e-12
                     result['actuated_grip']['native_coupled_goal_verified']=True
+                if a.native_tracking:
+                    from mobiwam.pi05_grip_projection import native_coupled_closure
+                    result['native_closure']=native_coupled_closure(ref,intent['grasp'])
             except QPProtectionStop as exc:result['actuated_grip']=dict(status='protected',reason=str(exc),physical_qpos_exactly_unchanged=bool(np.array_equal(physical_before,d.qpos)))
         from mobiwam.pi05_grip_projection import protect_grip
         m,d=ref.model_data();q_before=d.qpos.copy();original=ref.robot.gripper['right'].current_action.copy()

@@ -28,7 +28,7 @@ def now():return datetime.now(timezone.utc).isoformat()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
-    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5'],default='v1');p.add_argument('--evaluation-tag');a=p.parse_args()
+    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag');a=p.parse_args()
     roster=json.loads((a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
     evaluation=a.evaluation_tag or f'policy-dev-step-{a.checkpoint_step}{version_suffix}'
@@ -91,7 +91,7 @@ def main():
                         actual,prefix=driver.prefix();point=dict(pos=np.zeros(3),rot=np.eye(3),grasp=-1.,projection=dict(geometric_prefix=prefix,no_manipulation_teacher=True))
                     else:
                         goal,locked=driver.base_control() if driver else (base_target,True)
-                        actual,point=mapper(ref,raw[manip_step%5],anchor,goal,co_motion=True,actuated_grip=a.adapter_version in ('v4','v5'),locked_base=locked,coupled_grip=a.adapter_version=='v5') if a.adapter_version in ('v3','v4','v5') else mapper(ref,raw[manip_step%5],anchor,goal)
+                        actual,point=mapper(ref,raw[manip_step%5],anchor,goal,co_motion=True,actuated_grip=a.adapter_version in ('v4','v5','v6'),locked_base=locked,coupled_grip=a.adapter_version in ('v5','v6'),native_tracking=a.adapter_version=='v6') if a.adapter_version in ('v3','v4','v5','v6') else mapper(ref,raw[manip_step%5],anchor,goal)
                 except QPProtectionStop as exc:
                     status='qp_protective_stop' if legal else 'X_no_legal_candidate';write_json(attempt/'qp-protective-stop.json',dict(at=now(),step=step,reason=str(exc),actual_native_steps=steps))
                     if steps:ref.finish(status)

@@ -38,3 +38,48 @@ def protect_grip(ref,policy_command,margin=.001):
         return 0.,False,dict(minimum_rigid_finger_gap_m=minimum[0],normalized_position_goal=gripper.current_action.tolist(),closure_limited=True)
     if policy_command<0:ref.pi05_grip_cap=None
     return policy_command,False,dict(minimum_rigid_finger_gap_m=minimum[0],closure_limited=False)
+
+
+def native_coupled_closure(ref,policy_command):
+    """Retain native closure goals and force error, with a rigid-self floor."""
+    m,d=ref.model_data();gripper=ref.robot.gripper['right'];physical=d.qpos.copy()
+    joints=np.array([mujoco.mj_name2id(m,mujoco.mjtObj.mjOBJ_JOINT,n) for n in gripper.joints])
+    ids=m.jnt_qposadr[joints];ranges=m.jnt_range[joints]
+    directions=np.sign(np.where(abs(ranges[:,1])>abs(ranges[:,0]),ranges[:,1],ranges[:,0]))
+    if getattr(ref,'pi05_native_grip_floor_model',None)!=id(m):
+        fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
+        check=SweptGeometry(m,target_prefix=fixture.name,margin=.0005)
+        names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]
+        pairs,_=check.distances(d.qpos.copy(),'manipulate')
+        indices=[k for k,(i,j) in enumerate(pairs) if
+            (names[i].startswith('gripper0_right_finger1') and names[j].startswith('gripper0_right_finger2')) or
+            (names[j].startswith('gripper0_right_finger1') and names[i].startswith('gripper0_right_finger2'))]
+        if not indices:raise ValueError('native grip floor has no bound rigid finger pairs')
+        def gap(aperture):
+            q=physical.copy();q[ids]=directions*aperture
+            _,distances=check.distances(q,'manipulate')
+            return float(np.min(distances[indices]))
+        lo=0.;hi=float(min(np.maximum(directions*ranges[:,0],directions*ranges[:,1])))
+        if gap(hi)<.0011:raise ValueError('native rigid finger aperture has no safe closure floor')
+        for _ in range(32):
+            mid=(lo+hi)/2
+            if gap(mid)>=.0011:hi=mid
+            else:lo=mid
+        ref.pi05_native_grip_floor=hi;ref.pi05_native_grip_floor_model=id(m)
+        ref.pi05_native_grip_floor_proof=dict(aperture_floor_m=hi,minimum_rigid_self_gap_m=gap(hi),pair_count=len(indices),
+            inherited_solver_buffer_m=.001,extra_tracking_buffer_m=.0001,actual_safety_margin_m=.0005)
+    # Apply the original scalar Panda formatter exactly once. env.step receives
+    # zero, preserving this goal, rather than losing the squeeze error by
+    # replacing the goal with physical qpos plus a small receding increment.
+    previous=gripper.current_action.copy()
+    native=np.asarray(gripper.format_action(np.array([policy_command]))).copy()
+    desired=ranges[:,0]+(native+1)/2*(ranges[:,1]-ranges[:,0])
+    aperture=float(np.mean(directions*desired))
+    aperture=float(np.clip(aperture,ref.pi05_native_grip_floor,.04))
+    targets=directions*aperture
+    normalized=2*(targets-ranges[:,0])/(ranges[:,1]-ranges[:,0])-1
+    gripper.current_action=normalized
+    assert np.array_equal(physical,d.qpos) and abs(targets.sum())<1e-12
+    return dict(ref.pi05_native_grip_floor_proof,policy_command=float(policy_command),previous_native_goal=previous.tolist(),
+        original_formatter_goal=native.tolist(),target_qpos=targets.tolist(),normalized_position_goal=normalized.tolist(),
+        native_formatter_applied_once=True,native_closure_force_error_retained=True,physical_qpos_exactly_unchanged=True)
