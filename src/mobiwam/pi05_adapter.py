@@ -26,7 +26,7 @@ def observation(ref):
         ref.pi05_renderer.update_scene(d,camera=camera,scene_option=ref.render_options)
         images[slot]=np.asarray(Image.fromarray(ref.pi05_renderer.render().copy()).resize((224,224),Image.Resampling.BILINEAR))
     prompt='Close the drawer.' if ref.args.task=='CloseDrawer' else 'Close the microwave door.'
-    return dict(state=state,prompt=prompt,**images),dict(base_world_p=p.copy(),base_world_R=R.copy(),sim_time=float(d.time))
+    return dict(state=state,prompt=prompt,**images),dict(base_world_p=p.copy(),base_world_R=R.copy(),eef_world_p=ep.copy(),eef_world_R=er.copy(),sim_time=float(d.time))
 
 
 def call(port,path,payload):
@@ -50,6 +50,9 @@ def reset(port):call(port,'/reset',json.dumps({'policy_sampling_seed':20261006})
 def world_intent(action,anchor):
     action=np.asarray(action)
     if action.shape!=(32,) or not np.isfinite(action).all():raise ValueError('pi05 padded action must be finite32')
+    if anchor.get('action_representation')=='query_relative_eef':
+        return dict(pos=anchor['eef_world_p']+anchor['base_world_R']@action[:3],
+            rot=anchor['base_world_R']@Rotation.from_rotvec(action[3:6]).as_matrix()@anchor['base_world_R'].T@anchor['eef_world_R'],grasp=float(np.clip(action[6],-1,1)))
     return dict(pos=anchor['base_world_p']+anchor['base_world_R']@action[:3],
         rot=anchor['base_world_R']@Rotation.from_rotvec(action[3:6]).as_matrix(),grasp=float(np.clip(action[6],-1,1)))
 

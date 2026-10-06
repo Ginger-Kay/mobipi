@@ -29,3 +29,11 @@ def test_static_execution_consumes_real_native_mapper_tuple():
         actual,intent=execute_static(object(),np.zeros(32),dict(base_world_p=np.zeros(3),base_world_R=np.eye(3)),np.zeros(3))
     assert actual.shape==(12,) and actual[10]==0 and actual[11]==-1
     assert intent['tracking_error']['position_m']==.01
+
+
+def test_query_relative_intent_reconstructs_same_absolute_world_goal():
+    R=Rotation.from_euler('z',.7).as_matrix();ep=np.array([1.1,-.2,.9]);er=Rotation.from_euler('xyz',[.2,.1,-.3]).as_matrix()
+    raw=np.zeros(32);raw[:3]=[.01,-.02,.003];raw[3:6]=[.03,0,-.01]
+    out=world_intent(raw,dict(action_representation='query_relative_eef',base_world_R=R,eef_world_p=ep,eef_world_R=er))
+    np.testing.assert_allclose(out['pos'],ep+R@raw[:3],atol=1e-12)
+    np.testing.assert_allclose(out['rot'],R@Rotation.from_rotvec(raw[3:6]).as_matrix()@R.T@er,atol=1e-12)

@@ -28,10 +28,12 @@ def now():return datetime.now(timezone.utc).isoformat()
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True)
-    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3'],default='v1');a=p.parse_args()
+    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3'],default='v1');p.add_argument('--evaluation-tag');a=p.parse_args()
     roster=json.loads((a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
-    out=a.run/'episodes'/f'policy-dev-step-{a.checkpoint_step}{version_suffix}'/f"slot-{a.slot:02d}-{slot['config_id']}"/f'engineering-attempt-{a.attempt}'
+    evaluation=a.evaluation_tag or f'policy-dev-step-{a.checkpoint_step}{version_suffix}'
+    if '/' in evaluation or evaluation in ('.','..'):raise ValueError('invalid evaluation tag')
+    out=a.run/'episodes'/evaluation/f"slot-{a.slot:02d}-{slot['config_id']}"/f'engineering-attempt-{a.attempt}'
     if a.attempt:
         for old in out.parent.glob('engineering-attempt-*/completed.json'):
             if json.loads(old.read_text()).get('usable_scientific_outcome'):raise ValueError('slot already has a usable outcome; retry prohibited')
@@ -70,7 +72,8 @@ def main():
                 if time.monotonic()>deadline:status='compute-timeout';ref.finish(status);break
                 if step%5==0:
                     inputs,anchor=observation(ref);answer=query(a.port,inputs);raw=answer['actions'];queries+=1;query_seconds+=float(answer['query_seconds'])
-                    np.savez_compressed(out/f'query-{queries:04d}.npz',**inputs,**answer,base_world_p=anchor['base_world_p'],base_world_R=anchor['base_world_R'],query_sim_time=anchor['sim_time'])
+                    anchor['action_representation']=binding.get('action_representation','absolute_query_base')
+                    np.savez_compressed(out/f'query-{queries:04d}.npz',**inputs,**answer,base_world_p=anchor['base_world_p'],base_world_R=anchor['base_world_R'],eef_world_p=anchor['eef_world_p'],eef_world_R=anchor['eef_world_R'],query_sim_time=anchor['sim_time'])
                     assert raw.shape==(10,32) and np.isfinite(raw).all()
                 mapper=execute_static if a.adapter_version=='v1' else execute_projected
                 try:
