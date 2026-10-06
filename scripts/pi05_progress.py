@@ -41,11 +41,20 @@ def main():
         path=r/'policy'/fit;status=path/'status.json';result=path/'result.json'
         if status.exists():phase['jobs'].setdefault(key,{}).update(actual=json.loads(status.read_text()))
         if result.exists():phase['jobs'].setdefault(key,{}).update(status='completed',result=str(result.relative_to(r)),actual_result=json.loads(result.read_text()))
-    phase['development_rounds']=4
-    phase['next_action']='Finish declared absolute5000-v3 checks, verify actuated-gripper constraints, then predeclared relative500/1000/2000 development candidates; no final outcomes before readiness'
+    phase['development_rounds']=len([d for d in (r/'episodes').iterdir() if d.is_dir() and list(d.glob('slot-*/engineering-attempt-*/process.json'))])
+    for d in (r/'episodes').iterdir():
+        if not d.is_dir():continue
+        receipts=list(d.glob('slot-*/engineering-attempt-*/completed.json'))
+        processes=list(d.glob('slot-*/engineering-attempt-*/process.json'))
+        audited=sum((Path(json.loads(p.read_text())['attempt'])/'sprint-safety-audit.json').exists() for p in receipts)
+        phase['jobs'][d.name]=dict(status='audited' if len(receipts)==6 and audited==6 else 'outcomes_recorded_audits_pending' if len(receipts)==6 else 'running',
+            declared_budget=6,started_slots=len(processes),completed_receipts=len(receipts),audited=audited)
+    phase['next_action']='Observe immutable v5 and native-response v6 closed loops; use2/3 safe readiness per task before paired data; continue D/A and fixed OBC preparation without old labels'
     phase['engineering_issues']['CONVERT-ASSET-001']['status']='resolved; all failed versions retained'
     phase['engineering_issues']['TRAIN-NNX-001']['status']='resolved; both50step diagnostics passed'
-    phase['engineering_issues']['E-CONTROL-001'].update(status='v1/v2 failed; v3 and v4 mechanical constraint diagnosis ongoing',revision_round=4)
+    phase['engineering_issues']['E-CONTROL-001'].update(status='v3 Drawer1/3 audited safe success; later relative/native-response versions remain separate',revision_round=phase['development_rounds'])
+    phase['engineering_issues']['NATIVE-VELOCITY-TRACK-001']=dict(retries=1,diagnostic='preflight/native-goal-response-diagnostic.json',median_aligned_tracking_ratio=.17717517153053375,repair='unchanged native PD gains mapped to position goals, original Panda closure plus rigid-self floor',status='v6 real closed loop running')
+    phase['engineering_issues']['FEATURE-SLOT-001']=dict(retries=1,repair='new geometry-prefix-v2 changes only proposal slot scalar; removes Source/split index; v1 kept',status='resolved_before_obc_fit')
     phase['jobs']['relative-fit2']=dict(phase['jobs'].get('relative-fit2',{}),fit_id='20261006T181000Z-query-relative-fit2',command='policy/run-relative-fit2.sh',steps=2000,max_wall_seconds=3600,budget='policy/fit2-budget-freeze.json')
     (r/'phase-state.json').write_text(json.dumps(phase,indent=2)+'\n')
     print(json.dumps(summary))
