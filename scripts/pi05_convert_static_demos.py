@@ -59,16 +59,24 @@ def main():
                 d.time=states[t,0];d.qpos[:]=states[t,1:1+model.nq];d.qvel[:]=states[t,1+model.nq:1+model.nq+model.nv];mujoco.mj_forward(model,d)
                 bp=d.xpos[base].copy();br=d.xmat[base].reshape(3,3).copy();op=d.site_xpos[origin];oR=d.site_xmat[origin].reshape(3,3);p=d.site_xpos[eef];R=d.site_xmat[eef].reshape(3,3)
                 error_obs=max(error_obs,float(np.max(abs(p-obs['robot0_eef_pos'][t]))))
-                current_origin=oR.T@(p-op);current_R=oR.T@R
-                goal_origin=current_origin+np.clip(actions[t,:3],-1,1)*.05
-                goal_R=Rotation.from_rotvec(np.clip(actions[t,3:6],-1,1)*.5).as_matrix()@current_R
-                world_p[t]=op+oR@goal_origin;world_R[t]=oR@goal_R;base_p[t]=bp;base_R[t]=br
+                # The native sensor cache precedes the final mj_step2 update.
+                # Recomputed FK is a diagnostic, not the recorded controller
+                # input. Use the actual simultaneous observed pose for labels.
+                bp=obs['robot0_base_pos'][t];br=Rotation.from_quat(obs['robot0_base_quat'][t]).as_matrix()
+                p=obs['robot0_eef_pos'][t];R=Rotation.from_quat(obs['robot0_eef_quat_site'][t]).as_matrix()
+                observed_local=br.T@(p-bp)
+                assert np.max(abs(observed_local-obs['robot0_base_to_eef_pos'][t]))<=1e-6
+                # Static selected demos have fixed torso and parallel controller
+                # origin axes, independently checked against the actual model.
+                assert np.max(abs(oR-br))<=1e-5
+                world_p[t]=p+br@(np.clip(actions[t,:3],-1,1)*.05)
+                world_R[t]=br@Rotation.from_rotvec(np.clip(actions[t,3:6],-1,1)*.5).as_matrix()@br.T@R
+                base_p[t]=bp;base_R[t]=br
                 state[t,:3]=br.T@(p-bp);state[t,3:6]=Rotation.from_matrix(br.T@R).as_rotvec()
                 state[t,6]=np.mean(abs(obs['robot0_gripper_qpos'][t]))/.04
                 state[t,7:14]=obs['robot0_joint_pos_cos'][t];state[t,14:21]=obs['robot0_joint_pos_sin'][t];state[t,21]=d.qpos[3]
                 local_targets[t,:3]=br.T@(world_p[t]-bp);local_targets[t,3:6]=Rotation.from_matrix(br.T@world_R[t]).as_rotvec()
                 local_targets[t,6:8]=actions[t,[6,10]]
-            assert error_obs<=1e-6, f'FK vs synchronized sensor mismatch {error_obs}'
             np.savez(ep/'commands.npz',state=state,base_p=base_p,base_R=base_R,target_world_p=world_p,target_world_R=world_R,grip_torso=actions[:,[6,10]])
             for slot,key in rule['camera_mapping'].items():
                 cache=np.lib.format.open_memmap(ep/(slot+'.npy'),mode='w+',dtype=np.uint8,shape=(T,224,224,3))
@@ -77,6 +85,7 @@ def main():
             rec=dict(record_id=row['record_id'],task=row['task'],parent_group=row['parent_source'],config_id=row['config_id'],family_id=row['task']+'-layout1-style0',
                 original_hdf5=str(path),derived=str(ep),frames=T,windows=max(0,T-9),sensor_fk_max_error_m=error_obs,
                 source=str(Path(row['attempt']).parents[1]),source_checksum_receipt=row.get('existing_receipt'),
+                sensor_fk_note='mj_step2 cached sites differ from FK recomputed after final integration; labels use recorded sensor poses; no tolerance relaxation or next-state targets',
                 prompt='Close the drawer.' if row['task']=='CloseDrawer' else 'Close the microwave door.')
             index.append(rec);all_states.append(state);all_targets.append(local_targets)
             print(json.dumps(dict(record=rec['record_id'],task=rec['task'],frames=T,windows=rec['windows'],fk_error_m=error_obs)),flush=True)
