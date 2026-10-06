@@ -12,7 +12,11 @@ def csvwrite(p,rows):
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args();r=a.run
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--reuse-neural',action='store_true');a=ap.parse_args();r=a.run
+    cached=np.load(r/'comparison/final-predictions.npz',allow_pickle=False) if a.reuse_neural else None
+    prior_receipt=json.loads((r/'comparison/final-prediction-receipt.json').read_text()) if a.reuse_neural else None
+    out=r/'comparison' if not a.reuse_neural else r/'comparison/corrected-scaled-B3-v2'
+    if a.reuse_neural:out.mkdir(exist_ok=False)
     train=np.load(r/'training/train-only.npz',allow_pickle=False)
     inherited=json.loads((r/'data/inventory.json').read_text());records={(x['config_id'],x['route']):x for x in inherited if x['view']=='A_reference_auto'}
     # Train-best-fixed is frozen before loading validation labels or predictions.
@@ -32,23 +36,29 @@ def main():
         train_best_common_sources=[str(x) for x in common],missing_sources_excluded_from_fixed_selection=sorted(set(map(str,train['group_id']))-set(map(str,common))),
         thresholds=[.05,.05,.05,.02,1.],tie='E<D<A',classification_heads='supported learnable only; constant collision excluded',
         primary_metric='native success AND existing clearance pass; separately from native success',comparison_scope='paired-outcome lookup on already observed development sources')
-    write(r/'comparison/selector-freeze.json',selector)
+    write(out/'selector-freeze.json',selector)
     validation=np.load(r/'training/development-validation.npz',allow_pickle=False)
     X=np.concatenate([train['X'],validation['X']]);y=np.concatenate([train['y'],validation['y']]);mask=np.concatenate([train['mask'],validation['mask']])
     groups=np.concatenate([train['group_id'],validation['group_id']]);routes=np.concatenate([train['route'],validation['route']]);tasks=np.concatenate([train['task'],validation['task']])
     splits=np.array(['train']*len(train['X'])+['development-validation']*len(validation['X']))
     predictions={};raws={};latencies={}
     for name in ('MLP','Linear'):
-        cp=torch.load(r/'training'/name/'step2000.pt',map_location='cpu');model=ActiveHead(name,cp['active']);model.load_state_dict(cp['model']);model.cuda().eval()
-        tx=torch.from_numpy(scale(X,cp['scaler']['mean'],cp['scaler']['std'])).cuda()
-        torch.cuda.synchronize();t=time.monotonic()
-        with torch.no_grad():raw=model(tx).cpu().numpy()
-        torch.cuda.synchronize();latencies[name]=time.monotonic()-t
+        cp=torch.load(r/'training'/name/'step2000.pt',map_location='cpu')
+        if cached is not None:
+            assert np.array_equal(cached['group_id'],groups) and np.array_equal(cached['route'],routes)
+            raw=cached[name+'_raw'];latencies[name]=prior_receipt['GPU_forward_seconds'][name]
+        else:
+            model=ActiveHead(name,cp['active']);model.load_state_dict(cp['model']);model.cuda().eval()
+            tx=torch.from_numpy(scale(X,cp['scaler']['mean'],cp['scaler']['std'])).cuda()
+            torch.cuda.synchronize();t=time.monotonic()
+            with torch.no_grad():raw=model(tx).cpu().numpy()
+            torch.cuda.synchronize();latencies[name]=time.monotonic()-t
         predictions[name]=transform(raw,cp['head_support']);raws[name]=raw
-        if name=='MLP':heads=cp['head_support'];active=cp['active']
-    b3,raw3,fits=ridge(train['X'],train['y'],train['mask'],train['group_id'],X,heads);predictions['B3']=b3;raws['B3']=raw3
-    write(r/'comparison/B3-fit.json',fits)
-    np.savez_compressed(r/'comparison/final-predictions.npz',group_id=groups,route=routes,split=splits,**predictions,
+        if name=='MLP':heads=cp['head_support'];active=cp['active'];scaler=cp['scaler']
+    train_scaled=scale(train['X'],scaler['mean'],scaler['std']);all_scaled=scale(X,scaler['mean'],scaler['std'])
+    b3,raw3,fits=ridge(train_scaled,train['y'],train['mask'],train['group_id'],all_scaled,heads);predictions['B3']=b3;raws['B3']=raw3
+    write(out/'B3-fit.json',dict(input='21 geometry from same train-only scaler as neural heads',fits=fits))
+    np.savez_compressed(out/'final-predictions.npz',group_id=groups,route=routes,split=splits,**predictions,
         **{name+'_raw':raw for name,raw in raws.items()})
     feature_sources={x['group_id']:x for x in json.loads((r/'data/reference-sources.json').read_text())}
     selections=[];all_predictions=[]
@@ -78,7 +88,7 @@ def main():
         for i in idx:
             for name,pred in predictions.items():all_predictions.append(dict(group_id=str(group),split=str(splits[i]),route=str(routes[i]),model=name,
                 **{HEADS[j]:float(pred[i,j]) for j in range(5)}))
-    csvwrite(r/'comparison/route-selections.csv',selections);csvwrite(r/'comparison/predictions.csv',all_predictions)
+    csvwrite(out/'route-selections.csv',selections);csvwrite(out/'predictions.csv',all_predictions)
     table=[]
     for split in ('train','development-validation'):
         for method in methods:
@@ -89,10 +99,15 @@ def main():
                 success_duration_mean_s=float(np.mean([x['success_duration_s'] for x in successful if x['success_duration_s']!=''])) if successful else '',
                 base_path_mean_m=float(np.mean([x['base_path_m'] for x in known if x['base_path_m']!=''])) if known else '',
                 scope='offline paired-outcome lookup, development validation reused'))
-    csvwrite(r/'comparison/baselines.csv',table);write(r/'comparison/baselines.json',table)
-    write(r/'comparison/final-prediction-receipt.json',dict(created_at=datetime.now(timezone.utc).isoformat(),predictions_per_neural_model=1,
+    csvwrite(out/'baselines.csv',table);write(out/'baselines.json',table)
+    write(out/'final-prediction-receipt.json',dict(created_at=datetime.now(timezone.utc).isoformat(),predictions_per_neural_model=0 if a.reuse_neural else 1,
+        cumulative_neural_predictions_per_model=1,reused_neural_predictions=a.reuse_neural,B3_valid_scientific_fit_count=1,
         neural_fit_count=2,selector=selector,rows=len(X),source_count=len(set(groups)),GPU_forward_seconds=latencies,
+        new_GPU_forward_seconds=0. if a.reuse_neural else sum(latencies.values()),forward_times_are_inherited=a.reuse_neural,
         input_dimensions=1048,validation_reads_after_fixed_final=True,collision_positive_support=heads[1]['positive'],formal_train_ready=False))
+    write(r/'comparison/current.json',dict(updated_at=datetime.now(timezone.utc).isoformat(),comparison=str(out),
+        previous_invalid_B3=str(r/'comparison') if a.reuse_neural else None,
+        reason='restore R3 train-only standardized geometry recipe; raw-geometry B3 invalidated' if a.reuse_neural else 'first final comparison'))
     print(json.dumps([x for x in table if x['split']=='development-validation']),flush=True)
 
 if __name__=='__main__':main()

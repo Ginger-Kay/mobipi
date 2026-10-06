@@ -19,9 +19,10 @@ def logrows(p):
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args();r=a.run
+    comparison=Path(read(r/'comparison/current.json')['comparison']) if (r/'comparison/current.json').exists() else r/'comparison'
     out=r/'paper-evidence'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ');out.mkdir(exist_ok=False)
-    table=read(r/'comparison/baselines.json');csvwrite(out/'offline-baselines.csv',table)
-    preds=np.load(r/'comparison/final-predictions.npz',allow_pickle=False)
+    table=read(comparison/'baselines.json');csvwrite(out/'offline-baselines.csv',table)
+    preds=np.load(comparison/'final-predictions.npz',allow_pickle=False)
     train=np.load(r/'training/train-only.npz',allow_pickle=False);val=np.load(r/'training/development-validation.npz',allow_pickle=False)
     y=np.concatenate([train['y'],val['y']]);mask=np.concatenate([train['mask'],val['mask']]);metrics=[]
     for split in ('train','development-validation'):
@@ -115,7 +116,7 @@ Scientific routes are never retried after a valid stop. Engineering slot4 consum
 - Verify all media captions against videos/videos.csv, native task manifests and exact content hashes.
 - Abstract registration, authorship, manuscript claims and final OpenReview upload require Research review; Compute has not submitted.
 ''')
-    write(r/'paper-evidence/current.json',dict(created_at=datetime.now(timezone.utc).isoformat(),packet=str(out),review_status='pending',formal_train_ready=False))
+    write(r/'paper-evidence/current.json',dict(created_at=datetime.now(timezone.utc).isoformat(),packet=str(out),comparison=str(comparison),review_status='pending',formal_train_ready=False))
     print('evidence packet',out,flush=True)
 
 if __name__=='__main__':main()
