@@ -25,11 +25,20 @@ from mobiwam.pi05_motion import QPProtectionStop
 
 def now():return datetime.now(timezone.utc).isoformat()
 
+def finish_zero(ref,status):
+    record=ref.recording
+    for key in ('h','trace','video','panoramic_video'):
+        if record.get(key) is not None:record[key].close()
+    write_json(record['path']/'result.json',dict(started_at=record['started'],ended_at=now(),steps=0,
+        checker_success=bool(ref.env._check_success()),reason=status,usable_scientific_outcome=True,
+        media='zero-action Source previews and any saved partial native step; no complete-step video'))
+    ref.recording=None
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
-    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag');a=p.parse_args()
-    roster=json.loads((a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
+    p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag')
+    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');a=p.parse_args()
+    roster=json.loads((a.roster or a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
     evaluation=a.evaluation_tag or f'policy-dev-step-{a.checkpoint_step}{version_suffix}'
     if '/' in evaluation or evaluation in ('.','..'):raise ValueError('invalid evaluation tag')
@@ -44,6 +53,7 @@ def main():
     shutil.copy2(src.parent/'env_config.json',out/'env_config.json')
     write_json(out/'process.json',dict(started_at=started,pid=os.getpid(),argv=__import__('sys').argv,python=__import__('sys').executable,code_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip(),
         source_worktree_clean=not bool(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'status','--porcelain'],text=True).strip()),
+        purpose=a.purpose,roster=str(a.roster or a.run/'policy/policy-dev-roster.json'),
         source_module_sha256={n:hashlib.sha256((Path(__file__).resolve().parents[1]/n).read_bytes()).hexdigest() for n in ('scripts/pi05_harness_episode.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py','src/mobiwam/pi05_route.py')},
         task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261006,evaluation_seed=20261006,environment_seed=slot['environment_seed']))
     ref=None;attempt=None;guard=None;margin=None;queries=0;steps=0;query_seconds=0.;status='engineering_unknown'
@@ -95,12 +105,7 @@ def main():
                 except QPProtectionStop as exc:
                     status='qp_protective_stop' if legal else 'X_no_legal_candidate';write_json(attempt/'qp-protective-stop.json',dict(at=now(),step=step,reason=str(exc),actual_native_steps=steps))
                     if steps:ref.finish(status)
-                    else:
-                        record=ref.recording
-                        for key in ('h','trace','video','panoramic_video'):
-                            if record.get(key) is not None:record[key].close()
-                        write_json(attempt/'result.json',dict(started_at=record['started'],ended_at=now(),steps=0,checker_success=False,reason=status,usable_scientific_outcome=True,media='zero-action previews only; no executed video'))
-                        ref.recording=None
+                    else:finish_zero(ref,status)
                     break
                 control_phase='precontact' if driver and not manipulating and prefix['phase']=='navigate' else 'manipulate'
                 controller_targets=dict(arm_nullspace_goal=arm.initial_joint.tolist(),native_gripper_current_action=ref.robot.gripper['right'].current_action.tolist())
@@ -110,10 +115,13 @@ def main():
                         with GuardedIntegration(ref.env.sim,d,margin,lite_physics=ref.env.lite_physics,step=step,phase=control_phase):ref.step(actual)
                 except (FormalSafetyStop,JointMarginStop) as exc:
                     np.savez_compressed(attempt/'partial-control-step.npz',initial_integration=initial,terminal_integration=ref.integration(),attempted_action=actual)
-                    write_json(attempt/'safety-stop.json',dict(at=now(),step=step,failure=exc.failure));status='native_forbidden_contact_stop' if isinstance(exc,FormalSafetyStop) else 'joint_margin_stop';ref.finish(status);break
+                    write_json(attempt/'safety-stop.json',dict(at=now(),step=step,failure=exc.failure));status='native_forbidden_contact_stop' if isinstance(exc,FormalSafetyStop) else 'joint_margin_stop'
+                    if steps:ref.finish(status)
+                    else:finish_zero(ref,status)
+                    break
                 steps+=1;drift=float(np.max(abs(d.qpos[base.qpos_index]-base_target)));max_drift=max(max_drift,drift)
                 current_base=d.qpos[base.qpos_index].copy();base_path+=float(np.linalg.norm((current_base-previous_base)[:2]));previous_base=current_base
-                route_feedback=driver.observe() if driver else None
+                route_feedback=driver.observe(np.asarray(point.get('projection',{}).get('qp',{}).get('velocity',np.zeros(3)))[:3]) if driver else None
                 row=dict(step=step,query=queries,chunk_offset=manip_step%5 if manipulating else None,phase='manipulate' if manipulating else control_phase,
                     adapter_version=a.adapter_version,policy_raw_normalized=answer['normalized'][manip_step%5].tolist() if manipulating else None,
                     policy_nominal=raw[manip_step%5].tolist() if manipulating else None,world_target=dict(pos=point['pos'].tolist(),rot=point['rot'].tolist(),grasp=point['grasp']) if manipulating else None,
@@ -129,10 +137,10 @@ def main():
         semantics=driver.receipt(queries) if driver else dict(route='E',constant_base_target=True)
         write_json(out/'route-semantics.json',semantics)
         semantic_pass=(a.route=='E' or semantics.get('D_fresh_query_after_settle',False) or semantics.get('A_semantics_observed',False))
-        result=json.loads((attempt/'result.json').read_text());write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False))
+        result=json.loads((attempt/'result.json').read_text());write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False))
         print((out/'completed.json').read_text(),flush=True)
     except BaseException:
-        traceback.print_exc();write_json(out/'failure.json',dict(at=now(),traceback=traceback.format_exc(),attempt=str(attempt) if attempt else None,completed_control_steps=steps,usable_outcome=bool(steps)))
+        traceback.print_exc();write_json(out/'failure.json',dict(at=now(),traceback=traceback.format_exc(),attempt=str(attempt) if attempt else None,completed_control_steps=steps,usable_outcome=bool(steps or (attempt and (attempt/'partial-control-step.npz').exists()))))
         if ref and ref.recording:ref.finish('engineering_exception')
         if guard and attempt:write_json(attempt/'formal-native-substeps-receipt.json',guard.save(attempt))
         if margin and attempt:write_json(attempt/'joint-margin-monitor.json',margin.receipt())

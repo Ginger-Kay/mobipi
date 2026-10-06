@@ -19,6 +19,7 @@ class RouteDriver:
         self.fixture_qid=int(m.jnt_qposadr[joints[0]]);self.initial_articulation=float(d.qpos[self.fixture_qid])
         self.waypoint=0;self.settled=0;self.prefix_steps=0;self.a_started=False;self.maximum_overlap=0;self.current_overlap=0
         self.previous=None;self.events=[]
+        self.maximum_contact_base_translation=0.;self.maximum_contact_base_yaw=0.
 
     def prefix(self):
         ref=self.ref;m,d=ref.model_data();base=ref.robot.part_controllers['base'];arm=ref.robot.part_controllers['right']
@@ -60,21 +61,28 @@ class RouteDriver:
         moving=self.a_started and contact is not None
         return (np.asarray(self.plan['primary']['base_goal']) if moving else d.qpos[base.qpos_index].copy()),not moving
 
-    def observe(self):
+    def observe(self,requested_base_velocity=None):
         ref=self.ref;m,d=ref.model_data();_,ad,_=arm_indices(ref);base=ref.robot.part_controllers['base']
         snapshot=np.r_[d.qpos[base.qpos_index],d.qpos[ref.robot.part_controllers['right'].qpos_index],d.qpos[self.fixture_qid]]
         contact=observed_articulation_coupling(ref,np.r_[base.qvel_index,ad]) is not None
         if self.previous is not None:
             delta=abs(snapshot-self.previous)
-            overlap=bool(self.route=='A' and contact and np.max(delta[:3])>1e-5 and np.max(delta[3:10])>1e-5 and delta[-1]>1e-6)
+            requested=np.asarray(requested_base_velocity if requested_base_velocity is not None else np.zeros(3))
+            intentional=bool(self.a_started and np.max(abs(requested))>=.0002)
+            overlap=bool(self.route=='A' and intentional and contact and np.max(delta[:3])>1e-5 and np.max(delta[3:10])>1e-5 and delta[-1]>1e-6)
             self.current_overlap=self.current_overlap+1 if overlap else 0
             self.maximum_overlap=max(self.maximum_overlap,self.current_overlap)
+            if overlap:
+                self.maximum_contact_base_translation=max(self.maximum_contact_base_translation,float(np.linalg.norm(snapshot[:2]-self.initial_base[:2])))
+                self.maximum_contact_base_yaw=max(self.maximum_contact_base_yaw,float(abs(snapshot[2]-self.initial_base[2])))
         self.previous=snapshot
         return dict(phase=self.phase,contact_bilateral=contact,A_mobility_triggered=self.a_started,maximum_continuous_articulation_base_arm_overlap_controls=self.maximum_overlap)
 
     def receipt(self,queries):
         return dict(route=self.route,prefix_steps=self.prefix_steps,events=self.events,final_phase=self.phase,queries=queries,
             D_fresh_query_after_settle=bool(self.route=='D' and self.phase=='manipulate' and queries>0),
-            A_semantics_observed=bool(self.route=='A' and queries>=2 and self.maximum_overlap>=5),
+            A_semantics_observed=bool(self.route=='A' and queries>=2 and self.maximum_overlap>=5 and (self.maximum_contact_base_translation>=.005 or self.maximum_contact_base_yaw>=.01)),
             A_maximum_continuous_overlap_controls=self.maximum_overlap,teacher_manipulation_points_used=False,
+            A_contact_base_translation_m=self.maximum_contact_base_translation,A_contact_base_yaw_rad=self.maximum_contact_base_yaw,
+            A_definition='intentional nonzero QP base request, retained bilateral contact, articulation/arm/base overlap5 controls, net5mm translation or10mrad yaw; at least2 fresh chunks',
             note='mobility trigger and overlap use actual native contact/joint motion; geometry is simulator oracle')
