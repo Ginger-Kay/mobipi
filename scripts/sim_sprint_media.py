@@ -83,12 +83,17 @@ def main():
         else:render_diagnostic(x,out,a.azimuth)
         return
     rows=[]
-    for x in load(r/'data/inventory.json'):
+    previous=load(r/'videos/videos.json') if (r/'videos/videos.json').exists() else []
+    verified_cache={x['original_path']:x for x in previous if x.get('validation') in ('full decode pass','full decode pass; reused immutable receipt')}
+    inventory_path=Path(load(r/'data/inventory-current.json')['inventory']) if (r/'data/inventory-current.json').exists() else r/'data/inventory.json'
+    for x in load(inventory_path):
+        if x['view'] not in ('A_reference_auto','B_human'):continue
         p=x.get('video_path','')
         if not p:continue
         rows.append(dict(record_id=x['record_id'],view=x['view'],task=x.get('task'),route=x['route'],controller=x['controller'],
             result=x['stop_reason'],original_path=p,sha256=x.get('video_sha256',''),exists=Path(p).exists(),
-            validation='inherited integrity/checksum receipt reused',new_execution=False,human_intervention=x['human_or_auto']=='human',state_reset='initial only',diagnostic=False))
+            validation='inherited integrity receipt reused' if x.get('existing_receipt') or x.get('qualification_receipt') else 'historical integrity unknown; original retained',
+            new_execution=False,human_intervention=x['human_or_auto']=='human',state_reset='initial only',diagnostic=False))
     actual=receipts+[load(p) for p in sorted((r/'episodes').glob('*/*/completed.json'))]
     for x in actual:
         attempt=Path(x['attempt']);base=dict(record_id=attempt.name,view='C_policy_auto' if 'slot' in x else 'reference_online',task=x['task'],route=x['route'],
@@ -99,10 +104,15 @@ def main():
             if x.get('steps',x.get('result',{}).get('steps',0))==0:
                 rows.append(dict(**base,camera=name[:-4],original_path=str(p),sha256=sha(p),exists=True,
                     validation='zero-full-frame native stop; movie not decodable; see partial state and native guard',frames=0));continue
+            if str(p) in verified_cache:
+                old=verified_cache[str(p)];stat=p.stat()
+                if not old.get('file_stat') or old['file_stat']==dict(bytes=stat.st_size,mtime_ns=stat.st_mtime_ns):
+                    rows.append(dict(old,**base,validation='full decode pass; reused immutable receipt',file_stat=dict(bytes=stat.st_size,mtime_ns=stat.st_mtime_ns)));continue
             subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(p),'-f','null','-'],check=True)
             info=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames,r_frame_rate,width,height','-of','json',str(p)],text=True))
             rows.append(dict(**base,camera=name[:-4],original_path=str(p),sha256=sha(p),exists=True,validation='full decode pass',frames=int(info['streams'][0]['nb_read_frames']),
-                width=info['streams'][0]['width'],height=info['streams'][0]['height'],fps=info['streams'][0]['r_frame_rate']))
+                width=info['streams'][0]['width'],height=info['streams'][0]['height'],fps=info['streams'][0]['r_frame_rate'],
+                file_stat=dict(bytes=p.stat().st_size,mtime_ns=p.stat().st_mtime_ns)))
     for p in sorted((r/'videos').glob('diagnostic-*/diagnostic-binding.json')):
         x=load(p);rows.append(dict(record_id=p.parent.name,view='diagnostic',task='see source binding',route='E',controller='saved-state renderer',result='BC failure supplement',
             original_path=x['diagnostic_video'],sha256=x['diagnostic_sha256'],exists=True,validation='labeled diagnostic',new_execution=False,human_intervention=False,state_reset='saved-state rendering',diagnostic=True))
