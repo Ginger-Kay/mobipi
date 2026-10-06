@@ -19,7 +19,7 @@ from PIL import Image
 def now():return datetime.now(timezone.utc).isoformat()
 def load(p):return json.loads(Path(p).read_text())
 
-def read_observation(ref,shape,step=0,action=None):
+def read_observation(ref,shape,step=0,action=None,fresh=False):
     """Checkpoint camera dimensions and the official robomimic RGB preprocessing.
 
     mujoco.Renderer returns top-first RGB, equivalent to official EnvRobosuite's
@@ -29,11 +29,17 @@ def read_observation(ref,shape,step=0,action=None):
     raw['timesteps']=np.array([step]);raw['actions']=np.zeros(12) if action is None else np.asarray(action).copy()
     for camera in ref.policy_cameras:
         key=camera+'_image';_,height,width=shape['all_shapes'][key]
-        renderer=mujoco.Renderer(m,height=height,width=width)
+        if fresh:renderer=mujoco.Renderer(m,height=height,width=width)
+        else:
+            if getattr(ref,'policy_renderer_model',None)!=id(m):
+                if getattr(ref,'policy_renderer',None):ref.policy_renderer.close()
+                ref.policy_renderer=mujoco.Renderer(m,height=height,width=width);ref.policy_renderer_model=id(m)
+            renderer=ref.policy_renderer
         try:
             renderer.update_scene(d,camera=camera,scene_option=ref.render_options)
             raw[key]=ObsUtils.process_obs(renderer.render().copy(),obs_key=key)
-        finally:renderer.close()
+        finally:
+            if fresh:renderer.close()
     # RolloutPolicy's coordinate conversion also reads world EEF fields that
     # are absent from the network shape metadata. Preserve native wrapper keys.
     keys=set(shape['all_obs_keys'])|{k for k in raw if k.startswith('robot0_') and not k.endswith('proprio-state')}|{'actions','timesteps'}
@@ -47,6 +53,7 @@ def restore_rng(x):
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--slot',type=int,required=True);ap.add_argument('--attempt',type=int,default=1)
     a=ap.parse_args();r=a.run;roster=load(r/'policy/ability-roster.json');slot=roster['slots'][a.slot-1]
+    deadline=load(r/'preflight/continuity-receipt.json')['policy_deadline']
     assert slot['split']=='train' and slot['group_id'] in {x['group_id'] for x in load(r/'data/reference-sources.json')}
     suffix='' if a.attempt==1 else f'-engineering-attempt-{a.attempt}'
     out=r/'policy'/f"ability-{a.slot:02d}-{slot['group_id']}{suffix}";out.mkdir(exist_ok=False)
@@ -93,6 +100,11 @@ def main():
         after_obs=read_observation(ref,shape)
         diffs={k:float(np.max(abs(after_obs[k].astype(float)-obs[k].astype(float)),initial=0)) for k in obs}
         if max(diffs.values(),default=0)>1e-6:raise ValueError('policy-init restore input differs: '+str(diffs))
+        fresh_obs=read_observation(ref,shape,fresh=True)
+        fresh_diffs={k:float(np.max(abs(fresh_obs[k].astype(float)-after_obs[k].astype(float)),initial=0)) for k in fresh_obs}
+        if max(fresh_diffs.values(),default=0)>1e-6:raise ValueError('cached/fresh renderer observations differ')
+        write_json(out/'renderer-equivalence.json',dict(zero_actions=True,field_diffs=fresh_diffs,passed=True,
+            repair='reuse context; actual camera render on every control cycle; no frame reuse'))
         write_json(out/'policy-init-restore.json',dict(created_at=now(),zero_actions=True,integration_max_abs_error=float(np.max(abs(ref.integration()-bundle['integration']),initial=0)),
             observation_field_diffs=diffs,initial_frame_padding=True,parent_source=str(src),native=native))
         # Reuse parent/native evidence camera; add an independent wider base view.
@@ -106,12 +118,19 @@ def main():
         anchor=d.qpos[base.qpos_index].copy();chunk=None;offset=0;rows=[]
         with (out/'query-action-feedback.jsonl').open('x') as log:
             for step in range(2400):
+                if now()>=deadline:
+                    status='policy_wallclock_stage_deadline';ref.finish(status);break
                 if offset==0:
                     stacked={k:np.stack(list(v)) for k,v in history.items()};t=time.monotonic()
                     with torch.no_grad():ev=sample_verified_future_chunk(policy,stacked)
                     query_seconds+=time.monotonic()-t;queries+=1;chunk=ev.chunk.copy()
                     if chunk.shape!=(10,12) or not np.isfinite(chunk).all():raise ValueError('invalid BC chunk')
                     np.savez_compressed(out/f'query-{queries:04d}.npz',chunk=chunk,official_first_action=ev.official_first_action)
+                    prior=r/'policy'/f"ability-{a.slot:02d}-{slot['group_id']}"/f'query-{queries:04d}.npz'
+                    if a.attempt==2 and a.slot==4 and prior.exists():
+                        old=np.load(prior,allow_pickle=False)['chunk'];delta=float(np.max(abs(old-chunk),initial=0))
+                        with (out/'mechanical-prefix-query-equivalence.jsonl').open('a') as qlog:qlog.write(json.dumps(dict(query=queries,max_abs_error=delta))+'\n')
+                        if delta>1e-6:raise ValueError('cached-render repair changed previous frozen prefix query')
                 original=chunk[offset].copy();action=original.copy();action[7:10]=0.;action[11]=-1.
                 guard.set_boundary(step,'manipulate');initial=ref.integration().copy()
                 try:
@@ -160,6 +179,7 @@ def main():
                         checker_success=False,reason='engineering_exception_before_first_complete_action',usable_scientific_outcome=False))
                     ref.recording=None
             if ref.observation_renderer:ref.observation_renderer.close()
+            if getattr(ref,'policy_renderer',None):ref.policy_renderer.close()
             if ref.renderer:ref.renderer.close()
             ref.env.close()
 
