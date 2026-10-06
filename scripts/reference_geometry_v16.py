@@ -65,6 +65,7 @@ def plan_dock(ref,points):
     rows=[]
     for fraction in [.25,.5,.75]:
         for side in [-.12,0.,.12]:
+            if len(rows)>=getattr(ref,'dock_proposal_cap',9):continue
             dock=(1-fraction)*start+fraction*end;dock=dock.copy();dock[:2]+=side*lateral
             scratch.qpos[:]=d.qpos;scratch.qpos[base.qpos_index]=dock
             seed=points[first]['arm_qpos'].copy();samples=[];first_q=None
