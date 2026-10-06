@@ -16,17 +16,19 @@ def outcome(receipt):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args();r=a.run
-    freeze=json.loads((r/'evaluation/final-freeze.json').read_text());out=r/'paper-evidence';rows=[]
+    freeze=json.loads((r/'evaluation/final-freeze.json').read_text());out=r/'paper-evidence';rows=[];oracle_coverage=[]
     def locate(tag,slot):return next((r/'episodes'/tag).glob(f'slot-{slot:02d}*/engineering-attempt-0/completed.json'),None)
     for g in freeze['predictions']:
         table={route:outcome(locate('paired-v6-final-'+route,g['slot'])) for route in 'EDA'}
         methods={**{'fixed'+route:route for route in 'EDA'},**g['selected']}
         known=[route for route in 'EDA' if table[route]['status']!='unrun' and table[route]['safety_success'] is not None]
         oracle=min(known,key=lambda route:(-int(table[route]['safety_success']),int(bool(table[route]['collision'])),-(table[route]['progress'] or 0),
-            table[route]['path_m'],table[route]['duration_s'],'EDA'.index(route))) if known else 'X'
+            table[route]['path_m'],table[route]['duration_s'],'EDA'.index(route))) if known else None
+        oracle_coverage.append(dict(source=g['config_id'],resolved_routes=known,executed_routes=[route for route in 'EDA' if table[route]['receipt'] is not None],
+            nominal_routes=3,released_routes=sum(g['eligible'])))
         methods['oracle']=oracle
         for method,route in methods.items():
-            q=table[route] if route!='X' else dict(status='X_no_legal_candidate',native_success=None,safety_success=None,collision=None,progress=None,path_m=None,duration_s=None,receipt=None)
+            q=table[route] if route in ('E','D','A') else dict(status='X_no_legal_candidate' if route=='X' else 'oracle_unknown_no_resolved_route',native_success=None,safety_success=None,collision=None,progress=None,path_m=None,duration_s=None,receipt=None)
             rows.append(dict(evaluation='paired_lookup',source=g['config_id'],parent_group=g['parent_group'],family_id=g['family_id'],method=method,route=route,**q))
         for method in freeze['online_methods']:
             q=outcome(locate('online-v6-'+method,g['slot']))
@@ -67,7 +69,9 @@ def main():
         w=csv.DictWriter(f,fieldnames=list(common[0]));w.writeheader();w.writerows(common)
     (out/'final-comparison-status.json').write_text(json.dumps(dict(at=datetime.now(timezone.utc).isoformat(),final_parents=len(freeze['predictions']),families=len({x['family_id'] for x in freeze['predictions']}),
         scope='prospective held-out known-development, partial task/routes; descriptive sample, no significance or formal claim',all_failures_and_missing_retained=True,
-        oracle_coverage='only executed routes with resolved safe outcomes',cost_comparison='successful means descriptive; no universal speed claim without common success set',
+        oracle_coverage=dict(scope='only executed routes with resolved safe outcomes',sources=oracle_coverage,
+            resolved_route_count=sum(len(x['resolved_routes']) for x in oracle_coverage),nominal_route_count=3*len(oracle_coverage),
+            released_route_count=sum(x['released_routes'] for x in oracle_coverage)),cost_comparison='successful means descriptive; no universal speed claim without common success set',
         methods=aggregates,formal_train_ready=False,human_review='pending'),indent=2)+'\n')
     print(json.dumps(aggregates),flush=True)
 if __name__=='__main__':main()
