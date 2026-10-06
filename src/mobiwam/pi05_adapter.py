@@ -58,6 +58,7 @@ def execute_static(ref,action,anchor,base_target):
     point=world_intent(action,anchor)
     # Native achieved-goal OSC, inherited translation/rotation limits and base
     # servo. Torso and all padded channels are neutral; policy never drives base.
-    actual=mapped_action(ref,point,base_target,arm_enabled=True)
+    actual,position_error,rotation_error,base_error=mapped_action(ref,point,base_target,arm_enabled=True)
     actual[10]=0.;actual[11]=-1.
+    point['tracking_error']=dict(position_m=position_error,orientation_rad=rotation_error,base_generalized=base_error)
     return actual,point

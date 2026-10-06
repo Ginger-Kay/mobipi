@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 from mobiwam.pi05_adapter import world_intent
+from unittest.mock import patch
+from mobiwam.pi05_adapter import execute_static
 
 
 def test_nominal_world_intent_is_invariant_when_query_base_changes():
@@ -19,3 +21,11 @@ def test_nominal_world_intent_is_invariant_when_query_base_changes():
 def test_invalid_policy_actions_fail_before_native_control(bad):
     with pytest.raises(ValueError,match='finite32'):
         world_intent(bad,dict(base_world_p=np.zeros(3),base_world_R=np.eye(3)))
+
+
+def test_static_execution_consumes_real_native_mapper_tuple():
+    native=np.arange(12,dtype=float)
+    with patch('mobiwam.pi05_adapter.mapped_action',return_value=(native,.01,.02,.003)):
+        actual,intent=execute_static(object(),np.zeros(32),dict(base_world_p=np.zeros(3),base_world_R=np.eye(3)),np.zeros(3))
+    assert actual.shape==(12,) and actual[10]==0 and actual[11]==-1
+    assert intent['tracking_error']['position_m']==.01
