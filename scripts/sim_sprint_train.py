@@ -20,6 +20,8 @@ def main():
     participating=set(groups[mask[:,active].any(1)])
     included=np.array([g in participating for g in groups]);mean,std=fit_scaler(X[included],groups[included]);xs=scale(X,mean,std)
     out=r/'training'/a.model;out.mkdir(exist_ok=False)
+    weights=Path('/share/personal/chensiyu/haokaijiang/MobiWAM/checkpoints/obc-sim-sprint-v1')/r.name/a.model
+    weights.mkdir(parents=True,exist_ok=False)
     code=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
     frozen=dict(created_at=now(),model=a.model,architecture='Linear(1048,32)-ReLU-Linear(32,5)' if a.model=='MLP' else 'Linear(1048,5)',
         training_seed=17,steps=2000,lr=3e-4,weight_decay=.05,bias_decay=0.,grad_clip=1.,eta_min=1e-5,full_batch=True,FP32=True,
@@ -59,7 +61,8 @@ def main():
             if step in (500,1000,1500,2000):
                 torch.save(dict(step=step,architecture=a.model,model=model.state_dict(),optimizer=optimizer.state_dict(),scheduler=scheduler.state_dict(),
                     scaler=dict(mean=mean,std=std),head_support=heads,active=active,schema=binding,config=frozen,code_commit=code,
-                    rng=dict(torch=torch.get_rng_state(),cuda=torch.cuda.get_rng_state_all(),numpy=np.random.get_state(),python=random.getstate())),out/f'step{step:04d}.pt')
+                    rng=dict(torch=torch.get_rng_state(),cuda=torch.cuda.get_rng_state_all(),numpy=np.random.get_state(),python=random.getstate())),weights/f'step{step:04d}.pt')
+                (out/f'step{step:04d}.pt').symlink_to(weights/f'step{step:04d}.pt')
     write(out/'completed.json',dict(started_at=started,ended_at=now(),steps=2000,gpu_wall_seconds=time.monotonic()-t0,final_loss=history[-1]['loss'],
         checkpoint=str(out/'step2000.pt'),checkpoint_sha256=sha(out/'step2000.pt'),validation_predictions=0,formal_train_ready=False))
     print(json.dumps(json.loads((out/'completed.json').read_text())),flush=True)
