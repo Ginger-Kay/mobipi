@@ -70,6 +70,15 @@ def execute_projected(ref,action,anchor,base_target,co_motion=False):
     from reference_geometry import PalmClearance
     point=world_intent(action,anchor)
     ref.base_locked=True
+    grip_record=None
+    if co_motion:
+        from mobiwam.pi05_grip_projection import protect_grip
+        grip,hold,grip_record=protect_grip(ref,point['grasp'])
+        point['grasp']=grip
+        if hold:
+            actual=np.zeros(12);actual[6]=grip;actual[11]=-1.;ref.pi05_previous_velocity=np.zeros(10)
+            point['projection']=dict(gripper=grip_record,body_hold=True,role='physical opening goal resolves finger constraints; no qpos injection')
+            return actual,point
     actual,projection,velocity=whole_body_action(ref,point,base_target,getattr(ref,'pi05_previous_velocity',None),locked_base=True,co_motion=co_motion)
     ref.pi05_previous_velocity=velocity
     ref.robot.part_controllers['right'].initial_joint=np.asarray(projection['arm_nullspace_goal'])
@@ -77,6 +86,7 @@ def execute_projected(ref,action,anchor,base_target,co_motion=False):
     before=actual.copy();actual,palm=ref.pi05_palm_projection.apply(actual)
     actual[7:10]=0.;actual[10]=0.;actual[11]=-1.
     point['projection']=dict(qp=projection,palm=palm,native_action_correction=(actual-before).tolist(),
+        gripper=grip_record,
         controller_nullspace_goal=projection['arm_nullspace_goal'],base_velocity_locked=True,
         role='constraints applied to pi05 intent; no teacher points or threshold relaxation')
     return actual,point
