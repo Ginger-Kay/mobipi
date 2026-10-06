@@ -16,10 +16,10 @@ from mobiwam.task_video_identity import observe_native
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--attempt',type=int,default=0);a=p.parse_args()
     candidates=json.loads((a.run/'data/policy-fit-candidates.json').read_text())
     x=candidates[0];source=Path(x['attempt']).parents[1]
-    out=a.run/'preflight/native-interface';out.mkdir(exist_ok=False)
+    out=a.run/'preflight'/('native-interface' if a.attempt==0 else f'native-interface-retry-{a.attempt}');out.mkdir(exist_ok=False)
     ref=Reference(argparse.Namespace(output=str(out),task=x['task'],layout=1,style=0,seed=109,self_test=True,
         source=str(source),replay_attempt=None,resume_attempt=None,width=960,height=540))
     try:
@@ -30,14 +30,16 @@ def main():
         obs=ref.env._get_observations(force_update=True)
         details=dict(created_at=datetime.now(timezone.utc).isoformat(),zero_env_step=True,native=native,
             controller_attributes={k:np.asarray(getattr(arm,k)).tolist() for k in ('origin_pos','origin_ori','ref_pos','ref_ori_mat','input_max','input_min','output_max','output_min','qpos_index') if hasattr(arm,k)},
-            input_ref_frame=arm.input_ref_frame,goal_update_mode=arm._goal_update_mode,
+            input_ref_frame=arm.input_ref_frame,goal_update_mode=arm._goal_update_mode,base_body=ref.base_body,
+            controller_origin_site=arm.naming_prefix+arm.part_name+'_center',eef_reference_name=arm.ref_name,
             obs={k:np.asarray(v).tolist() for k,v in obs.items() if k in ('robot0_base_pos','robot0_base_quat','robot0_base_to_eef_pos','robot0_base_to_eef_quat_site','robot0_eef_pos','robot0_eef_quat_site','robot0_gripper_qpos')})
+        write_json(out/'interface-binding.json',details)
         tests=[]
         with h5py.File(x['observations_path']) as f:
             g=f['data/demo_0'];actions=g['actions'][:]
             for i in np.linspace(0,len(actions)-1,min(30,len(actions)),dtype=int):
                 ref.env.sim.set_state_from_flattened(g['states'][i]);ref.env.sim.forward()
-                ref.robot.update_state();arm.update(force=True)
+                ref.robot.composite_controller.update_state();arm.update(force=True)
                 original=actions[i,:6];arm.set_goal_update_mode('achieved');arm.set_goal(original)
                 target_p=arm.goal_pos.copy();target_r=arm.goal_ori.copy()
                 current_p=arm.world_to_origin_frame(arm.ref_pos)
