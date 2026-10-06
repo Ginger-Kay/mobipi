@@ -19,13 +19,13 @@ ROOT=Path('/share/personal/chensiyu/haokaijiang/MobiWAM')
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--attempt',type=int,default=0);a=ap.parse_args()
     receipt=json.loads((a.run/'preflight/native-interface-retry-1/nominal-target-roundtrip.json').read_text())
     assert receipt['passed']
     candidates=json.loads((a.run/'data/policy-fit-candidates.json').read_text())
     splits=json.loads((a.run/'data/lineage-split.json').read_text())['parent_groups']
     fit={x['parent_group'] for x in splits if x['role']=='train'}
-    dataset=ROOT/'data/obc-pi05-v1/static-command-v1';dataset.mkdir(exist_ok=False)
+    dataset=ROOT/'data/obc-pi05-v1'/('static-command-v1' if a.attempt==0 else f'static-command-v1-retry-{a.attempt}');dataset.mkdir(exist_ok=False)
     index=[];rejected=[];all_states=[];all_targets=[]
     rule=dict(created_at=datetime.now(timezone.utc).isoformat(),rule='whole safe-success E records only; base command zero, mode negative, torso command zero; no partial segments; complete 10-step windows only',
         padding='state valid22 then10 zeros; action valid8 then24 zeros; padding normalized zeros; official model loss includes padding dimensions',
@@ -43,7 +43,11 @@ def main():
             g=f['data/demo_0'];actions=g['actions'][:];T=len(actions)
             if np.max(abs(actions[:,7:11]),initial=0)>1e-12 or np.any(actions[:,11]>=0):
                 rejected.append(dict(record=row['record_id'],reason='not static compatible base/torso/mode'));continue
-            model=mujoco.MjModel.from_xml_string(g.attrs['model_file']);d=mujoco.MjData(model)
+            # Native RoboCasa performs this path repair during XML restoration.
+            # Preserve the historical original XML and change only the transient
+            # local asset URI, with geometry checked against recorded sensors.
+            xml=g.attrs['model_file'].replace('/share/personal/haokaijiang/MobiWAM',str(ROOT))
+            model=mujoco.MjModel.from_xml_string(xml);d=mujoco.MjData(model)
             base=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,'mobilebase0_base')
             origin=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_SITE,'robot0_right_center')
             eef=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_SITE,'gripper0_right_grip_site')
