@@ -3,6 +3,7 @@ import argparse, hashlib, json, os, random, socket, subprocess, sys, time
 from datetime import datetime,timezone
 from pathlib import Path
 import numpy as np
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
 import torch
 from mobiwam.sim_sprint_learning import *
 
@@ -32,7 +33,7 @@ def main():
         scaler='train-only participating Sources, all three preoutcome routes, Source equal population std; std<1e-6=0',
         heads=heads,active=active,scaler_sources=sorted(participating),mean=mean.tolist(),std=std.tolist(),code_commit=code,
         train_dataset=str(r/'training/train-only.npz'),train_sha256=sha(r/'training/train-only.npz'),validation_labels_accessed=False,
-        source_view=binding['controller'],torch_module=torch.__file__,formal_train_ready=False)
+        source_view=binding['controller'],torch_module=torch.__file__,CUBLAS_WORKSPACE_CONFIG=os.environ['CUBLAS_WORKSPACE_CONFIG'],formal_train_ready=False)
     write(out/'config.json',frozen)
     random.seed(17);np.random.seed(17);torch.manual_seed(17);torch.cuda.manual_seed_all(17);torch.set_num_threads(4)
     torch.backends.cuda.matmul.allow_tf32=False;torch.backends.cudnn.allow_tf32=False;torch.backends.cudnn.benchmark=False;torch.use_deterministic_algorithms(True)
