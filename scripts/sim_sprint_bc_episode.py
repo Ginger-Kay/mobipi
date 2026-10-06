@@ -34,7 +34,10 @@ def read_observation(ref,shape,step=0,action=None):
             renderer.update_scene(d,camera=camera,scene_option=ref.render_options)
             raw[key]=ObsUtils.process_obs(renderer.render().copy(),obs_key=key)
         finally:renderer.close()
-    return {k:np.asarray(raw[k]).copy() for k in shape['all_obs_keys'] if k!='lang_emb'}
+    # RolloutPolicy's coordinate conversion also reads world EEF fields that
+    # are absent from the network shape metadata. Preserve native wrapper keys.
+    keys=set(shape['all_obs_keys'])|{k for k in raw if k.startswith('robot0_') and not k.endswith('proprio-state')}|{'actions','timesteps'}
+    return {k:np.asarray(raw[k]).copy() for k in sorted(keys) if k!='lang_emb'}
 
 def capture_rng():
     return dict(python=random.getstate(),numpy=np.random.get_state(),torch=torch.get_rng_state(),cuda=torch.cuda.get_rng_state_all())
@@ -42,10 +45,11 @@ def restore_rng(x):
     random.setstate(x['python']);np.random.set_state(x['numpy']);torch.set_rng_state(x['torch']);torch.cuda.set_rng_state_all(x['cuda'])
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--slot',type=int,required=True)
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--slot',type=int,required=True);ap.add_argument('--attempt',type=int,default=1)
     a=ap.parse_args();r=a.run;roster=load(r/'policy/ability-roster.json');slot=roster['slots'][a.slot-1]
     assert slot['split']=='train' and slot['group_id'] in {x['group_id'] for x in load(r/'data/reference-sources.json')}
-    out=r/'policy'/f"ability-{a.slot:02d}-{slot['group_id']}";out.mkdir(exist_ok=False)
+    suffix='' if a.attempt==1 else f'-engineering-attempt-{a.attempt}'
+    out=r/'policy'/f"ability-{a.slot:02d}-{slot['group_id']}{suffix}";out.mkdir(exist_ok=False)
     started=now();write_json(out/'process.json',dict(started_at=started,pid=os.getpid(),argv=__import__('sys').argv,python=__import__('sys').executable,
         code_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip(),
         CUDA_VISIBLE_DEVICES=os.environ.get('CUDA_VISIBLE_DEVICES'),MUJOCO_EGL_DEVICE_ID=os.environ.get('MUJOCO_EGL_DEVICE_ID')))
@@ -146,7 +150,15 @@ def main():
         raise
     finally:
         if ref:
-            if ref.recording:ref.finish('engineering_exception')
+            if ref.recording:
+                if ref.recording['n']:ref.finish('engineering_exception')
+                else:
+                    record=ref.recording
+                    for key in ('h','trace','video','panoramic_video'):
+                        if record.get(key) is not None:record[key].close()
+                    write_json(record['path']/'result.json',dict(started_at=record['started'],ended_at=now(),steps=0,
+                        checker_success=False,reason='engineering_exception_before_first_complete_action',usable_scientific_outcome=False))
+                    ref.recording=None
             if ref.observation_renderer:ref.observation_renderer.close()
             if ref.renderer:ref.renderer.close()
             ref.env.close()
