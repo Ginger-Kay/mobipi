@@ -36,6 +36,7 @@ def main():
         cap.release();assert len(hashes)==q['steps']
         assert native['binding']['camera']!=pan['camera'] and hashes[0]!=main_hashes[0]
         trace=[json.loads(x) for x in (attempt/'trace.jsonl').read_text().splitlines()]
+        assert len(pan['frame_bindings'])==len(trace)==q['steps']
         for x,t in zip(pan['frame_bindings'],trace):
             b=t['native_frame_binding']
             for key in ('frame_index','native_model_geometry_sha256','actual_qpos_sha256','actual_qvel_sha256','actual_sim_time'):assert x[key]==b[key]
