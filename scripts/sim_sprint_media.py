@@ -75,7 +75,7 @@ def render_diagnostic(receipt,out,azimuth):
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--stage',choices=['index','preview','render'],default='index')
-    ap.add_argument('--slot',type=int);ap.add_argument('--azimuth',type=float);a=ap.parse_args();r=a.run
+    ap.add_argument('--slot',type=int);ap.add_argument('--azimuth',type=float);ap.add_argument('--index-version',type=int,default=1);a=ap.parse_args();r=a.run
     receipts=[load(p) for p in sorted((r/'policy').glob('ability-*/completed.json'))]
     if a.stage!='index':
         x=next(x for x in receipts if x['slot']==a.slot);out=r/'videos'/f"diagnostic-slot-{a.slot}"
@@ -103,10 +103,17 @@ def main():
     for p in sorted((r/'videos').glob('diagnostic-*/diagnostic-binding.json')):
         x=load(p);rows.append(dict(record_id=p.parent.name,view='diagnostic',task='see source binding',route='E',controller='saved-state renderer',result='BC failure supplement',
             original_path=x['diagnostic_video'],sha256=x['diagnostic_sha256'],exists=True,validation='labeled diagnostic',new_execution=False,human_intervention=False,state_reset='saved-state rendering',diagnostic=True))
-    csvwrite(r/'videos/videos.csv',rows);write(r/'videos/videos.json',rows)
+    index_out=r/'videos'/f'index-v{a.index_version}';index_out.mkdir(exist_ok=False)
+    csvwrite(index_out/'videos.csv',rows);write(index_out/'videos.json',rows)
     cells=['<!doctype html><meta charset=utf-8><title>Simulation sprint videos</title><h1>Simulation sprint video index</h1><p>Human, reference, policy, and diagnostic views retain distinct evidence levels.</p>']
     for x in rows:
         cells.append('<p>'+html.escape(f"{x['view']} | {x['task']} | {x['route']} | {x['controller']} | {x['result']}")+'<br><a href="'+html.escape(x['original_path'],quote=True)+'">'+html.escape(x['original_path'])+'</a></p>')
-    (r/'videos/index.html').write_text('\n'.join(cells));print('indexed',len(rows),'video entries',flush=True)
+    (index_out/'index.html').write_text('\n'.join(cells))
+    for name in ('index.html','videos.csv','videos.json'):
+        current=r/'videos'/name
+        if current.is_symlink():current.unlink()
+        elif current.exists():current.rename(r/'videos'/('initial-'+name))
+        current.symlink_to(index_out/name)
+    print('indexed',len(rows),'video entries',str(index_out),flush=True)
 
 if __name__=='__main__':main()
