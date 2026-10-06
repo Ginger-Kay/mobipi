@@ -8,6 +8,10 @@ def main():
     roster=json.loads((r/'policy/ability-roster.json').read_text())['slots'];completed=[]
     for slot in roster:
         receipts=[json.loads(p.read_text()) for p in (r/'policy').glob(f"ability-{slot['slot']:02d}-*/completed.json")]
+        if not receipts and (r/'policy'/f"slot-{slot['slot']}-mechanical-exhausted.json").exists():
+            x=json.loads((r/'policy'/f"slot-{slot['slot']}-mechanical-exhausted.json").read_text())
+            completed.append(dict(slot=slot['slot'],task=slot['task'],group_id=slot['group_id'],native_success=None,
+                safety_qualified_success=False,status='mechanical_retry_exhausted',episode_receipt=x,scientific_outcome_known=False));continue
         if len(receipts)!=1:raise ValueError(f"slot {slot['slot']} not closed exactly once: {len(receipts)}")
         x=receipts[0];guard=json.loads((Path(x['attempt'])/'joint-margin-monitor.json').read_text())
         sweep_path=Path(x['attempt'])/'sprint-safety-audit.json'
@@ -19,7 +23,7 @@ def main():
         rows=[x for x in completed if x['task']==task];native=sum(bool(x['native_success']) for x in rows);safe=sum(x['safety_qualified_success'] for x in rows)
         if native>=2 and any(x['native_success'] and not (Path(x['attempt'])/'sprint-safety-audit.json').exists() for x in rows):
             raise ValueError('native success can meet E condition; actual swept audits required before readiness classification')
-        tasks.append(dict(task=task,planned_E=3,completed_E=len(rows),native_success=native,safety_qualified_success=safe,
+        tasks.append(dict(task=task,planned_E=3,completed_E=sum(x.get('native_success') is not None for x in rows),engineering_missing=sum(x.get('native_success') is None for x in rows),native_success=native,safety_qualified_success=safe,
             E_pass=safe>=2,D_history_readiness='not_run_E_capability_not_passed' if safe<2 else 'requires_primary_slot_check',
             A_chunk_readiness='not_run_E_capability_not_passed' if safe<2 else 'requires_primary_slot_check',BC_batch_released=False))
     if any(x['E_pass'] for x in tasks):raise ValueError('E-passing task requires explicit frozen D/A continuation checks before fallback decision')
