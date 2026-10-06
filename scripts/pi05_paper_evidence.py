@@ -101,7 +101,7 @@ Native action HDF5 omits auxiliary controller goals, so full query/action sideca
         ('CloseDrawer_E_safety_readiness','qualified' if readiness['tasks']['CloseDrawer']['passed'] else 'unsupported','policy/task-readiness.json'),
         ('microwave_E_safety_readiness','qualified' if readiness['tasks']['CloseSingleDoor']['passed'] else 'unsupported','policy/task-readiness.json'),
         ('D_prefix_and_fresh_query','qualified','policy/harness-route-release.json'),
-        ('A_continuous_cooperation','unsupported','paper-evidence/policy-development-outcomes.csv'),
+        ('CloseDrawer_A_continuous_cooperation','unsupported','paper-evidence/harness-qualification.csv'),
         ('OBC_fixed_fits','supported' if len(obc)==2 else 'unsupported','paper-evidence/OBC-fit-costs.csv' if obc else 'phase-state.json'),
         ('OBC_selection_gain','unsupported','paper-evidence/final-comparison-status.json' if final else 'phase-state.json'),
         ('formal_or_paper_ready','unsupported','phase-state.json')]
