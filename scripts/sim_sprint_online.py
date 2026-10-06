@@ -19,6 +19,17 @@ def now():return datetime.now(timezone.utc).isoformat()
 
 class SprintReference(Reference):
     def restore(self):return restore_saved_integration(self)
+    def finish(self,reason):
+        if not self.recording or self.recording['n']:return super().finish(reason)
+        record=self.recording
+        for key in ('h','trace','video','panoramic_video'):
+            if record.get(key) is not None:record[key].close()
+        path=record['path']
+        write_json(path/'result.json',dict(started_at=record['started'],ended_at=now(),route=self.route,source=str(self.source),
+            steps=0,reason=reason,checker_success=bool(self.env._check_success()),partial_control_step=(path/'partial-control-step.npz').exists(),
+            video_frames=0,task_video_manifest=None,review_status='pending',formal_train_ready=False,
+            native_stop_evidence_separate=True,scientific_outcome=reason in ('native_forbidden_contact_stop','joint_margin_stop')))
+        self.last_attempt=path;self.recording=None;self.paused=True
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--group',required=True)

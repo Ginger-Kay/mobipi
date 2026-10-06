@@ -96,6 +96,9 @@ def main():
         for name in ('original.mp4','panoramic.mp4'):
             p=attempt/name
             if not p.exists():continue
+            if x.get('steps',x.get('result',{}).get('steps',0))==0:
+                rows.append(dict(**base,camera=name[:-4],original_path=str(p),sha256=sha(p),exists=True,
+                    validation='zero-full-frame native stop; movie not decodable; see partial state and native guard',frames=0));continue
             subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(p),'-f','null','-'],check=True)
             info=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames,r_frame_rate,width,height','-of','json',str(p)],text=True))
             rows.append(dict(**base,camera=name[:-4],original_path=str(p),sha256=sha(p),exists=True,validation='full decode pass',frames=int(info['streams'][0]['nb_read_frames']),
