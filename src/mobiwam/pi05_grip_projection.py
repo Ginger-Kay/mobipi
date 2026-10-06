@@ -1,6 +1,7 @@
 """Gripper goal projection for rigid finger gaps the arm QP cannot change."""
 import mujoco
 import numpy as np
+from mobiwam.reference_collision import SweptGeometry
 
 
 def protect_grip(ref,policy_command,margin=.001):
@@ -8,12 +9,15 @@ def protect_grip(ref,policy_command,margin=.001):
     names=[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_GEOM,i) or '' for i in range(m.ngeom)]
     first=[i for i,n in enumerate(names) if 'gripper0_right_finger1' in n and (m.geom_contype[i] or m.geom_conaffinity[i])]
     second=[i for i,n in enumerate(names) if 'gripper0_right_finger2' in n and (m.geom_contype[i] or m.geom_conaffinity[i])]
-    distances=[]
-    for i in first:
-        for j in second:
-            if 'pad_collision' in names[i] and 'pad_collision' in names[j]:continue
-            dist=float(mujoco.mj_geomDistance(m,d,i,j,.02,np.zeros(6)))
-            distances.append((dist,i,j))
+    fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
+    if getattr(ref,'pi05_qp_geometry_model',None)!=id(m):
+        ref.pi05_qp_geometry=SweptGeometry(m,target_prefix=fixture.name,margin=.0005);ref.pi05_qp_geometry_model=id(m)
+    # Reuse the established pair set and configured native GJK precision. The
+    # unconfigured raw mj_geomDistance can disagree for these convex meshes.
+    pairs,values=ref.pi05_qp_geometry.distances(d.qpos.copy(),'manipulate')
+    first=set(first);second=set(second);distances=[]
+    for (i,j),dist in zip(pairs,values):
+        if (int(i) in first and int(j) in second) or (int(j) in first and int(i) in second):distances.append((float(dist),int(i),int(j)))
     minimum=min(distances,default=(.02,-1,-1));active=policy_command>0 and minimum[0]<margin+.0005
     if active:
         # Native Panda controller consumes normalized position targets from
