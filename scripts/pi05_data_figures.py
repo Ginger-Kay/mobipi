@@ -25,20 +25,21 @@ def main():
    if row['task']!=task:continue
    key=(float(row['distance_offset_m']),float(row['lateral_offset_m']),int(row['tier']))
    if key in seen:continue
-   seen.add(key);ax.scatter(key[0],key[1],s=70,marker='o' if key[2]==1 else 's',color='#1565a8' if key[2]==1 else '#d17a25');ax.annotate('slot'+row['slot'],(key[0],key[1]),xytext=(4,5),textcoords='offset points',fontsize=8)
+   if task=='CloseDrawer' and key[:2]==(0.,0.) and key[2]==2:continue
+   seen.add(key);ax.scatter(key[0],key[1],s=70,marker='o' if key[2]==1 else 's',color='#1565a8' if key[2]==1 else '#d17a25');ax.annotate(('slots1,6' if task=='CloseDrawer' and key[:2]==(0.,0.) else 'slot'+row['slot']),(key[0],key[1]),xytext=(4,5),textcoords='offset points',fontsize=8)
   ax.set(title=task,xlabel='Outward offset from anchor (m)');ax.grid(alpha=.2)
  axes[0].set_ylabel('Furniture-local lateral offset (m)');fig.suptitle('Static legal starts:60 first tier,30 additional;30 second-tier slots rejected\nYaw0 and one neutral arm; opening variation overlaps in this2D projection',fontsize=9);fig.tight_layout();save(fig,out,'start-coverage')
  fig,ax=plt.subplots(figsize=(10,4.4));ax.set(xlim=(0,10),ylim=(0,4.4));ax.axis('off')
  def box(x,y,w,h,label,color):
-  ax.add_patch(FancyBboxPatch((x,y),w,h,boxstyle='round,pad=.04',facecolor=color,edgecolor='#666'));ax.text(x+w/2,y+h/2,label,ha='center',va='center',fontsize=8)
+  ax.add_patch(FancyBboxPatch((x,y),w,h,boxstyle='round,pad=.04',facecolor=color,edgecolor='#666'));ax.text(x+w/2,y+h/2,label,ha='center',va='center',fontsize=6.8)
  def arrow(x,y,u,v):ax.annotate('',(u,v),(x,y),arrowprops=dict(arrowstyle='->',color='#555'))
  box(.1,2.65,2.15,1.35,'61 qualified demonstrations\n41 reference +20 human\n16 original parents\n2 human templates','#e9f1f8')
  box(2.8,2.65,2.2,1.35,'Approved corrective LoRA\nOriginalfit2 initialization\n2000 updates; batch8\n~0.32 mean window exposures','#e9f1f8');arrow(2.3,3.3,2.75,3.3)
  box(5.6,2.65,2.05,1.35,'Fixed development roster\nOld / corrective1000 /2000\n6 slots each; failures retained\nFreeze one policy + guards','#f1f0f7');arrow(5.05,3.3,5.55,3.3)
- box(8.15,2.65,1.65,1.35,'20 OBC parents\n12train /4dev /4eval\n3 starts, then resource gate\n2 fixture families','#f1f0f7');arrow(7.7,3.3,8.1,3.3)
+ box(8.15,2.65,1.65,1.35,'20 OBC parents\n12train /4dev /4eval\n3 starts, resource gate\n2 fixture families','#f1f0f7');arrow(7.7,3.3,8.1,3.3)
  box(5.6,.2,2.05,1.45,'Real E / D / natural A\nTrain/dev first\nNative fields + masks\nOriginal numerical protection','#edf4e9');arrow(8.95,2.6,7.7,1.65)
- box(2.8,.2,2.2,1.45,'Fixed OBC recipe\nCLIP1024 + geometry21 + route3\nMLP / Linear final2000\nRidge21 alpha1; train only','#edf4e9');arrow(5.55,.9,5.05,.9)
- box(.1,.2,2.15,1.45,'Evaluation frozen before outcomes\nPaired lookup + fresh online\nParent cluster; all failures/media\nResearch claim review pending','#fff2de');arrow(2.75,.9,2.3,.9)
+ box(2.8,.2,2.2,1.45,'Fixed OBC recipe\nCLIP1024 + geometry21\n+ route onehot3\nMLP / Linear final2000\nRidge21 alpha1; train only','#edf4e9');arrow(5.55,.9,5.05,.9)
+ box(.1,.2,2.15,1.45,'Freeze evaluation before outcomes\nPaired lookup + fresh online\nParent cluster; all failures/media\nResearch claim review pending','#fff2de');arrow(2.75,.9,2.3,.9)
  ax.text(.1,2.1,'Reference results remain demonstration qualifications; only current frozen-policy outcomes label OBC.',fontsize=8);save(fig,out,'data-flow')
  if (out/'all-primary-outcomes.jsonl').exists():
   records=[json.loads(x) for x in (out/'all-primary-outcomes.jsonl').read_text().splitlines()];fig,axes=plt.subplots(1,2,figsize=(9,3.3))
