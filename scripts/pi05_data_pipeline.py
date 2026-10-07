@@ -26,7 +26,12 @@ def main():
     # Own server shutdown is graceful and must be observed, not guessed.
     for i in [0,1]:
      q=read(r/'policy'/f'{stage}-worker{i}/completed.json');assert q['all_declared_jobs_closed']
-    if all((r/'policy'/f'{stage}-service{i}/completed.json').exists() for i in [0,1]):break
+    if all((r/'policy'/f'{stage}-service{i}/completed.json').exists() for i in [0,1]):
+     failures=[x for i in [0,1] for x in read(r/'policy'/f'{stage}-worker{i}/completed.json')['results'] if x.get('exit_code',0)!=0]
+     if failures:
+      status('mechanical-failure-paused-for-agent',stage_name=stage,failed_units=failures)
+      raise RuntimeError('mechanical failure retained; no automatic resume or fit/eval dispatch')
+     break
    status('await-'+stage,workers_closed=closed)
    time.sleep(30)
  def stage(name):

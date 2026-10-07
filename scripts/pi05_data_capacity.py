@@ -81,7 +81,9 @@ def main():
   assert all((r/'policy'/f'train1-worker{i}/completed.json').exists() for i in [0,1])
   parents={c['parent_group'] for c in roster};additional={c['parent_group'] for c in roster if c['tier']==2 and c['static_config_legal']};coverage=parents<=additional
   cost=extra['estimated_seconds']+eval2['estimated_seconds']+max(audit_remaining, (extra['units']+eval2['units'])*300*audit_ratio/auditors)*1.25+finalfit+reserve
-  checks=dict(static_additional_each_parent=coverage,measured_first6=measured6,behavior_unchanged=bool(component_ok),time_remaining_sufficient=(deadline-stamp).total_seconds()>=cost,disk_sufficient=space>=peak_extra,
+  closedresults=[x for i in [0,1] for x in read(r/'policy'/f'train1-worker{i}/completed.json')['results']]
+  first_complete=all(x.get('exit_code',0)==0 and not x.get('status','').startswith('unrun') for x in closedresults)
+  checks=dict(firsttier_all_legal_units_closed=first_complete,static_additional_each_parent=coverage,measured_first6=measured6,behavior_unchanged=bool(component_ok),time_remaining_sufficient=(deadline-stamp).total_seconds()>=cost,disk_sufficient=space>=peak_extra,
    train1_binding_closed=(r/'training/tier-1/dataset-binding.json').exists(),two_worker_isolation=True)
   tier=2 if all(checks.values()) else 1;decision=dict(at=stamp.isoformat(),selected_tier=tier,checks=checks,estimated_tier2_remaining_seconds=cost,remaining_seconds=(deadline-stamp).total_seconds(),capacity_receipt=str(old),resource_only=True,evaluation_unopened=True,score_used=False,planned_primary=360 if tier==2 else 180,planned_online=72 if tier==2 else 36)
   write(dest,decision);print(json.dumps(decision),flush=True)
