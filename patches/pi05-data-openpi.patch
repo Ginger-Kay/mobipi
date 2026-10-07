@@ -1,0 +1,370 @@
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..c5c102b
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,3 @@
++# PI05-HARNESS-v1 task-owned checkout
++
++Follow /share/personal/chensiyu/haokaijiang/MobiWAM/artifacts/MMWAM-OBC-002-PI05-HARNESS/v1/20261006T150500Z-pi05-harness/runtime/control/AGENTS.md and /share/personal/chensiyu/haokaijiang/MobiWAM/artifacts/MMWAM-OBC-002-PI05-HARNESS/v1/20261006T150500Z-pi05-harness/runtime/control/08-experiments/contracts/2026-10-06-obc-wam-pi05-autonomous-integration.md. Single agent; preserve existing processes and old evidence. Created_at: 2026-10-06T15:04:49.291352+00:00
+diff --git a/scripts/pi05_harness_data.py b/scripts/pi05_harness_data.py
+new file mode 100644
+index 0000000..ef8ab46
+--- /dev/null
++++ b/scripts/pi05_harness_data.py
+@@ -0,0 +1,79 @@
++"""Frozen local demo loader and explicit current-base nominal action format."""
++import json
++from pathlib import Path
++import numpy as np
++from scipy.spatial.transform import Rotation
++from openpi.models import tokenizer, model
++from openpi.shared import normalize
++from openpi.training.config import DataConfig
++
++CAMERAS=('base_0_rgb','left_wrist_0_rgb','right_wrist_0_rgb')
++
++
++def normalize_vector(x, stats):
++    low=np.asarray(stats['q01'],np.float32);high=np.asarray(stats['q99'],np.float32)
++    const=np.asarray(stats['constant']);scale=high-low
++    result=(x-low)*2/np.where(const,1,scale)-1
++    return np.where(const,0,result).astype(np.float32)
++
++
++def unnormalize_vector(x, stats):
++    low=np.asarray(stats['q01'],np.float32);high=np.asarray(stats['q99'],np.float32)
++    # A constant physical channel remains the training constant. Padding is
++    # ignored by the robot adapter and never counted as a real robot dimension.
++    return np.where(np.asarray(stats['constant']),low,(x+1)/2*(high-low)+low).astype(np.float32)
++
++
++class LocalDemoLoader:
++    def __init__(self, dataset, batch_size=8):
++        self.directory=Path(dataset)
++        self.manifest=json.loads((self.directory/'dataset.json').read_text())
++        self.stats=json.loads((self.directory/'norm-stats.json').read_text())
++        self.batch_size=batch_size;self.rng=np.random.default_rng(17)
++        self.tokenizer=tokenizer.PaligemmaTokenizer(max_len=200)
++        self.episodes=[];self.windows=[]
++        for e, rec in enumerate(self.manifest['episodes']):
++            d=Path(rec['derived']);commands=np.load(d/'commands.npz',allow_pickle=False)
++            self.episodes.append(dict(meta=rec,data=commands,images={k:np.load(d/(k+'.npy'),mmap_mode='r') for k in CAMERAS}))
++            self.windows.extend((e,t) for t in range(rec['frames']-9))
++        self.order=self.rng.permutation(len(self.windows));self.offset=0
++        self.balanced=self.manifest.get('sampling','').startswith('uniform Source')
++        self.parent_episodes={}
++        for i,ep in enumerate(self.episodes):self.parent_episodes.setdefault(ep['meta']['parent_group'],[]).append(i)
++        self.parents=sorted(self.parent_episodes)
++        self.exposure={ep['meta']['record_id']:0 for ep in self.episodes}
++
++    def next(self):
++        if self.offset+self.batch_size>len(self.order):
++            self.order=self.rng.permutation(len(self.windows));self.offset=0
++        chosen=self.order[self.offset:self.offset+self.batch_size];self.offset+=self.batch_size
++        if self.balanced:
++            samples=[]
++            for _ in range(self.batch_size):
++                parent=self.parents[int(self.rng.integers(len(self.parents)))]
++                pool=self.parent_episodes[parent];e=pool[int(self.rng.integers(len(pool)))];t=int(self.rng.integers(self.episodes[e]['meta']['windows']))
++                samples.append((e,t))
++        else:samples=[self.windows[w] for w in chosen]
++        inputs=[];actions=[]
++        for e,t in samples:
++            ep=self.episodes[e];self.exposure[ep['meta']['record_id']]+=1;data=ep['data'];R=data['base_R'][t];p=data['base_p'][t]
++            target=np.zeros((10,32),np.float32)
++            target[:,:3]=(data['target_world_p'][t:t+10]-p)@R
++            mats=np.einsum('ij,tjk->tik',R.T,data['target_world_R'][t:t+10])
++            target[:,3:6]=Rotation.from_matrix(mats).as_rotvec();target[:,6:8]=data['grip_torso'][t:t+10]
++            if self.manifest.get('action_representation')=='query_relative_eef':
++                target[:,:3]-=data['state'][t,:3]
++                initial_R=Rotation.from_rotvec(data['state'][t,3:6]).as_matrix()
++                target[:,3:6]=Rotation.from_matrix(mats@initial_R.T).as_rotvec()
++            state=normalize_vector(data['state'][t],self.stats['state'])
++            tokens,mask=self.tokenizer.tokenize(ep['meta']['prompt'],state)
++            inputs.append(dict(state=state,tokens=tokens,mask=mask,images={k:np.asarray(ep['images'][k][t]) for k in CAMERAS}))
++            actions.append(normalize_vector(target,self.stats['actions']))
++        obs=model.Observation(images={k:np.stack([x['images'][k] for x in inputs]).astype(np.float32)/255*2-1 for k in CAMERAS},
++            image_masks={k:np.ones(self.batch_size,bool) for k in CAMERAS},state=np.stack([x['state'] for x in inputs]),
++            tokenized_prompt=np.stack([x['tokens'] for x in inputs]),tokenized_prompt_mask=np.stack([x['mask'] for x in inputs]))
++        return obs,np.stack(actions)
++
++    def data_config(self):
++        norms={k:normalize.NormStats(mean=np.zeros(32),std=np.ones(32),q01=np.asarray(v['q01']),q99=np.asarray(v['q99'])) for k,v in self.stats.items()}
++        return DataConfig(asset_id='mobiwam-static-command-v1',norm_stats=norms)
+diff --git a/scripts/pi05_harness_serve.py b/scripts/pi05_harness_serve.py
+new file mode 100644
+index 0000000..2d556cb
+--- /dev/null
++++ b/scripts/pi05_harness_serve.py
+@@ -0,0 +1,63 @@
++"""Task-owned loopback inference service; simulator stays in its own env."""
++import argparse
++from datetime import datetime, timezone
++from http.server import BaseHTTPRequestHandler, HTTPServer
++from io import BytesIO
++import json
++import os
++from pathlib import Path
++import time
++import jax
++import jax.numpy as jnp
++import numpy as np
++from openpi.models import model, pi0_config, tokenizer
++from openpi.shared import nnx_utils
++from pi05_harness_data import CAMERAS, normalize_vector, unnormalize_vector
++
++
++def main():
++    p=argparse.ArgumentParser();p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
++    p.add_argument('--port',type=int,default=8865);p.add_argument('--max-seconds',type=int,default=7200);p.add_argument('--max-queries',type=int,default=4000);a=p.parse_args()
++    a.output.mkdir(exist_ok=False);started=datetime.now(timezone.utc).isoformat();deadline=time.monotonic()+a.max_seconds
++    cfg=pi0_config.Pi0Config(pi05=True,action_horizon=10,paligemma_variant='gemma_2b_lora',action_expert_variant='gemma_300m_lora')
++    net=cfg.load(model.restore_params(a.checkpoint/'params',dtype=jnp.bfloat16));net.eval();sample=nnx_utils.module_jit(net.sample_actions)
++    stats=json.loads((a.checkpoint/'custom-norm-stats.json').read_text());tok=tokenizer.PaligemmaTokenizer(max_len=200)
++    adapter=json.loads((a.checkpoint/'policy-adapter-config.json').read_text()) if (a.checkpoint/'policy-adapter-config.json').exists() else {'action_representation':'absolute_query_base'}
++    context=dict(checkpoint=str(a.checkpoint),queries=0,key=jax.random.key(20261006),stop=False)
++    binding=dict(started_at=started,pid=os.getpid(),port=a.port,host='127.0.0.1',checkpoint=str(a.checkpoint),python=__import__('sys').executable,
++        max_seconds=a.max_seconds,max_queries=a.max_queries,action_horizon=10,flow_steps=10,execute_prefix=5,action_width=8,padded_width=32,
++        normalizer='pi05_harness_data normalize_vector/unnormalize_vector frozen local quantiles and constant channel mapping',discrete_state_input=True,framework='JAX',status='loading',action_representation=adapter['action_representation'])
++    (a.output/'binding.json').write_text(json.dumps(binding,indent=2)+'\n')
++    class Handler(BaseHTTPRequestHandler):
++        def do_GET(self):
++            body=json.dumps(dict(binding,queries=context['queries'],status='ready')).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
++        def do_POST(self):
++            raw=self.rfile.read(int(self.headers['Content-Length']))
++            if self.path=='/reset':
++                seed=int(json.loads(raw)['policy_sampling_seed']);context['key']=jax.random.key(seed)
++                self.send_response(200);self.end_headers();self.wfile.write(b'{}');return
++            if self.path=='/finish-declared-units':
++                context['stop']=True;self.send_response(200);self.end_headers();self.wfile.write(b'{}');return
++            try:
++                z=np.load(BytesIO(raw),allow_pickle=False);state=normalize_vector(z['state'],stats['state'])
++                tokens,mask=tok.tokenize(str(z['prompt']),state)
++                obs=model.Observation(images={k:jnp.asarray(z[k])[None].astype(jnp.float32)/255*2-1 for k in CAMERAS},
++                    image_masks={k:jnp.ones((1,),bool) for k in CAMERAS},state=jnp.asarray(state)[None],
++                    tokenized_prompt=jnp.asarray(tokens)[None],tokenized_prompt_mask=jnp.asarray(mask)[None])
++                context['key'],key=jax.random.split(context['key']);t=time.monotonic()
++                normalized=np.asarray(sample(key,obs,num_steps=10))[0];duration=time.monotonic()-t
++                assert normalized.shape==(10,32) and np.isfinite(normalized).all()
++                actions=unnormalize_vector(normalized,stats['actions']);context['queries']+=1
++                response=BytesIO();np.savez(response,normalized=normalized,actions=actions,query_seconds=duration,query_id=context['queries'])
++                self.send_response(200);self.end_headers();self.wfile.write(response.getvalue())
++                print(json.dumps(dict(at=datetime.now(timezone.utc).isoformat(),query=context['queries'],seconds=duration)),flush=True)
++            except Exception as exc:
++                self.send_response(500);self.end_headers();self.wfile.write(str(exc).encode());raise
++    server=HTTPServer(('127.0.0.1',a.port),Handler);server.timeout=1
++    (a.output/'ready.json').write_text(json.dumps(dict(binding,status='ready',at=datetime.now(timezone.utc).isoformat()),indent=2)+'\n')
++    print('READY',a.port,a.checkpoint,flush=True)
++    while not context['stop'] and time.monotonic()<deadline and context['queries']<a.max_queries:server.handle_request()
++    server.server_close();(a.output/'completed.json').write_text(json.dumps(dict(ended_at=datetime.now(timezone.utc).isoformat(),queries=context['queries'],declared_units_finished=context['stop'],bounded_exit=True),indent=2)+'\n')
++
++
++if __name__=='__main__':main()
+diff --git a/scripts/pi05_harness_smoke.py b/scripts/pi05_harness_smoke.py
+new file mode 100644
+index 0000000..d8b27f9
+--- /dev/null
++++ b/scripts/pi05_harness_smoke.py
+@@ -0,0 +1,75 @@
++"""Full checkpoint restore and real recorded sensor forward; no task execution."""
++import argparse
++import json
++import os
++from pathlib import Path
++import time
++import traceback
++from datetime import datetime, timezone
++
++import jax
++import jax.numpy as jnp
++import numpy as np
++from flax import nnx
++from openpi.models import model as model_lib, pi0_config, tokenizer
++from openpi.shared import nnx_utils
++
++
++def main():
++    p = argparse.ArgumentParser()
++    p.add_argument('--run', type=Path, required=True)
++    a = p.parse_args()
++    out = a.run / 'policy/full-load-real-forward'
++    out.mkdir(exist_ok=False)
++    started = datetime.now(timezone.utc).isoformat()
++    def event(stage, **kw):
++        rec = dict(at=datetime.now(timezone.utc).isoformat(), stage=stage, pid=os.getpid(), **kw)
++        print(json.dumps(rec), flush=True)
++        (out / 'status.json').write_text(json.dumps(rec, indent=2) + '\n')
++    try:
++        event('restoring', python=__import__('sys').executable, jax=jax.__version__, devices=str(jax.devices()))
++        cfg = pi0_config.Pi0Config(pi05=True, action_horizon=10)
++        t = time.monotonic()
++        params = model_lib.restore_params('/share/personal/chensiyu/haokaijiang/MobiWAM/checkpoints/pi05_origin/params', dtype=jnp.bfloat16)
++        net = cfg.load(params)
++        net.eval()
++        state = nnx.state(net)
++        count = sum(x.value.size for x in jax.tree.leaves(state) if hasattr(x, 'value'))
++        event('loaded', load_seconds=time.monotonic()-t, parameter_leaf_count=len(jax.tree.leaves(state)))
++        input_path = a.run / 'policy/real-observation.npz'
++        deadline = time.monotonic() + 900
++        while not input_path.exists():
++            if time.monotonic() > deadline:
++                raise RuntimeError('real observation not ready within 15 minutes')
++            time.sleep(2)
++        z = np.load(input_path, allow_pickle=False)
++        tok = tokenizer.PaligemmaTokenizer(max_len=200)
++        tokens, mask = tok.tokenize(str(z['prompt']), z['state'])
++        keys = ('base_0_rgb', 'left_wrist_0_rgb', 'right_wrist_0_rgb')
++        obs = model_lib.Observation(images={k:jnp.asarray(z[k])[None].astype(jnp.float32)/255*2-1 for k in keys},
++            image_masks={k:jnp.ones((1,), dtype=bool) for k in keys}, state=jnp.asarray(z['state'])[None],
++            tokenized_prompt=jnp.asarray(tokens)[None], tokenized_prompt_mask=jnp.asarray(mask)[None])
++        sample = nnx_utils.module_jit(net.sample_actions)
++        durations = []
++        for i in range(3):
++            t = time.monotonic()
++            actions = np.asarray(sample(jax.random.key(20261006+i), obs, num_steps=10))
++            durations.append(time.monotonic()-t)
++            assert actions.shape == (1,10,32) and np.isfinite(actions).all()
++            np.save(out / f'raw-normalized-actions-{i}.npy', actions)
++            event('real_forward', query=i+1, synchronized_seconds=durations[-1], shape=list(actions.shape))
++        rec = dict(started_at=started, ended_at=datetime.now(timezone.utc).isoformat(), status='passed',
++            complete_checkpoint_loaded=True, real_recorded_observation=True, action_shape=[1,10,32],
++            synchronized_query_seconds=durations, input=str(input_path), input_manifest=str(input_path.with_suffix('.json')),
++            robot_calibrated=False, task_capability=False, semantic_note='Official base has no current robot normalization; raw normalized outputs are smoke only',
++            device_uuid=os.environ.get('CUDA_VISIBLE_DEVICES'), framework='JAX/OCDBT', policy_sampling_seed=20261006)
++        (out / 'result.json').write_text(json.dumps(rec, indent=2)+'\n')
++        event('completed')
++    except BaseException:
++        (out/'failure.json').write_text(json.dumps(dict(at=datetime.now(timezone.utc).isoformat(), traceback=traceback.format_exc()),indent=2)+'\n')
++        traceback.print_exc()
++        raise
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/pi05_harness_train.py b/scripts/pi05_harness_train.py
+new file mode 100644
+index 0000000..c7f7c6b
+--- /dev/null
++++ b/scripts/pi05_harness_train.py
+@@ -0,0 +1,120 @@
++"""Single GPU official JAX/dual-LoRA recipe with local native demo windows."""
++import argparse
++import dataclasses
++from datetime import datetime, timezone
++import functools
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import time
++import traceback
++import numpy as np
++import jax
++import jax.numpy as jnp
++from flax import nnx
++from openpi.models import pi0_config, model as model_lib
++from openpi.shared import nnx_utils
++from openpi.training import config, optimizer, weight_loaders, sharding, checkpoints
++from pi05_harness_data import LocalDemoLoader
++import train as official
++
++
++def now():return datetime.now(timezone.utc).isoformat()
++
++
++def write(path, value):path.write_text(json.dumps(value,indent=2)+'\n')
++
++
++def digest_params(state):
++    return {str(k):hashlib.sha256(np.asarray(v.value).tobytes()).hexdigest() for k,v in state.flat_state().items()}
++
++
++def main():
++    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--fit-id',required=True)
++    ap.add_argument('--steps',type=int,default=50);ap.add_argument('--batch',type=int,default=8);ap.add_argument('--diagnostic',action='store_true')
++    ap.add_argument('--wall-seconds',type=int,default=14400);ap.add_argument('--dataset-binding',type=Path)
++    ap.add_argument('--init-checkpoint',type=Path,required=True);ap.add_argument('--checkpoint-root',type=Path,required=True);a=ap.parse_args()
++    out=a.run/'policy'/a.fit_id;out.mkdir(exist_ok=False)
++    binding=json.loads((a.dataset_binding or a.run/'data/dataset-binding.json').read_text());loader=LocalDemoLoader(binding['dataset'],a.batch)
++    ckpt_path=a.checkpoint_root/a.fit_id
++    allow=nnx_utils.PathRegex('.*lora.*|action_in_proj/.*|action_out_proj/.*|time_mlp_in/.*|time_mlp_out/.*')
++    cfg=config.TrainConfig(name='mobiwam_pi05_dual_lora_v1',exp_name=a.fit_id,
++        model=pi0_config.Pi0Config(pi05=True,action_horizon=10,paligemma_variant='gemma_2b_lora',action_expert_variant='gemma_300m_lora'),
++        freeze_filter=nnx.Not(allow),weight_loader=weight_loaders.CheckpointWeightLoader(str(a.init_checkpoint/'params')),
++        lr_schedule=optimizer.CosineDecaySchedule(warmup_steps=min(100,int(.05*a.steps)),peak_lr=5e-5,decay_steps=a.steps,decay_lr=5e-6),
++        optimizer=optimizer.AdamW(),ema_decay=None,batch_size=a.batch,seed=17,num_train_steps=a.steps,wandb_enabled=False,
++        assets_base_dir=str(a.run/'policy/assets'),checkpoint_base_dir=str(ckpt_path.parent),fsdp_devices=1)
++    mesh=sharding.make_mesh(1);started=now();deadline=time.monotonic()+a.wall_seconds
++    write(out/'freeze.json',dict(created_at=started,fit_id=a.fit_id,diagnostic=a.diagnostic,steps=a.steps,batch=a.batch,training_seed=17,
++        action_horizon=10,execute_prefix=5,flow_steps=10,pi05=True,discrete_state_input=True,allowlist_regex=allow.pattern.pattern,
++        vision_and_original_transformer_frozen=True,base_checkpoint=str(a.init_checkpoint),new_optimizer_schedule=True,old_optimizer_loaded=False,dataset=binding['dataset'],parent_groups=binding['parent_groups'],windows=binding['valid_windows'],
++        lr_peak=5e-5,lr_end=5e-6,warmup=min(100,int(.05*a.steps)),ema=None,max_wall_seconds=a.wall_seconds,checkpoint_root=str(ckpt_path),
++        model_compute_dtype='bfloat16',optimizer='official AdamW .9/.95/1e-8/wd1e-10/clip1',dev_selection='diagnostic not a final candidate' if a.diagnostic else 'predeclared checkpoints quarter/half/final; dev safe success then common success cost then earlier'))
++    def event(stage,**kw):
++        item=dict(at=now(),stage=stage,pid=os.getpid(),**kw);print(json.dumps(item),flush=True);write(out/'status.json',item)
++    try:
++        event('initialize',python=__import__('sys').executable,devices=str(jax.devices()))
++        with sharding.set_mesh(mesh):state,_=official.init_train_state(cfg,jax.random.key(17),mesh,resume=False)
++        jax.block_until_ready(state.step)
++        trainable=state.params.filter(cfg.trainable_filter);frozen=state.params.filter(cfg.freeze_filter)
++        paths=[dict(path='/'.join(map(str,k)),shape=list(v.value.shape),dtype=str(v.value.dtype),count=int(v.value.size)) for k,v in trainable.flat_state().items()]
++        assert all(('lora' in x['path'] or x['path'].split('/')[0] in ('action_in_proj','action_out_proj','time_mlp_in','time_mlp_out')) for x in paths)
++        assert not any('img' in x['path'] for x in paths)
++        write(out/'trainable-parameters.json',dict(paths=paths,total=sum(x['count'] for x in paths),frozen_total=sum(v.value.size for k,v in frozen.flat_state().items()),
++            frozen_path_count=len(frozen.flat_state()),optimizer_state_dtypes=sorted({str(x.dtype) for x in jax.tree.leaves(state.opt_state) if hasattr(x,'dtype')})))
++        before_frozen=digest_params(frozen)
++        write(out/'frozen-leaf-sha256-before.json',before_frozen)
++        before_trainable={str(k):np.asarray(v.value).copy() for k,v in trainable.flat_state().items()} if a.diagnostic else None
++        manager,_=checkpoints.initialize_checkpoint_dir(ckpt_path,keep_period=1,overwrite=False,resume=False)
++        step_fn=jax.jit(functools.partial(official.train_step,cfg),donate_argnums=(1,))
++        timings=[];saves=[max(1,a.steps//2),a.steps] if not a.diagnostic else [a.steps]
++        log=(out/'metrics.jsonl').open('x');event('train',trainable_parameters=sum(x['count'] for x in paths),save_steps=saves)
++        last_save=0
++        with sharding.set_mesh(mesh):
++            for i in range(1,a.steps+1):
++                batch=jax.tree.map(jnp.asarray,loader.next());t=time.monotonic()
++                state,info=step_fn(jax.random.key(17),state,batch);info=jax.device_get(info);dt=time.monotonic()-t
++                if not np.isfinite(float(info['loss'])) or not np.isfinite(float(info['grad_norm'])):raise FloatingPointError(str(info))
++                if i>1:timings.append(dt)
++                item=dict(at=now(),step=i,loss=float(info['loss']),grad_norm=float(info['grad_norm']),synchronized_step_seconds=dt)
++                log.write(json.dumps(item)+'\n');log.flush()
++                if i==1 or i%5==0:event('train',**{k:v for k,v in item.items() if k!='at'})
++                timed_out=time.monotonic()>=deadline
++                if i in saves or timed_out:
++                    checkpoints.save_state(manager,state,loader,i);manager.wait_until_finished();last_save=i
++                    shutil.copy2(Path(binding['dataset'])/'norm-stats.json',ckpt_path/str(i)/'custom-norm-stats.json')
++                    write(ckpt_path/str(i)/'policy-adapter-config.json',dict(action_representation=binding.get('action_representation','absolute_query_base'),dataset=binding['dataset']))
++                    event('checkpoint_saved',step=i,path=str(ckpt_path/str(i)))
++                if timed_out:break
++        log.close();manager.wait_until_finished()
++        actual=int(jax.device_get(state.step))
++        after_frozen=digest_params(state.params.filter(cfg.freeze_filter));assert before_frozen==after_frozen
++        write(out/'freeze-verification.json',dict(at=now(),frozen_leaves_unchanged=True,leaf_count=len(after_frozen),fit2_initialization=True,new_optimizer=True))
++        write(out/'source-exposure.json',dict(at=now(),episode_draws=loader.exposure,source_equal_sampling=loader.balanced,total_windows_drawn=sum(loader.exposure.values()),batch=a.batch))
++        if a.diagnostic:
++            after_frozen=digest_params(state.params.filter(cfg.freeze_filter));assert before_frozen==after_frozen
++            delta={str(k):float(np.max(abs(np.asarray(v.value)-before_trainable[str(k)]))) for k,v in state.params.filter(cfg.trainable_filter).flat_state().items()}
++            assert any(x>0 for x in delta.values())
++            restored=checkpoints.restore_state(manager,state,loader,step=last_save)
++            original=nnx.merge(state.model_def,state.params);original.eval()
++            recovered=nnx.merge(restored.model_def,restored.params);recovered.eval()
++            test_obs=jax.tree.map(lambda x:x[:1],batch[0]);key=jax.random.key(20261006)
++            pred=np.asarray(nnx_utils.module_jit(original.sample_actions)(key,test_obs,num_steps=10))
++            check=np.asarray(nnx_utils.module_jit(recovered.sample_actions)(key,test_obs,num_steps=10))
++            error=float(np.max(abs(pred-check)));assert error<=1e-6
++            np.savez(out/'restore-inference.npz',original=pred,restored=check)
++            write(out/'diagnostic-receipt.json',dict(created_at=now(),frozen_exactly_unchanged=True,frozen_leaf_sha256_before=before_frozen,
++                trainable_deltas=delta,changed_paths=sum(x>0 for x in delta.values()),restore_inference_max_abs_error=error,finite_loss_grad=True,
++                sample_action_reconstruction='native conversion roundtrip preflight receipt; policy norm roundtrip exact to float32 precision',
++                synchronized_t_step_median_seconds=float(np.median(timings)),timed_steps=len(timings)))
++        write(out/'result.json',dict(started_at=started,ended_at=now(),status='passed' if actual==a.steps else 'bounded_time_stop',steps=actual,planned_steps=a.steps,
++            checkpoint=str(ckpt_path/str(last_save)),median_t_step_seconds=float(np.median(timings)) if timings else None,batch=a.batch,diagnostic=a.diagnostic,
++            effective_window_exposures=actual*a.batch/binding['valid_windows'],task_capability=False))
++        manager.close();event('completed',steps=actual)
++    except BaseException:
++        write(out/'failure.json',dict(at=now(),traceback=traceback.format_exc()));traceback.print_exc();raise
++
++
++if __name__=='__main__':main()

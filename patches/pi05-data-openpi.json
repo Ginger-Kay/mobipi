@@ -1,0 +1,11 @@
+{
+  "upstream": "https://github.com/Physical-Intelligence/openpi.git",
+  "official_base": "215abfb217dbac7d5f1273282331b9b1866c0479",
+  "local_tip": "2010e0b9917114503cffc6de176e076b0dd7a25f",
+  "patch": "patches/pi05-data-openpi.patch",
+  "sha256": "304171da9a1641fd960d3a34b0fb0ff55ea93e957d58f464e188dd1cbc931f99",
+  "application": "git apply patches/pi05-data-openpi.patch on exact official_base",
+  "reverse_check_passed": true,
+  "official_upstream_write": false,
+  "checkpoint_weights_not_included": true
+}
