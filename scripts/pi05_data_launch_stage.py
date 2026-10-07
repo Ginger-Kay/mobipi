@@ -16,7 +16,12 @@ def main():
  else:previous='train2' if read(r/'design/tier-decision.json')['selected_tier']==2 else 'train1'
  for i in [0,1]:
   q=read(r/'policy'/f'{previous}-service{i}/completed.json');assert q['declared_units_finished']
-  with socket.socket() as s:assert s.connect_ex(('127.0.0.1',8892+i))!=0,'previous exact service still closing or unknown listener; do not duplicate'
+  closed=False
+  for _ in range(30):
+   with socket.socket() as s:closed=s.connect_ex(('127.0.0.1',8892+i))!=0
+   if closed:break
+   time.sleep(1)
+  assert closed,'previous exact service still closing or unknown listener; do not duplicate'
  samples=[]
  for i in range(6):
   sample=dict(at=datetime.now(timezone.utc).isoformat(),gpu=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid,utilization.gpu,memory.free','--format=csv,noheader'],text=True),contexts=subprocess.check_output(['nvidia-smi','--query-compute-apps=gpu_uuid,pid,process_name,used_memory','--format=csv,noheader'],text=True));samples.append(sample);time.sleep(2)
