@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 from robosuite.controllers.parts.arm.osc import OperationalSpaceController
-from teleop_reference import write_json
+def write_json(path,value):Path(path).write_text(json.dumps(value,indent=2)+'\n')
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args()
