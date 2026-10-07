@@ -221,9 +221,35 @@ def velocity_level_qp(
             diagnostic_violations.append(float(np.max(np.maximum(0., bound - matrix @ velocity), initial=0.)))
             if not changed:
                 break
-    residual = float(np.linalg.norm(jacobian @ velocity - target))
-    feasible = inequalities is None or bool(np.all(inequalities[0] @ velocity >= inequalities[1] - 1e-8))
-    return velocity, {"solver": "deterministic_projected_dense_qp", "residual": residual, "feasible": feasible, "projection_iterations": diagnostic_iterations, "projection_iteration_limit": projection_iterations, "inequality_violation_history": diagnostic_violations}
+    # SIM-v2 numerical repair: cyclic projection is a warm start, not a
+    # constrained optimum or an infeasibility certificate. Preserve exactly
+    # the same Hessian, rows, bounds, damping and1e-8 acceptance tolerance.
+    from scipy.optimize import minimize
+    projected = velocity.copy()
+    constraints = []
+    if inequalities is not None:
+        matrix,bound = map(lambda value: np.asarray(value,float),inequalities)
+        constraints = [dict(type='ineq',fun=lambda value:matrix@value-bound,jac=lambda value:matrix)]
+    original_feasible = inequalities is None or bool(np.all(matrix@projected>=bound-1e-8))
+    if np.any(lower>upper):
+        return projected,dict(solver='bounded_SLSQP_convex_QP',residual=float(np.linalg.norm(jacobian@projected-target)),feasible=False,
+            reason='retained_box_bounds_inconsistent',projection_iterations=diagnostic_iterations,total_iteration_budget=256)
+    result = minimize(lambda value:.5*value@hessian@value-rhs@value,projected,
+        jac=lambda value:hessian@value-rhs,bounds=list(zip(lower,upper)),constraints=constraints,
+        method='SLSQP',options=dict(ftol=1e-12,maxiter=224))
+    velocity = np.clip(result.x,lower,upper)
+    residual = float(np.linalg.norm(jacobian@velocity-target))
+    feasible = bool(result.success and np.isfinite(velocity).all()
+        and (inequalities is None or np.all(matrix@velocity>=bound-1e-8))
+        and np.all(velocity>=lower) and np.all(velocity<=upper))
+    return velocity,dict(solver='bounded_SLSQP_convex_QP',residual=residual,feasible=feasible,
+        optimizer_success=bool(result.success),optimizer_status=str(result.message),optimizer_iterations=int(result.nit),
+        projection_iterations=diagnostic_iterations,projection_iteration_limit=projection_iterations,
+        inequality_violation_history=diagnostic_violations,total_iteration_budget=256,
+        total_iterations=diagnostic_iterations+int(result.nit),original_projected_feasible=original_feasible,
+        original_projected_objective=float(.5*projected@hessian@projected-rhs@projected),
+        optimized_objective=float(.5*velocity@hessian@velocity-rhs@velocity))
+
 
 
 def rank_primary(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:

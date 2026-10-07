@@ -248,6 +248,8 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
         predicted[fq]=np.clip(predicted[fq]+proposed,*m.jnt_range[joint])
         coupling_record=dict(joint=mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,joint),pads=list(coupling['pads'].values()),predicted_fixture_delta=float(predicted[fq]-d.qpos[fq]),note=coupling['note'])
     swept=check.path([d.qpos.copy(),predicted],['manipulate'])
+    if getattr(ref,'sim_diagnostics',None) is not None:
+        ref.sim_diagnostics.annotate_predicted(predicted,transform,offset,controlled,coupling_record,swept)
     if not swept['valid']:raise QPProtectionStop('whole-body predicted swept clearance failure')
     # Express the arm part of QP motion through the unchanged native OSC.
     arm_twist=J[:,3:10]@velocity[3:10]

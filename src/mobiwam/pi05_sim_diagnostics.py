@@ -29,6 +29,7 @@ class SimDiagnostics:
         self.geometry_model.opt.ccd_iterations=1000
         self.geometry_data=mujoco.MjData(self.geometry_model)
         self.qp_log=(self.path/'qp-diagnostics.jsonl').open('x')
+        self.sweep_log=(self.path/'predicted-sweep-diagnostics.jsonl').open('x')
         self.native_method='step2' if ref.env.lite_physics else 'step'
         self.qp_velocity=np.zeros(11)
 
@@ -46,7 +47,7 @@ class SimDiagnostics:
                            variable_names=controlled,inequality_violation=violation.tolist(),
                            max_inequality_violation=float(np.max(violation,initial=0)),
                            lower_violation=np.maximum(0,lower-velocity).tolist(),upper_violation=np.maximum(0,velocity-upper).tolist(),
-                           projection_iterations_limit=32,actual_iterations=receipt.get('projection_iterations','missing'),
+                           projection_iterations_limit=receipt.get('total_iteration_budget',32),actual_iterations=receipt.get('total_iterations',receipt.get('projection_iterations','missing')),
                            policy_grasp=float(self.current_policy[6]) if self.current_policy is not None else None,
                            scope='Exact original arrays passed to baseline solver; diagnostics do not change them')
         self.qp_log.write(json.dumps(self.last_meta)+'\n');self.qp_log.flush()
@@ -56,6 +57,13 @@ class SimDiagnostics:
         if self.last_qp is None:return
         np.savez_compressed(self.path/('qp-system-'+label+'.npz'),**self.last_qp)
         (self.path/('qp-system-'+label+'.json')).write_text(json.dumps(self.last_meta,indent=2)+'\n')
+
+    def annotate_predicted(self, predicted, transform, offset, controlled, coupling, sweep):
+        self.last_qp.update(predicted_qpos=np.asarray(predicted).copy(),physical_transform=np.asarray(transform).copy(),
+                            physical_offset=np.asarray(offset).copy(),controlled_qpos_indices=np.asarray(controlled).copy())
+        self.last_meta.update(predicted_sweep=sweep,observed_fixture_coupling=coupling)
+        self.sweep_log.write(json.dumps(dict(step=self.step,sim_time=float(self.d.time),predicted_sweep=sweep,
+                                             observed_fixture_coupling=coupling))+'\n');self.sweep_log.flush()
 
     def sample(self, before_time, before_qpos):
         base=self.ref.robot.part_controllers['base'];arm=self.ref.robot.part_controllers['right']
@@ -99,7 +107,7 @@ class SimDiagnostics:
         else:delattr(self.ref.env.sim,self.native_method)
 
     def save(self):
-        self.qp_log.close()
+        self.qp_log.close();self.sweep_log.close()
         if self.native:
             arrays={k:np.asarray([r[k] for r in self.native]) for k in self.native[0]}
             np.savez_compressed(self.path/'diagnostic-native-motion.npz',**arrays)
