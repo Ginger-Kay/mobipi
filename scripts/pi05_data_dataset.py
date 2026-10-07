@@ -41,7 +41,7 @@ def main():
             y,mask=labels(receipt,audit)
             X=np.load(inputs/(route+'-X.npy'),allow_pickle=False) if valid else None
             row=dict(parent_group=config['parent_group'],config_id=config['config_id'],family_id=config['family_id'],task=config['task'],role=config['role'],slot=config['slot'],tier=config['tier'],route=route,
-                hard_valid=valid,planned=True,executed=bool(receipt),status=receipt.get('status','X_static_or_route_invalid' if not valid else 'unrun'),
+                hard_valid=valid,planned=True,executed=bool(receipt and not receipt.get('status','').startswith('X_') and (receipt.get('steps',0)>0 or receipt.get('policy_queries',0)>0)),completed_receipt=bool(receipt),physics_complete_steps=receipt.get('steps',0),policy_queries=receipt.get('policy_queries',0),status=receipt.get('status','X_static_or_route_invalid' if not valid else 'unrun'),
                 task_success=float(y[0]) if mask[0] else None,collision=float(y[1]) if mask[1] else None,progress=float(y[2]) if mask[2] else None,
                 base_path_m=float(y[3]) if mask[3] else None,terminal_duration_s=float(y[4]) if mask[4] else None,
                 initial_native_opening=receipt.get('initial_native_opening'),terminal_native_opening=receipt.get('terminal_native_opening'),
