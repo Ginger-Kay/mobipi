@@ -23,12 +23,18 @@ def main():
         if time.monotonic()>ready_deadline:raise RuntimeError('own declared service failed to become ready in600s')
         time.sleep(5)
     write(out/'process.json',dict(at=now(),pid=os.getpid(),argv=sys.argv,queue=str(a.queue),policy_binding=binding))
+    if plan.get('expected_checkpoint') and Path(binding['checkpoint']).resolve()!=Path(plan['expected_checkpoint']).resolve():
+        raise ValueError('declared policy checkpoint differs from own service binding')
     results=[]
     for job in plan['jobs']:
         if datetime.now(timezone.utc)>=datetime.fromisoformat(plan['stop_starting_at']):
             results.append(dict(job=job,status='unrun_deadline'));continue
         old=a.run/'episodes'/job['evaluation_tag']/f'slot-{job["slot"]:02d}-{job["config_id"]}'/'engineering-attempt-0'
         if old.exists():raise ValueError('predeclared slot already exists; no unmodified repeat')
+        if job.get('predeclared_X'):
+            result=dict(job=job,status=job['predeclared_X'],started_at=now(),ended_at=now(),policy_queries=0,env_step_calls=0,
+                task_success=None,collision=None,label_masks=[False]*5,static_rejection_receipt=job.get('static_rejection_receipt'),scientific_outcome_executed=False)
+            results.append(result);write(out/'results.json',results);print(json.dumps(result),flush=True);continue
         cmd=[sys.executable,'-u',str(Path(__file__).parent/'pi05_harness_episode.py'),'--run',str(a.run),'--slot',str(job['slot']),'--route',job['route'],
             '--checkpoint-step',str(a.checkpoint_step),'--port',str(a.port),'--adapter-version','v6','--evaluation-tag',job['evaluation_tag'],
             '--roster',plan['roster'],'--purpose',job['purpose'],'--A-private-version','A3N' if job['route']=='A' else 'A1','--sim-seconds','300','--wall-seconds','2700','--diagnostic-logging']
