@@ -1,6 +1,7 @@
 """Passive simulator diagnostics; never edits actions, states, or constraints."""
 from pathlib import Path
 import json
+import copy
 import mujoco
 import numpy as np
 from mobiwam.contact_rules import allowed_contact
@@ -20,6 +21,13 @@ class SimDiagnostics:
         self.fixture_joint=next(j for j in range(self.m.njnt) if (mujoco.mj_id2name(self.m,mujoco.mjtObj.mjOBJ_JOINT,j) or '').startswith(self.target) and self.m.jnt_type[j] in (2,3))
         self.fixture_qid=int(self.m.jnt_qposadr[self.fixture_joint])
         self.handle=next((i for i in self.targets if 'handle' in self.names[i]),None)
+        # Avoid legacy libccd's distance-cap-dependent mesh distances without
+        # changing the live physics model. This model is measurement-only.
+        self.geometry_model=copy.copy(self.m)
+        self.geometry_model.opt.enableflags |= int(mujoco.mjtEnableBit.mjENBL_NATIVECCD)
+        self.geometry_model.opt.ccd_tolerance=1e-9
+        self.geometry_model.opt.ccd_iterations=1000
+        self.geometry_data=mujoco.MjData(self.geometry_model)
         self.qp_log=(self.path/'qp-diagnostics.jsonl').open('x')
         self.native_method='step2' if ref.env.lite_physics else 'step'
         self.qp_velocity=np.zeros(11)
@@ -51,11 +59,13 @@ class SimDiagnostics:
 
     def sample(self, before_time, before_qpos):
         base=self.ref.robot.part_controllers['base'];arm=self.ref.robot.part_controllers['right']
+        self.geometry_data.qpos[:]=before_qpos
+        mujoco.mj_forward(self.geometry_model,self.geometry_data)
         gaps=[];normals=[];closest=[]
         for hand in self.hands:
             best=.10;normal=np.full(3,np.nan);gid=-1
             for target in self.targets:
-                segment=np.zeros(6);gap=float(mujoco.mj_geomDistance(self.m,self.d,hand,target,.10,segment))
+                segment=np.zeros(6);gap=float(mujoco.mj_geomDistance(self.geometry_model,self.geometry_data,hand,target,.10,segment))
                 if gap<best:
                     best=gap;gid=target;direction=segment[3:]-segment[:3];length=np.linalg.norm(direction)
                     normal=direction/length if length>1e-12 else np.full(3,np.nan)
@@ -72,6 +82,8 @@ class SimDiagnostics:
             arm=self.d.qpos[arm.qpos_index].copy(),base_velocity=self.d.qvel[base.qvel_index].copy(),arm_velocity=self.d.qvel[arm.qvel_index].copy(),
             fixture=float(self.d.qpos[self.fixture_qid]),gap=np.asarray(gaps),normal=np.asarray(normals),closest=np.asarray(closest),
             eef_cached=self.d.site_xpos[site].copy(),handle_cached=handle,qp_base=self.qp_velocity[:3].copy(),
+            geometry_pre_eef=self.geometry_data.site_xpos[site].copy(),
+            cached_site_difference_m=float(np.linalg.norm(self.d.site_xpos[site]-self.geometry_data.site_xpos[site])),
             gripper_goal=self.ref.robot.gripper['right'].current_action.copy(),gripper_qpos=self.d.qpos[11:13].copy(),
             any_permitted_contact=any(c['permitted'] for c in observed)))
 
@@ -96,6 +108,6 @@ class SimDiagnostics:
         (self.path/'diagnostic-native-binding.json').write_text(json.dumps(dict(hands=[dict(id=i,name=self.names[i]) for i in self.hands],
             targets=[dict(id=i,name=self.names[i]) for i in self.targets],native_method=self.native_method,
             contact_cache_time='before integration for mj_step2, recorded separately from after-integration qpos/time; no live forward call',
-            geometry_gap_scope='Read-only live distance using cached poses; distance cap0.10m is a diagnostic measurement cap, never action/qualification threshold',
+            geometry_gap_scope='Independent GJK/EPA geometry at exact before-integration qpos; live model unchanged. Distance cap0.10m is only a measurement cap',
             normal_scope='nearest-point direction; nan when undefined; contact normals separately from native contact table',
             samples=len(self.native),action_changes_from_logger=False,state_changes_from_logger=False),indent=2)+'\n')
