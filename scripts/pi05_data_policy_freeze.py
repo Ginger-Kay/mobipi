@@ -11,6 +11,7 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args();r=a.run
     if (r/'policy/main-component-freeze.json').exists():raise ValueError('main components already frozen')
     assert json.loads((r/'design/repaired-features-freeze.json').read_text())['configs']==90
+    assert json.loads((r/'preflight/config-feature-binding-validation.json').read_text())['passed']
     assert json.loads((r/'design/repaired-starts-v1/repair-summary.json').read_text())['passed']
     assert json.loads((r/'preflight/base-mapping-actual-validation.json').read_text())['passed']
     assert json.loads((r/'policy/integrated-corrective-fit2/freeze-verification.json').read_text())['frozen_leaves_unchanged']
