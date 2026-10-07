@@ -33,6 +33,17 @@ def main():
             code=Path(__file__).resolve().parents[1]
             for name,digest in freeze['behavioral_components'].items():
                 assert hashlib.sha256((code/name).read_bytes()).hexdigest()==digest,'frozen behavior changed; pause own queue'
+            for path,digest in freeze['frozen_source_manifests'].items():
+                assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,'frozen source/roster manifest changed'
+            if not job.get('predeclared_X'):
+                source=Path(json.loads(Path(plan['roster']).read_text())['slots'][job['slot']-1]['source'])
+                for path,digest in freeze['static_source_integrity'].items():
+                    p=Path(path)
+                    if p.parent==source or p==source.parent/'initial-state-controller.json':
+                        assert hashlib.sha256(p.read_bytes()).hexdigest()==digest,'frozen actual initial state changed'
+                for relative,digest in freeze['static_input_integrity'].items():
+                    if Path(relative).parent.name==job['config_id']:
+                        assert hashlib.sha256((a.run/relative).read_bytes()).hexdigest()==digest,'frozen input for this config changed'
         stop=datetime.fromisoformat(plan['stop_starting_at'])
         cap=a.run/'design/capacity-plan.json'
         if job['purpose']=='paired' and '-evaluation-' not in job['evaluation_tag'] and cap.exists():
