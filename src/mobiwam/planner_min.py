@@ -205,9 +205,12 @@ def velocity_level_qp(
     hessian = jacobian.T @ jacobian + float(damping) * np.diag(weights)
     rhs = jacobian.T @ target
     velocity = np.clip(np.linalg.solve(hessian, rhs), lower, upper)
+    diagnostic_iterations = 0
+    diagnostic_violations = []
     if inequalities is not None:
         matrix, bound = map(lambda value: np.asarray(value, float), inequalities)
         for _ in range(projection_iterations):
+            diagnostic_iterations += 1
             changed = False
             for normal, minimum in zip(matrix, bound):
                 deficit = float(minimum - np.dot(normal, velocity))
@@ -215,11 +218,12 @@ def velocity_level_qp(
                 if deficit > 0 and norm > 1e-12:
                     velocity = np.clip(velocity + deficit * normal / norm, lower, upper)
                     changed = True
+            diagnostic_violations.append(float(np.max(np.maximum(0., bound - matrix @ velocity), initial=0.)))
             if not changed:
                 break
     residual = float(np.linalg.norm(jacobian @ velocity - target))
     feasible = inequalities is None or bool(np.all(inequalities[0] @ velocity >= inequalities[1] - 1e-8))
-    return velocity, {"solver": "deterministic_projected_dense_qp", "residual": residual, "feasible": feasible}
+    return velocity, {"solver": "deterministic_projected_dense_qp", "residual": residual, "feasible": feasible, "projection_iterations": diagnostic_iterations, "projection_iteration_limit": projection_iterations, "inequality_violation_history": diagnostic_violations}
 
 
 def rank_primary(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:

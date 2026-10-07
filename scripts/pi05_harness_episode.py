@@ -37,7 +37,7 @@ def finish_zero(ref,status):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
     p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag')
-    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2','A3'],default='A1');a=p.parse_args()
+    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2','A3','A3N'],default='A1');p.add_argument('--sim-seconds',type=float,default=120.);p.add_argument('--wall-seconds',type=int,default=1200);p.add_argument('--diagnostic-logging',action='store_true');a=p.parse_args()
     if a.A_private_version!='A1' and a.route!='A':raise ValueError('private A revisions only apply to route A')
     roster=json.loads((a.roster or a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
@@ -57,7 +57,7 @@ def main():
         purpose=a.purpose,roster=str(a.roster or a.run/'policy/policy-dev-roster.json'),
         source_module_sha256={n:hashlib.sha256((Path(__file__).resolve().parents[1]/n).read_bytes()).hexdigest() for n in ('scripts/pi05_harness_episode.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py','src/mobiwam/pi05_route.py')},
         task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261006,evaluation_seed=20261006,environment_seed=slot['environment_seed']))
-    ref=None;attempt=None;guard=None;margin=None;queries=0;steps=0;query_seconds=0.;status='engineering_unknown'
+    ref=None;attempt=None;guard=None;margin=None;diagnostics=None;queries=0;steps=0;query_seconds=0.;status='engineering_unknown'
     try:
         connection=http.client.HTTPConnection('127.0.0.1',a.port,timeout=20);connection.request('GET','/status');response=connection.getresponse();binding=json.loads(response.read());connection.close()
         assert response.status==200 and Path(binding['checkpoint']).name==str(a.checkpoint_step)
@@ -87,12 +87,18 @@ def main():
             if a.A_private_version=='A3':
                 from mobiwam.pi05_A3 import A3Driver
                 RouteDriver=A3Driver
+            if a.A_private_version=='A3N':
+                from mobiwam.pi05_natural_A import NaturalADriver
+                RouteDriver=NaturalADriver
             driver=RouteDriver(ref,a.route);write_json(out/'route-plan.json',driver.plan)
         ref.begin(restore_source=False);attempt=ref.recording['path'];guard=FormalSubstepMonitor(ref,native['fixture_name'])
-        deadline=wall_start+1200;start_time=float(d.time);max_drift=0.;raw=None
+        if a.diagnostic_logging:
+            from mobiwam.pi05_sim_diagnostics import SimDiagnostics
+            diagnostics=SimDiagnostics(ref,attempt);ref.sim_diagnostics=diagnostics
+        deadline=wall_start+a.wall_seconds;start_time=float(d.time);max_drift=0.;raw=None
         manip_step=0;base_path=0.;previous_base=d.qpos[base.qpos_index].copy()
         with (out/'query-action-feedback.jsonl').open('x') as log:
-            for step in range(2400):
+            for step in range(int(round(a.sim_seconds*ref.env.control_freq))):
                 if time.monotonic()>deadline:status='compute-timeout';ref.finish(status);break
                 manipulating=driver is None or driver.phase=='manipulate'
                 legal=driver is None or driver.plan['primary'] is not None
@@ -105,9 +111,10 @@ def main():
                 if a.A_private_version=='A2':
                     from mobiwam.pi05_A2 import execute_A2
                     mapper=execute_A2
-                if a.A_private_version=='A3':
+                if a.A_private_version in ('A3','A3N'):
                     from mobiwam.pi05_A3 import execute_A3
                     mapper=execute_A3
+                if diagnostics:diagnostics.boundary(step,raw[manip_step%5] if manipulating and legal else None)
                 try:
                     if not legal:raise QPProtectionStop('no hard-valid geometric route candidate')
                     if not manipulating:
@@ -116,6 +123,7 @@ def main():
                         goal,locked=driver.base_control() if driver else (base_target,True)
                         actual,point=mapper(ref,raw[manip_step%5],anchor,goal,co_motion=True,actuated_grip=a.adapter_version in ('v4','v5','v6'),locked_base=locked,coupled_grip=a.adapter_version in ('v5','v6'),native_tracking=a.adapter_version=='v6') if a.adapter_version in ('v3','v4','v5','v6') else mapper(ref,raw[manip_step%5],anchor,goal)
                 except QPProtectionStop as exc:
+                    if diagnostics:diagnostics.save_qp('failure-step-'+str(step))
                     status='qp_protective_stop' if legal else 'X_no_legal_candidate';write_json(attempt/'qp-protective-stop.json',dict(at=now(),step=step,reason=str(exc),actual_native_steps=steps))
                     if steps:ref.finish(status)
                     else:finish_zero(ref,status)
@@ -126,9 +134,10 @@ def main():
                 try:
                     from contextlib import nullcontext
                     if a.A_private_version!='A1':driver.boundary(np.asarray(point.get('projection',{}).get('qp',{}).get('velocity',np.zeros(3)))[:3])
-                    with (driver if a.A_private_version!='A1' else nullcontext()):
-                        with guard:
-                            with GuardedIntegration(ref.env.sim,d,margin,lite_physics=ref.env.lite_physics,step=step,phase=control_phase):ref.step(actual)
+                    with (diagnostics if diagnostics else nullcontext()):
+                        with (driver if a.A_private_version!='A1' else nullcontext()):
+                            with guard:
+                                with GuardedIntegration(ref.env.sim,d,margin,lite_physics=ref.env.lite_physics,step=step,phase=control_phase):ref.step(actual)
                 except (FormalSafetyStop,JointMarginStop) as exc:
                     np.savez_compressed(attempt/'partial-control-step.npz',initial_integration=initial,terminal_integration=ref.integration(),attempted_action=actual)
                     write_json(attempt/'safety-stop.json',dict(at=now(),step=step,failure=exc.failure));status='native_forbidden_contact_stop' if isinstance(exc,FormalSafetyStop) else 'joint_margin_stop'
@@ -146,15 +155,20 @@ def main():
                     actual_base_path_m=base_path,route_feedback=route_feedback,sim_time=float(d.time),checker_success=bool(ref.env._check_success()))
                 if manipulating:manip_step+=1
                 log.write(json.dumps(row)+'\n');log.flush()
+                if steps==int(round(120*ref.env.control_freq)):
+                    write_json(out/'horizon-120s.json',dict(elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native=observe_native(ref,ref.identity_expected),status_at_cutoff='running' if ref.recording else 'finished',base_path_m=base_path,base_generalized=d.qpos[base.qpos_index].tolist(),policy_queries=queries,gripper_goal=ref.robot.gripper['right'].current_action.tolist()))
                 if step%20==0:print(json.dumps(dict(slot=a.slot,step=step,queries=queries,checker_success=row['checker_success'],base_drift=drift)),flush=True)
                 if not ref.recording:status=json.loads((attempt/'result.json').read_text())['reason'];break
-            else:status='policy_budget_stop_120s';ref.finish(status)
+            else:status=f'policy_budget_stop_{a.sim_seconds:g}s';ref.finish(status)
+        if diagnostics:diagnostics.save();diagnostics=None;ref.sim_diagnostics=None
         write_json(attempt/'formal-native-substeps-receipt.json',guard.save(attempt));write_json(attempt/'joint-margin-monitor.json',margin.receipt())
         semantics=driver.receipt(queries) if driver else dict(route='E',constant_base_target=True)
         if a.A_private_version!='A1':driver.save_native(attempt)
         write_json(out/'route-semantics.json',semantics)
-        semantic_pass=(a.route=='E' or semantics.get('D_fresh_query_after_settle',False) or semantics.get('A_semantics_observed',False))
-        result=json.loads((attempt/'result.json').read_text());write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False))
+        semantic_pass=None if a.A_private_version=='A3N' else (a.route=='E' or semantics.get('D_fresh_query_after_settle',False) or semantics.get('A_semantics_observed',False))
+        result=json.loads((attempt/'result.json').read_text())
+        if not (out/'horizon-120s.json').exists():write_json(out/'horizon-120s.json',dict(ended_before_120s=True,elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native=observe_native(ref,ref.identity_expected),terminal_status=status))
+        write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False,protocol='PI05-SIM-v2',declared_sim_horizon_seconds=a.sim_seconds,declared_wall_limit_seconds=a.wall_seconds,A_private_version=a.A_private_version))
         print((out/'completed.json').read_text(),flush=True)
     except BaseException:
         traceback.print_exc();write_json(out/'failure.json',dict(at=now(),traceback=traceback.format_exc(),attempt=str(attempt) if attempt else None,completed_control_steps=steps,usable_outcome=bool(steps or (attempt and (attempt/'partial-control-step.npz').exists()))))
@@ -163,6 +177,7 @@ def main():
         if margin and attempt:write_json(attempt/'joint-margin-monitor.json',margin.receipt())
         raise
     finally:
+        if diagnostics:diagnostics.save()
         if ref:
             for name in ('renderer','observation_renderer','pi05_renderer'):
                 renderer=getattr(ref,name,None)

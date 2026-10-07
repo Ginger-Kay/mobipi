@@ -56,10 +56,12 @@ def observed_articulation_coupling(ref,dofs):
 
 def coupled_distance_rows(check,q,dofs,coupling,activation=.02):
     pairs,distances=check.distances(q,'manipulate');active=np.flatnonzero(distances<activation)
+    check.diagnostic_rows=[]
     ja=np.zeros((3,check.m.nv));jb=ja.copy();jr=ja.copy();rows=[]
     fd=coupling['dof'];C=coupling['matrix']
     for i in active:
         a,b=map(int,pairs[i]);segment=np.zeros(6);distance=check.geom_distance(a,b,.10,segment)
+        check.diagnostic_rows.append(dict(geom1=a,geom2=b,name1=check.names[a],name2=check.names[b],distance_m=float(distances[i]),kind="coupled_distance_row"))
         normal=segment[3:]-segment[:3];length=np.linalg.norm(normal)
         if length<1e-12:rows.append(np.zeros(len(dofs)));continue
         normal/=length
@@ -232,6 +234,10 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     rows,distances=coupled_distance_rows(check,d.qpos.copy(),dofs,coupling) if coupling is not None else distance_rows(check,d.qpos.copy(),'manipulate',dofs)
     inequalities=(rows@transform,(.001-distances-rows@offset)/dt) if len(rows) else None
     velocity,receipt=velocity_level_qp(augmented,target,lower,upper,base_weight=1.,damping=.001,inequalities=inequalities)
+    if getattr(ref,'sim_diagnostics',None) is not None:
+        names=['base_x_m_s','base_y_m_s','base_yaw_rad_s']+[f'arm_joint{i+1}_rad_s' for i in range(7)]
+        if grip is not None:names+=['coupled_aperture_m_s'] if coupled_grip else ['finger1_m_s','finger2_m_s']
+        ref.sim_diagnostics.record_qp(augmented,target,lower,upper,inequalities,velocity,receipt,getattr(check,'diagnostic_rows',[]),names)
     if not receipt['feasible']:raise QPProtectionStop('whole-body QP constraints infeasible')
     predicted=d.qpos.copy();controlled=np.r_[base.qpos_index,qids,grip['qids'] if grip is not None else np.empty(0,dtype=int)]
     physical_delta=transform@velocity*dt+offset

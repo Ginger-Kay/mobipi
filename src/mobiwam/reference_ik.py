@@ -12,10 +12,12 @@ from scipy.spatial.transform import Rotation, Slerp
 def distance_rows(check, q, phase, dofs, activation=.02):
     pairs, distances = check.distances(q, phase)
     active = np.flatnonzero(distances < activation)
+    check.diagnostic_rows = []
     jac_a = np.zeros((3, check.m.nv)); jac_b = jac_a.copy()
     rotational = jac_a.copy(); rows = []
     for i in active:
         a, b = map(int, pairs[i]); segment = np.zeros(6)
+        check.diagnostic_rows.append(dict(geom1=a, geom2=b, name1=check.names[a], name2=check.names[b], distance_m=float(distances[i]), kind="distance_row"))
         distance = check.geom_distance(a, b, .10, segment)
         normal = segment[3:] - segment[:3]
         length = np.linalg.norm(normal)
