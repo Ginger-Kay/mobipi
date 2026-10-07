@@ -15,6 +15,7 @@ def main():
     assert json.loads((r/'design/repaired-starts-v1/repair-summary.json').read_text())['passed']
     assert json.loads((r/'preflight/base-mapping-actual-validation.json').read_text())['passed']
     assert json.loads((r/'policy/integrated-corrective-fit2/freeze-verification.json').read_text())['frozen_leaves_unchanged']
+    checkpoint_content=json.loads((r/'policy/checkpoint-content-binding.json').read_text())
     root=r.parents[3];roster=json.loads((r/'policy/policy-dev-roster.json').read_text());candidates=[]
     versions=[('old-fit2',root/'checkpoints/obc-pi05-v1/20261006T181000Z-query-relative-fit2/2000','dev-oldfit2'),
         ('corrective1000',root/'checkpoints/obc-pi05-data-v1'/r.name/'integrated-corrective-fit2/1000','dev-corrective1000'),
@@ -44,6 +45,7 @@ def main():
     freeze=dict(at=datetime.now(timezone.utc).isoformat(),status='frozen_before_any_main_outcome',policy_checkpoint=chosen['checkpoint'],selected_candidate=chosen['name'],candidates=candidates,
         ranking='safe successes -> native successes -> path/time on common safe successes -> old/earlier checkpoint',common_success_slots=common,
         nonconformant_first_fit='integrated-fit1 retained as deviation and separate development, not candidate',corrective_authorization=str(r/'policy/corrective-fit-authorization.json'),
+        checkpoint_content_binding=str(r/'policy/checkpoint-content-binding.json'),selected_checkpoint_tree=checkpoint_content['candidates'][chosen['name']],
         code_commit=subprocess.check_output(['git','-C',str(code),'rev-parse','HEAD'],text=True).strip(),behavioral_components={name:sha(code/name) for name in files},
         openpi_commit=subprocess.check_output(['git','-C',str(r/'runtime/openpi'),'rev-parse','HEAD'],text=True).strip(),
         native_controller_components={str(p.relative_to(root/'env')):sha(p) for p in [root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/joint_vel.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/mobile_base_controller.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/arm/osc.py']},
