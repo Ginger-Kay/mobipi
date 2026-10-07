@@ -25,6 +25,12 @@ from mobiwam.pi05_motion import QPProtectionStop
 
 def now():return datetime.now(timezone.utc).isoformat()
 
+def native_opening(ref):
+    fixture=ref.env.drawer if ref.args.task=='CloseDrawer' else ref.env.door_fxtr
+    values=fixture.get_door_state(env=ref.env)
+    if len(values)!=1:raise ValueError('this version requires exactly one task articulation')
+    return float(next(iter(values.values())))
+
 def finish_zero(ref,status):
     record=ref.recording
     for key in ('h','trace','video','panoramic_video'):
@@ -66,7 +72,7 @@ def main():
         restore_saved_integration(ref);m,d=ref.model_data();expected=json.loads((source/'target-binding.json').read_text())
         ref.identity_expected=dict(task=slot['task'],fixture_name=expected['fixture_name'],fixture_class=expected['fixture_class'],model_sha256=hashlib.sha256((source/'model.xml').read_bytes()).hexdigest())
         ref.identity_context=dict(run_id=a.run.name,group_id=slot['config_id']);native=observe_native(ref,ref.identity_expected)
-        assert not ref.env._check_success();before=ref.integration().copy();inputs,anchor=observation(ref)
+        assert not ref.env._check_success();initial_opening=native_opening(ref);before=ref.integration().copy();inputs,anchor=observation(ref)
         assert np.max(abs(ref.integration()-before))<=1e-6
         write_json(out/'initialization.json',dict(native=native,restore=ref.restore_receipt,zero_env_step=True,source_parent=str(src),initial_time=float(d.time),controller=_capture_controller_state(ref.env),policy_rng='fresh20261007; no artificial history'))
         primary=dict(lookat=d.site_xpos[ref.robot.eef_site_id['right']].tolist(),distance=1.55,azimuth=180 if slot['task']=='CloseDrawer' else 90,elevation=-12)
@@ -74,7 +80,7 @@ def main():
         first=ref.frame(primary).copy();second=ref.frame(panorama).copy();assert not np.array_equal(first,second)
         Image.fromarray(first).save(out/'target-preview.jpg');Image.fromarray(second).save(out/'panorama-preview.jpg')
         write_json(out/'camera-plan.json',dict(primary=primary,panorama=panorama,distinct_zero_action_rgb=True,main_readability='predeclared task-specific side/front plan; exact per Source preview kept; human review pending'))
-        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label='PI05-HARNESS-v1 autonomous frozen pi05 '+a.route;reset(a.port)
+        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label='PI05-DATA-v1 autonomous frozen pi05 '+a.route;reset(a.port)
         base=ref.robot.part_controllers['base'];base_target=d.qpos[base.qpos_index].copy();arm=ref.robot.part_controllers['right']
         joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
         margin=JointMarginMonitor(arm.qpos_index,m.jnt_range[joints],[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) for j in joints])
@@ -155,14 +161,14 @@ def main():
                     adapter_version=a.adapter_version,policy_raw_normalized=answer['normalized'][manip_step%5].tolist() if manipulating else None,
                     policy_nominal=raw[manip_step%5].tolist() if manipulating else None,world_target=dict(pos=point['pos'].tolist(),rot=point['rot'].tolist(),grasp=point['grasp']) if manipulating else None,
                     projection=point.get('projection'),actual_action=actual.tolist(),base_locked_target=base_target.tolist(),base_generalized_drift=drift,
-                    auxiliary_controller_targets_before_step=controller_targets,
+                    auxiliary_controller_targets_before_step=controller_targets,native_opening=native_opening(ref),
                     base_frame_response=dict(theta_before_rad=base_theta_before,normalized_native_goal_expected=expected_native_base_goal.tolist(),normalized_native_goal_actual=base.goal_qvel.tolist(),
                         native_ctrl=d.ctrl[np.asarray(ref.robot._ref_actuators_indexes_dict['base'],int)].tolist(),actual_base_qvel=d.qvel[base.qvel_index].tolist()),
                     actual_base_path_m=base_path,route_feedback=route_feedback,sim_time=float(d.time),checker_success=bool(ref.env._check_success()))
                 if manipulating:manip_step+=1
                 log.write(json.dumps(row)+'\n');log.flush()
                 if steps==int(round(120*ref.env.control_freq)):
-                    write_json(out/'horizon-120s.json',dict(elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native=observe_native(ref,ref.identity_expected),status_at_cutoff='running' if ref.recording else 'finished',base_path_m=base_path,base_generalized=d.qpos[base.qpos_index].tolist(),policy_queries=queries,gripper_goal=ref.robot.gripper['right'].current_action.tolist()))
+                    write_json(out/'horizon-120s.json',dict(elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native_opening=native_opening(ref),native=observe_native(ref,ref.identity_expected),status_at_cutoff='running' if ref.recording else 'finished',base_path_m=base_path,base_generalized=d.qpos[base.qpos_index].tolist(),policy_queries=queries,gripper_goal=ref.robot.gripper['right'].current_action.tolist()))
                 if step%20==0:print(json.dumps(dict(slot=a.slot,step=step,queries=queries,checker_success=row['checker_success'],base_drift=drift)),flush=True)
                 if not ref.recording:status=json.loads((attempt/'result.json').read_text())['reason'];break
             else:status=f'policy_budget_stop_{a.sim_seconds:g}s';ref.finish(status)
@@ -175,6 +181,10 @@ def main():
         result=json.loads((attempt/'result.json').read_text())
         if not (out/'horizon-120s.json').exists():write_json(out/'horizon-120s.json',dict(ended_before_120s=True,elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native=observe_native(ref,ref.identity_expected),terminal_status=status))
         write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False,protocol='PI05-SIM-v2',declared_sim_horizon_seconds=a.sim_seconds,declared_wall_limit_seconds=a.wall_seconds,A_private_version=a.A_private_version))
+        completed=json.loads((out/'completed.json').read_text());completed.update(protocol='PI05-DATA-v1',experiment_id='MMWAM-OBC-002-PI05-DATA-v1',
+            initial_native_opening=initial_opening,terminal_native_opening=native_opening(ref),native_progress=float(np.clip(1-native_opening(ref),0,1)),
+            terminal_duration_s=float(d.time)-start_time,observation_horizon_s=a.sim_seconds,censored=status.startswith('policy_budget_stop_') or status=='compute-timeout')
+        write_json(out/'completed.json',completed)
         print((out/'completed.json').read_text(),flush=True)
     except BaseException:
         traceback.print_exc();write_json(out/'failure.json',dict(at=now(),traceback=traceback.format_exc(),attempt=str(attempt) if attempt else None,completed_control_steps=steps,usable_outcome=bool(steps or (attempt and (attempt/'partial-control-step.npz').exists()))))
