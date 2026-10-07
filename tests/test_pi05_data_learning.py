@@ -38,3 +38,16 @@ def test_masks_do_not_make_unknowns_into_negative_labels():
     assert not np.any(mask) and np.isnan(actual).all()
     actual,mask=labels({'status':'X_no_legal_candidate','usable_scientific_outcome':True,'native_success':False},{})
     assert not np.any(mask) and np.isnan(actual).all()
+
+def test_opportunity_bounds_keep_unknowns_and_parent_clustering():
+    from pi05_data_results import aggregate
+    def row(parent,status,native,safe,executed):
+        return dict(parent_group=parent,status=status,task_success=native,safe_success=safe,executed=executed)
+    rows=[row('p1','success',1.,True,True),row('p1','protective_stop',0.,False,True),
+          row('p2','unrun',None,None,False),row('p2','X_no_legal_candidate',None,None,False)]
+    q=aggregate(rows)
+    assert q['parent_count']==2 and q['planned']==4 and q['native_valid']==2
+    assert q['parent_equal_safe_opportunity_lower']==.25
+    assert q['parent_equal_safe_opportunity_upper']==.5
+    assert q['X']==1 and q['unrun']==1
+    assert rows[-1]['task_success'] is None
