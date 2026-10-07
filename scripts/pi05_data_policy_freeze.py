@@ -41,7 +41,7 @@ def main():
     chosen=min(pool,key=lambda x:(x['common_success_path'],x['common_success_time'],x['order']))
     code=r/'runtime/mobipi';files=['scripts/pi05_harness_episode.py','scripts/reference_executor.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py',
         'src/mobiwam/pi05_route.py','src/mobiwam/pi05_A3.py','src/mobiwam/pi05_natural_A.py','src/mobiwam/planner_min.py',
-        'src/mobiwam/reference_collision.py','src/mobiwam/reference_prefix_safety.py','src/mobiwam/reference_formal_substep.py','scripts/pi05_candidate_features.py','src/mobiwam/scene004.py','src/mobiwam/pi05_sim_diagnostics.py','src/mobiwam/task_video_identity.py']
+        'src/mobiwam/reference_collision.py','src/mobiwam/reference_prefix_safety.py','src/mobiwam/reference_formal_substep.py','scripts/teleop_reference.py','scripts/human_scene_pilot.py','scripts/pi05_candidate_features.py','src/mobiwam/scene004.py','src/mobiwam/pi05_sim_diagnostics.py','src/mobiwam/task_video_identity.py']
     assert not subprocess.check_output(['git','-C',str(code),'status','--porcelain'],text=True).strip()
     freeze=dict(at=datetime.now(timezone.utc).isoformat(),status='frozen_before_any_main_outcome',policy_checkpoint=chosen['checkpoint'],selected_candidate=chosen['name'],candidates=candidates,
         ranking='safe successes -> native successes -> path/time on common safe successes -> old/earlier checkpoint',common_success_slots=common,
@@ -50,6 +50,7 @@ def main():
         code_commit=subprocess.check_output(['git','-C',str(code),'rev-parse','HEAD'],text=True).strip(),behavioral_components={name:sha(code/name) for name in files},
         openpi_commit=subprocess.check_output(['git','-C',str(r/'runtime/openpi'),'rev-parse','HEAD'],text=True).strip(),
         native_controller_components={str(p.relative_to(root/'env')):sha(p) for p in [root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/joint_vel.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/mobile_base_controller.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/arm/osc.py']},
+        task_checker_components={str(root/'Mobipi/external/robocasa/robocasa'/name):sha(root/'Mobipi/external/robocasa/robocasa'/name) for name in ['environments/kitchen/single_stage/kitchen_drawer.py','environments/kitchen/single_stage/kitchen_doors.py','models/fixtures/cabinet.py','models/fixtures/microwave.py']},
         policy_auxiliary={name:sha(Path(chosen['checkpoint'])/name) for name in ['custom-norm-stats.json','policy-adapter-config.json']},
         source_split=str(r/'inventory/source-split.json'),start_design=str(r/'design/start-design.json'),features=str(r/'design/repaired-features-freeze.json'),roster=str(r/'design/primary-roster-plan.json'),
         frozen_source_manifests={str(r/name):sha(r/name) for name in ['inventory/source-split.json','design/start-design.json','design/primary-roster-plan.json','inventory/canonical-dataset-binding.json','inventory/canonical-parent-lineage.json']},

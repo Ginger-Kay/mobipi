@@ -33,6 +33,10 @@ def main():
             code=Path(__file__).resolve().parents[1]
             for name,digest in freeze['behavioral_components'].items():
                 assert hashlib.sha256((code/name).read_bytes()).hexdigest()==digest,'frozen behavior changed; pause own queue'
+            for relative,digest in freeze['native_controller_components'].items():
+                assert hashlib.sha256((a.run.parents[3]/'env'/relative).read_bytes()).hexdigest()==digest,'installed native controller changed'
+            for path,digest in freeze['task_checker_components'].items():
+                assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,'native task checker or opening definition changed'
             for path,digest in freeze['frozen_source_manifests'].items():
                 assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,'frozen source/roster manifest changed'
             if not job.get('predeclared_X'):
