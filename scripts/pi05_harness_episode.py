@@ -55,8 +55,8 @@ def main():
     write_json(out/'process.json',dict(started_at=started,pid=os.getpid(),argv=__import__('sys').argv,python=__import__('sys').executable,code_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip(),
         source_worktree_clean=not bool(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'status','--porcelain'],text=True).strip()),
         purpose=a.purpose,roster=str(a.roster or a.run/'policy/policy-dev-roster.json'),
-        source_module_sha256={n:hashlib.sha256((Path(__file__).resolve().parents[1]/n).read_bytes()).hexdigest() for n in ('scripts/pi05_harness_episode.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py','src/mobiwam/pi05_route.py')},
-        task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261006,evaluation_seed=20261006,environment_seed=slot['environment_seed']))
+        source_module_sha256={n:hashlib.sha256((Path(__file__).resolve().parents[1]/n).read_bytes()).hexdigest() for n in ('scripts/pi05_harness_episode.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py','src/mobiwam/pi05_route.py','scripts/reference_executor.py')},
+        task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261007,evaluation_seed=20261007,environment_seed=slot['environment_seed']))
     ref=None;attempt=None;guard=None;margin=None;diagnostics=None;queries=0;steps=0;query_seconds=0.;status='engineering_unknown'
     try:
         connection=http.client.HTTPConnection('127.0.0.1',a.port,timeout=20);connection.request('GET','/status');response=connection.getresponse();binding=json.loads(response.read());connection.close()
@@ -68,7 +68,7 @@ def main():
         ref.identity_context=dict(run_id=a.run.name,group_id=slot['config_id']);native=observe_native(ref,ref.identity_expected)
         assert not ref.env._check_success();before=ref.integration().copy();inputs,anchor=observation(ref)
         assert np.max(abs(ref.integration()-before))<=1e-6
-        write_json(out/'initialization.json',dict(native=native,restore=ref.restore_receipt,zero_env_step=True,source_parent=str(src),initial_time=float(d.time),controller=_capture_controller_state(ref.env),policy_rng='fresh20261006; no artificial history'))
+        write_json(out/'initialization.json',dict(native=native,restore=ref.restore_receipt,zero_env_step=True,source_parent=str(src),initial_time=float(d.time),controller=_capture_controller_state(ref.env),policy_rng='fresh20261007; no artificial history'))
         primary=dict(lookat=d.site_xpos[ref.robot.eef_site_id['right']].tolist(),distance=1.55,azimuth=180 if slot['task']=='CloseDrawer' else 90,elevation=-12)
         camera=json.loads((source/'source.json').read_text())['camera'];panorama=dict(camera,distance=camera['distance']*1.3,azimuth=camera['azimuth']+25)
         first=ref.frame(primary).copy();second=ref.frame(panorama).copy();assert not np.array_equal(first,second)
@@ -131,6 +131,10 @@ def main():
                 control_phase='precontact' if driver and not manipulating and prefix['phase']=='navigate' else 'manipulate'
                 controller_targets=dict(arm_nullspace_goal=arm.initial_joint.tolist(),native_gripper_current_action=ref.robot.gripper['right'].current_action.tolist())
                 guard.set_boundary(step,control_phase);initial=ref.integration().copy()
+                _,native_base_ori=base.get_base_pose()
+                base_theta_before=float(np.arctan2(native_base_ori[1,0],native_base_ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0]))
+                native_map_before=np.array([[np.sin(base_theta_before),np.cos(base_theta_before),0],[np.cos(base_theta_before),-np.sin(base_theta_before),0],[0,0,1]])
+                expected_native_base_goal=native_map_before@actual[7:10]
                 try:
                     from contextlib import nullcontext
                     if a.A_private_version!='A1':driver.boundary(np.asarray(point.get('projection',{}).get('qp',{}).get('velocity',np.zeros(3)))[:3])
@@ -152,6 +156,8 @@ def main():
                     policy_nominal=raw[manip_step%5].tolist() if manipulating else None,world_target=dict(pos=point['pos'].tolist(),rot=point['rot'].tolist(),grasp=point['grasp']) if manipulating else None,
                     projection=point.get('projection'),actual_action=actual.tolist(),base_locked_target=base_target.tolist(),base_generalized_drift=drift,
                     auxiliary_controller_targets_before_step=controller_targets,
+                    base_frame_response=dict(theta_before_rad=base_theta_before,normalized_native_goal_expected=expected_native_base_goal.tolist(),normalized_native_goal_actual=base.goal_qvel.tolist(),
+                        native_ctrl=d.ctrl[np.asarray(ref.robot._ref_actuators_indexes_dict['base'],int)].tolist(),actual_base_qvel=d.qvel[base.qvel_index].tolist()),
                     actual_base_path_m=base_path,route_feedback=route_feedback,sim_time=float(d.time),checker_success=bool(ref.env._check_success()))
                 if manipulating:manip_step+=1
                 log.write(json.dumps(row)+'\n');log.flush()
@@ -163,7 +169,7 @@ def main():
         if diagnostics:diagnostics.save();diagnostics=None;ref.sim_diagnostics=None
         write_json(attempt/'formal-native-substeps-receipt.json',guard.save(attempt));write_json(attempt/'joint-margin-monitor.json',margin.receipt())
         semantics=driver.receipt(queries) if driver else dict(route='E',constant_base_target=True)
-        if a.A_private_version!='A1':driver.save_native(attempt)
+        if a.A_private_version!='A1' and driver is not None:driver.save_native(attempt)
         write_json(out/'route-semantics.json',semantics)
         semantic_pass=None if a.A_private_version=='A3N' else (a.route=='E' or semantics.get('D_fresh_query_after_settle',False) or semantics.get('A_semantics_observed',False))
         result=json.loads((attempt/'result.json').read_text())

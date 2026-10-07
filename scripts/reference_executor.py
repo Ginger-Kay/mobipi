@@ -99,7 +99,7 @@ def mapped_action(ref, point, base_target, arm_enabled=True):
     goal = requested / (.5*(base.actuator_max-base.actuator_min))
     _, ori = base.get_base_pose()
     theta = np.arctan2(ori[1,0],ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0])
-    mapping = np.array([[-np.sin(theta),np.cos(theta),0],[np.cos(theta),np.sin(theta),0],[0,0,1]])
+    mapping = np.array([[np.sin(theta),np.cos(theta),0],[np.cos(theta),-np.sin(theta),0],[0,0,1]])
     action[7:10] = np.linalg.solve(mapping,goal)
     return action, float(np.linalg.norm(pos_error)), float(np.linalg.norm(rot_error)), float(np.linalg.norm(error))
 

@@ -272,7 +272,9 @@ def whole_body_action(ref,intent,base_goal,previous_velocity=None,locked_base=Fa
     requested=velocity[:3]+np.where(abs(velocity[:3])>1e-6,np.sign(velocity[:3])*friction,0.)
     goal=requested/(.5*(base.actuator_max-base.actuator_min));_,ori=base.get_base_pose()
     theta=np.arctan2(ori[1,0],ori[0,0])-np.arctan2(base.init_ori[1,0],base.init_ori[0,0])
-    mapping=np.array([[-np.sin(theta),np.cos(theta),0],[np.cos(theta),np.sin(theta),0],[0,0,1]])
+    # Exact inverse of native raw-action XY swap followed by rotation(-theta).
+    # The original QP variables/rows/caps/friction compensation are unchanged.
+    mapping=np.array([[np.sin(theta),np.cos(theta),0],[np.cos(theta),-np.sin(theta),0],[0,0,1]])
     action[7:10]=np.linalg.solve(mapping,goal)
     grip_record=None
     if grip is not None:
