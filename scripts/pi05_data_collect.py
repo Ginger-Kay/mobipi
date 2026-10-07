@@ -43,7 +43,7 @@ def main():
                 source=Path(json.loads(Path(plan['roster']).read_text())['slots'][job['slot']-1]['source'])
                 for path,digest in freeze['static_source_integrity'].items():
                     p=Path(path)
-                    if p.parent==source or p==source.parent/'initial-state-controller.json':
+                    if p.parent==source or p in [source.parent/'initial-state-controller.json',source.parent/'env_config.json']:
                         assert hashlib.sha256(p.read_bytes()).hexdigest()==digest,'frozen actual initial state changed'
                 for relative,digest in freeze['static_input_integrity'].items():
                     if Path(relative).parent.name==job['config_id']:
