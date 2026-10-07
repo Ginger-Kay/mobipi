@@ -27,6 +27,11 @@ def main():
             if receipt:
                 af=Path(receipt['attempt'])/'sprint-safety-audit.json'
                 if af.exists():audit=json.loads(af.read_text())
+                else:
+                    native=Path(receipt['attempt'])/'formal-native-substeps-receipt.json'
+                    if native.exists():
+                        monitor=json.loads(native.read_text())
+                        audit={'native_collision':monitor.get('forbidden_contact') is not None,'all_safety_pass':None,'clearance_audit_pending':True}
                 assert receipt['config_id']==config['config_id'] and receipt['parent_group']==config['parent_group']
                 assert receipt['protocol']=='PI05-DATA-v1' and receipt['declared_sim_horizon_seconds']==300
                 policy=json.loads((p.parent/'policy-binding.json').read_text())
@@ -42,7 +47,7 @@ def main():
                 initial_native_opening=receipt.get('initial_native_opening'),terminal_native_opening=receipt.get('terminal_native_opening'),
                 opening_change=(receipt['initial_native_opening']-receipt['terminal_native_opening']) if 'terminal_native_opening' in receipt else None,
                 observation_horizon_s=300,censored=receipt.get('censored'),safety_pass=audit.get('all_safety_pass'),
-                safe_qualified_success=bool(receipt.get('native_success') and audit.get('all_safety_pass')) if audit else None,
+                safe_qualified_success=(bool(receipt.get('native_success') and audit['all_safety_pass']) if audit.get('all_safety_pass') is not None else (False if receipt and not receipt.get('native_success') else None)),
                 masks=mask.tolist(),raw_receipt=str(p) if receipt else None,safety_receipt=str(Path(receipt['attempt'])/'sprint-safety-audit.json') if receipt else None,
                 input_receipt=str(inputs/'features.json'),old_reference_or_policy_auxiliary=False)
             rows.append(row)
