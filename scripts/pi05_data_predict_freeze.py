@@ -61,7 +61,8 @@ def main():
             per[route]=pred.tolist()
         values['ridge']=per;choices['ridge']=choose(per,valid,heads)
         geometry=feature.get('geometry_selection');geometry=geometry.get('route_family',geometry.get('route','X')) if isinstance(geometry,dict) else geometry
-        choices['geometry']=geometry if geometry in 'EDA' and valid.get(geometry,False) else 'X'
+        geometry={x['candidate_id']:x['route_family'] for x in feature['routes']}.get(geometry,geometry)
+        choices['geometry']=geometry if geometry in ('E','D','A') and valid.get(geometry,False) else 'X'
         choices['train-best-fixed']=trainbest if valid.get(trainbest,False) else 'X'
         predictions.append(dict(config=g,valid_routes=valid,at_least_two_hard_valid=sum(valid.values())>=2,predictions=values,choices=choices,
             fixed_routes={route:route if valid.get(route,False) else 'X' for route in 'EDA'},features_receipt=str(folder/'features.json')))
