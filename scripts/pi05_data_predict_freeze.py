@@ -19,7 +19,7 @@ def main():
     methods={};models={}
     for kind in ['MLP','Linear']:
         cp=data/kind/'step2000.pt';assert read(data/kind/'completed.json')['steps']==2000
-        state=torch.load(cp,map_location='cpu');model=Head(kind);model.load_state_dict(state['model']);model.eval();models[kind]=(model,state);methods[kind]={'checkpoint':str(cp),'sha256':sha(cp),'heads':state['heads']}
+        state=torch.load(cp,map_location='cpu',weights_only=False);model=Head(kind);model.load_state_dict(state['model']);model.eval();models[kind]=(model,state);methods[kind]={'checkpoint':str(cp),'sha256':sha(cp),'heads':state['heads']}
     ridge=read(data/'ridge/ridge.json');methods['ridge']={'checkpoint':str(data/'ridge/ridge.json'),'sha256':sha(data/'ridge/ridge.json'),'heads':ridge['recipe']['heads']}
     labels=[json.loads(x) for x in (data/'labels.jsonl').read_text().splitlines()];train=[x for x in labels if x['role']=='train'];parents=sorted({x['parent_group'] for x in train});bounds={}
     for route in 'EDA':

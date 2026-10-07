@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime,timezone
 import http.client
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,11 @@ def main():
         raise ValueError('declared policy checkpoint differs from own service binding')
     results=[]
     for job in plan['jobs']:
+        if job['purpose']!='policy-dev':
+            freeze=json.loads((a.run/'policy/main-component-freeze.json').read_text())
+            code=Path(__file__).resolve().parents[1]
+            for name,digest in freeze['behavioral_components'].items():
+                assert hashlib.sha256((code/name).read_bytes()).hexdigest()==digest,'frozen behavior changed; pause own queue'
         stop=datetime.fromisoformat(plan['stop_starting_at'])
         cap=a.run/'design/capacity-plan.json'
         if job['purpose']=='paired' and '-evaluation-' not in job['evaluation_tag'] and cap.exists():
@@ -50,6 +56,11 @@ def main():
             code=p.wait()
         result=dict(job=job,exit_code=code,started_at=started,ended_at=now(),command=cmd,log=str(log),completed_receipt=str(old/'completed.json'))
         results.append(result);write(out/'results.json',results);print(json.dumps(result),flush=True)
+        if code!=0:
+            pending=plan['jobs'][len(results):]
+            results.extend(dict(job=x,status='unrun_after_mechanical_failure',failed_unit=result['completed_receipt']) for x in pending)
+            write(out/'results.json',results)
+            break
         # Pure mechanical failures remain in place. This scheduler never retries
         # or changes code, policy, source, roster or result labels on its own.
     write(out/'completed.json',dict(at=now(),planned=len(plan['jobs']),results=results,all_declared_jobs_closed=True))
