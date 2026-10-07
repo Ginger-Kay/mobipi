@@ -3,7 +3,7 @@ import argparse
 from datetime import datetime,timezone
 import hashlib,json,os
 from pathlib import Path
-import socket,subprocess,time
+import socket,subprocess,time,sys
 
 def read(p):return json.loads(Path(p).read_text())
 def main():
@@ -22,6 +22,10 @@ def main():
    if closed:break
    time.sleep(1)
   assert closed,'previous exact service still closing or unknown listener; do not duplicate'
+ # A live resource-only plan precedes each long batch. Before first6 formal
+ # routes it is explicitly conservative/unmeasured; intake cap activates only
+ # after the frozen measurement buckets are available.
+ subprocess.run([sys.executable,str(Path(__file__).parent/'pi05_data_capacity.py'),'--run',str(r)],check=True)
  samples=[]
  for i in range(6):
   sample=dict(at=datetime.now(timezone.utc).isoformat(),gpu=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid,utilization.gpu,memory.free','--format=csv,noheader'],text=True),contexts=subprocess.check_output(['nvidia-smi','--query-compute-apps=gpu_uuid,pid,process_name,used_memory','--format=csv,noheader'],text=True));samples.append(sample);time.sleep(2)
