@@ -1,5 +1,5 @@
 import numpy as np
-from mobiwam.pi05_data_learning import hierarchy_weights,fit_scaler,SCALES,support,choose,labels
+from mobiwam.pi05_data_learning import hierarchy_weights,fit_scaler,SCALES,support,choose,labels,decode
 
 def test_parent_config_route_weight_invariance_to_config_and_episode_counts():
     p=np.array(['p1']*6+['p2']*2);c=np.array(['a']*2+['b']*4+['c']*2);r=np.array(['E','A','E','E','D','A','E','A'])
@@ -27,6 +27,8 @@ def test_time_300_joint_stop_not_collision_and_constant_collision_not_ranked():
     preds={'E':np.array([.8,.99,.8,1.,100.]),'A':np.array([.8,0.,.8,1.,100.])}
     assert choose(preds,{'E':True,'A':True},heads)=='E'
     assert choose(preds,{},heads)=='X'
+    physical=decode(np.array([[0.,0.,1.2,-.3,1.]]),[{'status':'learnable'}]*5)
+    assert np.allclose(physical,[[.5,.5,1.,0.,300.]])
 
 def test_masks_do_not_make_unknowns_into_negative_labels():
     y=np.array([[0.,np.nan,.2,1.,50.],[1.,np.nan,1.,.5,20.]])

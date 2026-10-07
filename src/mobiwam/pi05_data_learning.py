@@ -73,7 +73,8 @@ def masked_loss(pred,target,weights,active):
 
 def decode(raw,heads):
     result=np.array(raw,dtype=np.float64,copy=True)
-    result[:,:2]=1/(1+np.exp(-np.clip(result[:,:2],-80,80)));result*=SCALES
+    result[:,:2]=1/(1+np.exp(-np.clip(result[:,:2],-80,80)))
+    result[:,2]=np.clip(result[:,2],0,1);result[:,3:]=np.maximum(result[:,3:],0);result*=SCALES
     for j,h in enumerate(heads):
         if h['status']=='constant':result[:,j]=h['constant']
         if h['status']=='unknown':result[:,j]=np.nan
