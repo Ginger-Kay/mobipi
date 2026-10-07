@@ -27,7 +27,12 @@ def main():
         raise ValueError('declared policy checkpoint differs from own service binding')
     results=[]
     for job in plan['jobs']:
-        if datetime.now(timezone.utc)>=datetime.fromisoformat(plan['stop_starting_at']):
+        stop=datetime.fromisoformat(plan['stop_starting_at'])
+        cap=a.run/'design/capacity-plan.json'
+        if job['purpose']=='paired' and '-evaluation-' not in job['evaluation_tag'] and cap.exists():
+            capacity=json.loads(cap.read_text())
+            if capacity['first6_task_route_buckets_available']:stop=min(stop,datetime.fromisoformat(capacity['train_dev_stop_starting_at']))
+        if datetime.now(timezone.utc)>=stop:
             results.append(dict(job=job,status='unrun_deadline'));continue
         old=a.run/'episodes'/job['evaluation_tag']/f'slot-{job["slot"]:02d}-{job["config_id"]}'/'engineering-attempt-0'
         if old.exists():raise ValueError('predeclared slot already exists; no unmodified repeat')

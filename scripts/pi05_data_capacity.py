@@ -53,13 +53,16 @@ def main():
   primary=estimate(configs)['single_worker_seconds'];est['estimated_seconds']=max(est['estimated_seconds'],(online+primary)/effective*1.25);est['online_worst_route_seconds']=online
  # Conservative outstanding audit forecast uses at least10 CPU seconds per
  # simulated second,14 enabled auditors, and300 seconds for unrun legal units.
- auditors=14;audit_ratio=max(10.,audit_ratio);audit_remaining=max(0,audit_jobs-audits_done)*300*audit_ratio/auditors
+ auditors=14;audit_ratio=max(10.,audit_ratio);audit_remaining=0.
+ for file in (r/'episodes').glob('*/slot-*/engineering-attempt-0/completed.json'):
+  q=read(file)
+  if not (Path(q['attempt'])/'sprint-safety-audit.json').exists():audit_remaining+=float(q.get('terminal_duration_s',0))*audit_ratio/auditors
  finalfit=1800.;reserve=rules['evidence_closeout_reserve_seconds'];audit_eval=eval1['units']*300*audit_ratio/auditors
  tail1=eval1['estimated_seconds']+max(audit_remaining,audit_eval)*1.25+finalfit+reserve
  intake=deadline-timedelta(seconds=tail1+2700)
  # This cap may become earlier as resource costs grow, never silently extend.
  old=r/'design/capacity-plan.json'
- if old.exists():intake=min(intake,datetime.fromisoformat(read(old)['train_dev_stop_starting_at']))
+ if old.exists() and read(old)['first6_task_route_buckets_available']:intake=min(intake,datetime.fromisoformat(read(old)['train_dev_stop_starting_at']))
  first=[c for c in roster if c['role']=='train' and c['tier']==1][:2];measured6=all(c['task']+'/'+route in buckets for c in first for route in 'EDA')
  existing=directory_bytes(r);space=shutil.disk_usage(r).free;perunit=max(maxbytes,2*1024**3);future_units=extra['units']+eval2['units'];peak_extra=future_units*perunit*1.25
  plan=dict(at=stamp.isoformat(),basis='per task-route maximum measured formal train wall; unknown>=2700;1.25factor; actual worker overlap bounded2',measured_formal_train_slots=len(completed),first6_task_route_buckets_available=measured6,
