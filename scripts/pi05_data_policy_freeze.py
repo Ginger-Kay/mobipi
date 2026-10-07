@@ -12,6 +12,7 @@ def main():
     if (r/'policy/main-component-freeze.json').exists():raise ValueError('main components already frozen')
     assert json.loads((r/'design/repaired-features-freeze.json').read_text())['configs']==90
     assert json.loads((r/'preflight/config-feature-binding-validation.json').read_text())['passed']
+    assert json.loads((r/'preflight/initial-controller-field-validation.json').read_text())['passed']
     assert json.loads((r/'design/repaired-starts-v1/repair-summary.json').read_text())['passed']
     assert json.loads((r/'preflight/base-mapping-actual-validation.json').read_text())['passed']
     assert json.loads((r/'policy/integrated-corrective-fit2/freeze-verification.json').read_text())['frozen_leaves_unchanged']
@@ -51,6 +52,8 @@ def main():
         native_controller_components={str(p.relative_to(root/'env')):sha(p) for p in [root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/joint_vel.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/mobile_base_controller.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/arm/osc.py']},
         policy_auxiliary={name:sha(Path(chosen['checkpoint'])/name) for name in ['custom-norm-stats.json','policy-adapter-config.json']},
         source_split=str(r/'inventory/source-split.json'),start_design=str(r/'design/start-design.json'),features=str(r/'design/repaired-features-freeze.json'),roster=str(r/'design/primary-roster-plan.json'),
+        frozen_source_manifests={str(r/name):sha(r/name) for name in ['inventory/source-split.json','design/start-design.json','design/primary-roster-plan.json','inventory/canonical-dataset-binding.json','inventory/canonical-parent-lineage.json']},
+        static_source_integrity={str(p):sha(p) for item in json.loads((r/'design/repaired-features-freeze.json').read_text())['records'] for p in [Path(item['source'])/name for name in ['model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json']]+[Path(item['source']).parent/'initial-state-controller.json']},
         static_input_integrity={str(p.relative_to(r)):sha(p) for folder in (r/'design/repaired-inputs-v1').iterdir() if folder.is_dir() for p in list(folder.glob('*-X.npy'))+[folder/'features.json',folder/'pre-outcome-RGB-sensors.npz']},
         input_components={'CLIP_revision':'32bd64288804d66eefd0ccbe215aa642df71cc41','input_dimension':1048,'geometry_fields':21,'route_onehot':3,'source_time0_only':True},
         safety={'joint_margin_rad_strictly_greater':.015,'sweep_m':.0005,'QP_tolerance':1e-8,'other_constraints':'unchanged original binding'},
