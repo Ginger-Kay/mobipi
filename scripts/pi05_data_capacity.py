@@ -50,7 +50,7 @@ def main():
  for est,tier in [(eval1,1),(eval2,2)]:
   configs=[c for c in roster if c['role']=='evaluation' and c['tier']<=tier and c['static_config_legal']]
   online=sum(3*max(allbuckets[c['task']+'/'+route] for route in 'EDA') for c in configs)
-  primary=estimate(configs)['single_worker_seconds'];est['estimated_seconds']=max(est['estimated_seconds'],(online+primary)/effective*1.25);est['online_worst_route_seconds']=online
+  primary_estimate=estimate(configs);primary=primary_estimate['single_worker_seconds'];est['units']=primary_estimate['units']+3*len(configs);est['unit_definition']='hard-valid paired routes plus worst3 executable online choices per legal config';est['estimated_seconds']=max(est['estimated_seconds'],(online+primary)/effective*1.25);est['online_worst_route_seconds']=online
  # Conservative outstanding audit forecast uses at least10 CPU seconds per
  # simulated second,14 enabled auditors, and300 seconds for unrun legal units.
  auditors=14;audit_ratio=max(10.,audit_ratio);audit_remaining=0.
