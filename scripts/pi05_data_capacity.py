@@ -58,7 +58,10 @@ def main():
   q=read(file)
   if not (Path(q['attempt'])/'sprint-safety-audit.json').exists():audit_remaining+=float(q.get('terminal_duration_s',0))*audit_ratio/auditors
  finalfit=1800.;reserve=rules['evidence_closeout_reserve_seconds'];audit_eval=eval1['units']*300*audit_ratio/auditors
- tail1=eval1['estimated_seconds']+max(audit_remaining,audit_eval)*1.25+finalfit+reserve
+ selected=read(r/'design/tier-decision.json')['selected_tier'] if (r/'design/tier-decision.json').exists() else 1
+ finaleval=eval2 if selected==2 else eval1
+ audit_eval=finaleval['units']*300*audit_ratio/auditors
+ tail1=finaleval['estimated_seconds']+max(audit_remaining,audit_eval)*1.25+finalfit+reserve
  intake=deadline-timedelta(seconds=tail1+2700)
  # This cap may become earlier as resource costs grow, never silently extend.
  old=r/'design/capacity-plan.json'

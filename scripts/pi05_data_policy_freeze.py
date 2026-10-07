@@ -46,9 +46,10 @@ def main():
         nonconformant_first_fit='integrated-fit1 retained as deviation and separate development, not candidate',corrective_authorization=str(r/'policy/corrective-fit-authorization.json'),
         code_commit=subprocess.check_output(['git','-C',str(code),'rev-parse','HEAD'],text=True).strip(),behavioral_components={name:sha(code/name) for name in files},
         openpi_commit=subprocess.check_output(['git','-C',str(r/'runtime/openpi'),'rev-parse','HEAD'],text=True).strip(),
-        native_controller_components={str(p.relative_to(root/'env')):sha(p) for p in [root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/joint_vel.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/arm/osc.py']},
+        native_controller_components={str(p.relative_to(root/'env')):sha(p) for p in [root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/joint_vel.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/mobile_base/mobile_base_controller.py',root/'env/lib/python3.10/site-packages/robosuite/controllers/parts/arm/osc.py']},
         policy_auxiliary={name:sha(Path(chosen['checkpoint'])/name) for name in ['custom-norm-stats.json','policy-adapter-config.json']},
         source_split=str(r/'inventory/source-split.json'),start_design=str(r/'design/start-design.json'),features=str(r/'design/repaired-features-freeze.json'),roster=str(r/'design/primary-roster-plan.json'),
+        static_input_integrity={str(p.relative_to(r)):sha(p) for folder in (r/'design/repaired-inputs-v1').iterdir() if folder.is_dir() for p in list(folder.glob('*-X.npy'))+[folder/'features.json',folder/'pre-outcome-RGB-sensors.npz']},
         input_components={'CLIP_revision':'32bd64288804d66eefd0ccbe215aa642df71cc41','input_dimension':1048,'geometry_fields':21,'route_onehot':3,'source_time0_only':True},
         safety={'joint_margin_rad_strictly_greater':.015,'sweep_m':.0005,'QP_tolerance':1e-8,'other_constraints':'unchanged original binding'},
         policy_sampling_seed=20261007,horizon_sim_seconds=300,wall_seconds=2700,base_inverse_actual_proof=str(r/'preflight/base-mapping-actual-validation.json'),formal_train_ready=False)

@@ -38,7 +38,7 @@ def main():
   time.sleep(10)
  assert not list((r/'episodes').glob('primary-*/*/engineering-attempt-0/completed.json'))
  stage('train1');run('pi05_data_dataset.py','--tier',1);run('pi05_data_capacity.py','--decide-tier');tier=read(r/'design/tier-decision.json')['selected_tier']
- if tier==2:stage('train2');run('pi05_data_dataset.py','--tier',2)
+ if tier==2:run('pi05_data_capacity.py');stage('train2');run('pi05_data_dataset.py','--tier',2)
  # Only the selected tier is fitted; skipping the optional first-tier fit
  # conserves the fixed recipe without changing a final model based on scores.
  samples=[]
