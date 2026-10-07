@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime,timezone
 import hashlib
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -59,6 +60,6 @@ def main():
         input_components={'CLIP_revision':'32bd64288804d66eefd0ccbe215aa642df71cc41','input_dimension':1048,'geometry_fields':21,'route_onehot':3,'source_time0_only':True},
         safety={'joint_margin_rad_strictly_greater':.015,'sweep_m':.0005,'QP_tolerance':1e-8,'other_constraints':'unchanged original binding'},
         policy_sampling_seed=20261007,horizon_sim_seconds=300,wall_seconds=2700,base_inverse_actual_proof=str(r/'preflight/base-mapping-actual-validation.json'),formal_train_ready=False)
-    (r/'policy/main-component-freeze.json').write_text(json.dumps(freeze,indent=2)+'\n');print(json.dumps({k:freeze[k] for k in ['at','selected_candidate','policy_checkpoint','common_success_slots']}),flush=True)
+    target=r/'policy/main-component-freeze.json';temporary=target.with_name(target.name+'.tmp-'+str(os.getpid()));temporary.write_text(json.dumps(freeze,indent=2)+'\n');temporary.replace(target);print(json.dumps({k:freeze[k] for k in ['at','selected_candidate','policy_checkpoint','common_success_slots']}),flush=True)
 
 if __name__=='__main__':main()

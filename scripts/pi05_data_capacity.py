@@ -73,7 +73,8 @@ def main():
   final_tier1_evaluation_online=eval1,final_tier2_evaluation_online=eval2,additional_train_dev=extra,audit_ratio_CPU_seconds_per_sim_second=audit_ratio,audit_workers=auditors,outstanding_audit_estimate_seconds=audit_remaining,
   fit_seconds_reserved=finalfit,evidence_closeout_reserve_seconds=reserve,train_dev_stop_starting_at=intake.isoformat(),hard_deadline=deadline.isoformat(),live_free_bytes=space,existing_artifact_bytes=existing,max_measured_episode_bytes=maxbytes,
   tier2_estimated_additional_peak_bytes=peak_extra,component_freeze_unchanged=bool(component_ok),outcome_scores_used=False)
- write=lambda p,x:Path(p).write_text(json.dumps(x,indent=2)+'\n')
+ def write(p,x):
+  p=Path(p);tmp=p.with_name(p.name+'.tmp-'+str(os.getpid()));tmp.write_text(json.dumps(x,indent=2)+'\n');tmp.replace(p)
  write(r/'design/capacity-plan.json',plan);history=r/'design/capacity-history.jsonl'
  with history.open('a') as f:f.write(json.dumps(plan)+'\n')
  if a.decide_tier:

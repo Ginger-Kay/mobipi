@@ -11,7 +11,8 @@ import sys
 import time
 
 def now():return datetime.now(timezone.utc).isoformat()
-def write(p,x):Path(p).write_text(json.dumps(x,indent=2)+'\n')
+def write(p,x):
+    p=Path(p);tmp=p.with_name(p.name+'.tmp-'+str(os.getpid()));tmp.write_text(json.dumps(x,indent=2)+'\n');tmp.replace(p)
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--queue',type=Path,required=True);ap.add_argument('--port',type=int,required=True);ap.add_argument('--checkpoint-step',type=int,required=True);ap.add_argument('--status-name',required=True);a=ap.parse_args()
     plan=json.loads(a.queue.read_text());out=a.run/'policy'/a.status_name;out.mkdir(exist_ok=False)

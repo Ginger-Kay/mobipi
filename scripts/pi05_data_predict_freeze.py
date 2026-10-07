@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime,timezone
 import hashlib
+import os
 import json
 from pathlib import Path
 import numpy as np
@@ -73,6 +74,6 @@ def main():
         primary_routes=['E','D','A'],comparison_methods=['fixedE','fixedD','fixedA','geometry','train-best-fixed','ridge','Linear','MLP','observed-oracle'],
         statistical_cluster='parent; configurations are repeated starts, not independent Sources',main_component_freeze=str(r/'policy/main-component-freeze.json'),
         evaluation_outcomes_accessed=False,post_evaluation_fit_or_expansion_prohibited=True)
-    (r/'policy/final-evaluation-freeze.json').write_text(json.dumps(frozen,indent=2)+'\n');print(json.dumps({k:frozen[k] for k in ['at','selected_tier','train_best_fixed','planned_evaluation_configs']}),flush=True)
+    target=r/'policy/final-evaluation-freeze.json';temporary=target.with_name(target.name+'.tmp-'+str(os.getpid()));temporary.write_text(json.dumps(frozen,indent=2)+'\n');temporary.replace(target);print(json.dumps({k:frozen[k] for k in ['at','selected_tier','train_best_fixed','planned_evaluation_configs']}),flush=True)
 
 if __name__=='__main__':main()
