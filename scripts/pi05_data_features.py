@@ -16,19 +16,22 @@ from pi05_candidate_features import feature_record
 
 def now():return datetime.now(timezone.utc).isoformat()
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--output-root',default='design/inputs');ap.add_argument('--freeze-output',default='design/features-freeze.json');a=ap.parse_args()
     model=Path('/share/personal/chensiyu/haokaijiang/MobiWAM/cache/huggingface/hub/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41')
     encoder=FrozenCLIPVisionEncoder(model,device='cuda:0',batch_size=3)
     design=json.loads((a.run/'design/start-design.json').read_text());completed=[]
     # Config order is static parent/task/split; no outcome is opened.
     for index,g in enumerate(design['selected']):
-        out=a.run/'design/inputs'/g['config_id'];out.mkdir(parents=True,exist_ok=True)
+        out=a.run/a.output_root/g['config_id'];out.mkdir(parents=True,exist_ok=True)
         if (out/'features.json').exists():completed.append(json.loads((out/'features.json').read_text()));continue
         ref=Reference(argparse.Namespace(output=str(out/'native'),task=g['task'],layout=1,style=0,seed=g['environment_seed'],self_test=True,source=g['source'],replay_attempt=None,resume_attempt=None,width=640,height=360))
         try:
             restore_saved_integration(ref)
             def no_step(*args,**kwargs):raise AssertionError('features require zero env.step')
             ref.env.step=no_step;before=ref.integration().copy();m,d=ref.model_data()
+            initial=json.loads((Path(g['source']).parent/'initial-state-controller.json').read_text())
+            assert np.max(abs(d.qpos-np.asarray(initial['qpos'])))<=1e-6
+            assert np.max(abs(d.qvel-np.asarray(initial['qvel'])))<=1e-6
             raw=ref.env._get_observations(force_update=True);sensors={key:np.asarray(raw[key])[None] for key in PROPRIO_KEYS}
             renderer=mujoco.Renderer(m,height=256,width=256)
             try:
@@ -61,6 +64,6 @@ def main():
             write_json(out/'features.json',receipt);completed.append(receipt)
             print(json.dumps(dict(at=now(),config_id=g['config_id'],routes={x['route_family']:x['hard_valid'] for x in rows},configs=len(completed))),flush=True)
         finally:ref.env.close()
-    write_json(a.run/'design/features-freeze.json',dict(at=now(),configs=len(completed),records=completed,source_state_rgb_binding_verified=True,zero_policy_forward=True,zero_env_step=True,scaler_fit=False))
+    write_json(a.run/a.freeze_output,dict(at=now(),configs=len(completed),records=completed,source_state_rgb_binding_verified=True,zero_policy_forward=True,zero_env_step=True,scaler_fit=False))
 
 if __name__=='__main__':main()

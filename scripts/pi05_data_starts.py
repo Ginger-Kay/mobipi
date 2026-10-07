@@ -102,13 +102,17 @@ def main():
                         dest=co/src.name;dest.mkdir()
                         for name in ('model.xml','ep_meta.json','rng.json','target-binding.json'):shutil.copy2(src/name,dest/name)
                         shutil.copy2(src.parent/'env_config.json',co/'env_config.json')
-                        np.save(dest/'integration.npy',ref.integration())
+                        candidate_state=np.empty(mujoco.mj_stateSize(m,ref.kind));mujoco.mj_getState(m,d,candidate_state,ref.kind)
+                        np.save(dest/'integration.npy',candidate_state)
                         # Refresh controller goals/caches through native restore API.
                         sourceinfo=json.loads((src/'source.json').read_text());sourceinfo.update(created_at=now(),parent_source=str(src),parent_group=g['parent_group'],config_id=config,
                             initializer='native mjSTATE_INTEGRATION then fixed neutral arm/open gripper, furniture-frame base offset and native task joint; mj_forward only; zero task action',
                             scientific_distribution='posed-start; not natural random deployment',camera=sourceinfo['camera'])
                         write_json(dest/'source.json',sourceinfo)
                         original=ref.source;ref.source=dest;restore_saved_integration(ref);ref.source=original
+                        m,d=ref.model_data()
+                        assert np.max(abs(d.qpos-selected_states[-1]))<=1e-6
+                        check=SweptGeometry(m,target_prefix=fixture.name,margin=.0005)
                         write_json(co/'initial-state-controller.json',dict(at=now(),qpos=d.qpos.tolist(),qvel=d.qvel.tolist(),task_native_opening=initial_opening*opening_factor,
                             controller=_capture_controller_state(ref.env),integration_restore=ref.restore_receipt,env_step_calls=0,
                             source_sha256={n:sha(dest/n) for n in ['model.xml','integration.npy','rng.json','ep_meta.json','target-binding.json']}))
