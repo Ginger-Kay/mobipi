@@ -23,6 +23,13 @@ def rows(r):
     with lock:
         result=[outcome(j) for j in read(r/'design/selected-plan.json')['jobs']]
         for x in result:
+            failure=Path(x['receipt']).parent/'failure.json'
+            if failure.exists() and read(failure).get('status')=='engineering_supervisor_interrupted':
+                f=read(failure);x.update(status=f['status'],executed=True,valid=False,unknown=True,
+                    steps=f['recorded_prefix_steps'],policy_queries=f['recorded_prefix_queries'],
+                    head_values=[None]*5,head_masks=[False]*5,native_success=None,safety_pass=None,safe_success=None,
+                    target_video=f.get('target_video'),panoramic_video=f.get('panoramic_video'),
+                    audit=None,terminal_duration_s=None,prefix_only=True,unlogged_suffix_unknown=True)
             m=r/'audits'/('media-'+x['key'].replace('/','-')+'.json');x['media_pass']=read(m).get('passed') if m.exists() else None
         write(r/'evidence/slot-ledger.json',dict(at=now(),rows=result));return result
 def counters(rs):
@@ -142,7 +149,7 @@ def audit(r,job):
             write(cache,dict(at=now(),status='running',receipt=str(receipt),resume_attempt=1 if prior else 0))
             cmd=[str(R/'env/bin/python'),'-u',str(r/'runtime/mobipi/scripts/sim_sprint_safety.py'),'--receipt',str(receipt)]
             with (r/'logs'/('audit-'+key+'.log')).open('a') as f:
-                proc=subprocess.Popen(cmd,env=simenv(r,0),stdout=f,stderr=subprocess.STDOUT)
+                proc=subprocess.Popen(cmd,env=simenv(r,0),stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
                 write(process_file,dict(at=now(),pid=proc.pid,command=cmd,run_id=r.name,deadline_config=str(r/'deadline-config.json'),starttime_ticks=Path(f'/proc/{proc.pid}/stat').read_text().split()[21]))
                 try:rc=proc.wait(timeout=max(1,seconds_until(r,'audit_freeze')))
                 except subprocess.TimeoutExpired:
@@ -154,7 +161,7 @@ def audit(r,job):
     event(r,'audit_complete',key=job['key'])
 
 def launch(r,name,command,env):
-    path=r/'logs'/f'{name}.log';f=path.open('a');proc=subprocess.Popen([str(x) for x in command],env=env,stdout=f,stderr=subprocess.STDOUT)
+    path=r/'logs'/f'{name}.log';f=path.open('a');proc=subprocess.Popen([str(x) for x in command],env=env,stdout=f,stderr=subprocess.STDOUT,start_new_session=True)
     write(r/'launch'/f'{name}-process.json',dict(at=now(),pid=proc.pid,command=[str(x) for x in command],run_id=r.name,deadline_config=str(r/'deadline-config.json'),log=str(path),environment={k:env.get(k) for k in ['CUDA_VISIBLE_DEVICES','MUJOCO_EGL_DEVICE_ID','PYTHONPATH']},starttime_ticks=Path(f'/proc/{proc.pid}/stat').read_text().split()[21]))
     return proc,f
 
@@ -239,6 +246,13 @@ def main(r,v):
             time.sleep(5)
         assert subprocess.check_output(['git','-C',str(r/'runtime/mobipi'),'status','--porcelain'],text=True).strip()==''
         for w in range(2):
+            ready=r/'policy'/f'service{w}/ready.json'
+            if ready.exists():
+                previous=read(r/'launch'/f'service{w}-process.json')
+                assert owned_pid(previous) is None,'existing healthy own service requires explicit recovery binding; never duplicate'
+                previous_output=ready.parent.with_name(ready.parent.name+'-preserved-supervisor0')
+                assert not previous_output.exists(),'retain service lineage; never overwrite prior archive'
+                ready.parent.rename(previous_output)
             op=r/'runtime/openpi';env=dict(os.environ,PYTHONNOUSERSITE='1',PYTHONPATH=f'{op}/src:{op}/scripts:{op}/packages/openpi-client/src',CUDA_VISIBLE_DEVICES=GPUS[w],JAX_PLATFORMS='cuda',XLA_PYTHON_CLIENT_PREALLOCATE='false',JAX_COMPILATION_CACHE_DIR=str(r/'policy'/f'jax-cache{w}'),OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1')
             s=socket.socket();s.bind(('127.0.0.1',PORTS[w]));s.close()
             cmd=[R/'env/openpi/bin/python','-u',op/'scripts/pi05_fft_serve.py','--lora','--checkpoint',CP,'--output',r/'policy'/f'service{w}','--port',str(PORTS[w]),'--max-seconds',str(max(1,int(seconds_until(r,'execution_deadline')))),'--max-queries','100000']
