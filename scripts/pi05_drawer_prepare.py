@@ -18,7 +18,10 @@ NAMES=('model.xml','integration.npy','ep_meta.json','rng.json','source.json','ta
 OFFSETS=((.02,0,0),(-.02,0,0),(0,.02,0),(0,-.02,0),(0,0,np.pi/180),(0,0,-np.pi/180))
 
 def bind(r,g,ident,offset=None):
-    out=r/'design/anchors'/ident;out.mkdir(parents=True)
+    out=r/'design/anchors'/ident
+    if (out/'binding.json').exists():return json.loads((out/'binding.json').read_text())
+    if out.exists():out=out.with_name(out.name+'-static-engineering-repair1')
+    out.mkdir(parents=True)
     src=Path(g['source']);dest=out/src.name;dest.mkdir()
     for n in NAMES: shutil.copy2(src/n,dest/n)
     shutil.copy2(src.parent/'env_config.json',out/'env_config.json')
@@ -45,6 +48,13 @@ def bind(r,g,ident,offset=None):
                 assert abs(np.linalg.det(xy))>1e-6 and abs(yaw_response)>1e-6
                 d.qpos[bids[:2]]+=np.linalg.solve(xy,worlddelta[:2]);d.qpos[bids[2]]+=offset[2]/yaw_response
                 mujoco.mj_forward(m,d)
+                # Yaw rotates the measured body about its joint pivot; preserve
+                # requested body xy by compensating only base translation.
+                residual=(world0+worlddelta-d.xpos[bid])[:2]
+                if np.max(abs(residual))>1e-10:
+                    mujoco.mj_jacBody(m,d,jp,jr,bid)
+                    d.qpos[bids[:2]]+=np.linalg.solve(jp[:2,bdofs[:2]],residual)
+                    mujoco.mj_forward(m,d)
                 assert np.max(abs(d.qpos[np.setdiff1d(np.arange(m.nq),bids)]-anchor[np.setdiff1d(np.arange(m.nq),bids)]))<=1e-6
                 assert np.max(abs(d.qvel-velocity))<=1e-6
                 assert np.max(abs((d.xpos[bid]-world0)-worlddelta))<=1e-6
