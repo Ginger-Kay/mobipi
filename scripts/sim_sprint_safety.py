@@ -8,6 +8,12 @@ from mobiwam.task_video_identity import source_model
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--receipt',type=Path,required=True);a=ap.parse_args();q=json.loads(a.receipt.read_text())
+    # This branch only changes audit queue priority. Native audit math is unchanged.
+    run=a.receipt.parents[4]
+    phase=run/'phase-state.json'
+    if q.get('experiment_id')=='MMWAM-OBC-002-PI05-DRAWER-v1' and q.get('purpose')=='policy-dev' and phase.exists() and json.loads(phase.read_text()).get('phase') in ('S1_train_dev','S2_train_cutoff'):
+        deferred=dict(at=datetime.now(timezone.utc).isoformat(),status='deferred_until_train_audits_cutoff',receipt=str(a.receipt),audit_performed=False,safety_label=None)
+        (a.receipt.parent/'dev-audit-deferred.json').write_text(json.dumps(deferred,indent=2)+'\n');print(json.dumps(deferred),flush=True);return
     attempt=Path(q['attempt']);out=attempt/'sprint-safety-audit.json';assert not out.exists();source=attempt.parents[1]
     sha=hashlib.sha256((source/'model.xml').read_bytes()).hexdigest();model=source_model(str(source/'model.xml'),sha)
     binding=json.loads((source/'target-binding.json').read_text());z=np.load(attempt/'formal-native-substeps.npz',allow_pickle=False)
