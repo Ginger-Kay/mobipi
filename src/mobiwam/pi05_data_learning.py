@@ -1,11 +1,11 @@
-"""Fixed PI05-DATA-v1 units, masked hierarchy, and physical-unit selection."""
+"""Fixed PI05-FFT-v1 units, masked hierarchy, and physical-unit selection."""
 from collections import defaultdict
 import numpy as np
 import torch
 from torch import nn
 
 HEADS=('success','collision','progress','path','terminal_duration')
-SCALES=np.array([1.,1.,1.,2.,300.],np.float32)
+SCALES=np.array([1.,1.,1.,2.,120.],np.float32)
 
 def labels(receipt,audit):
     """Observed native termination labels; collision uses actual evidence only."""
@@ -13,7 +13,8 @@ def labels(receipt,audit):
     status=receipt.get('status','engineering_unknown')
     terminal=bool(receipt.get('usable_scientific_outcome')) and not status.startswith(('X_','engineering_'))
     if terminal:
-        y[0]=float(receipt['native_success']);mask[0]=True
+        if status!='compute-timeout' and not receipt.get('censored',False):
+            y[0]=float(receipt['native_success']);mask[0]=True
         opening=receipt.get('terminal_native_opening')
         if opening is not None and np.isfinite(opening):y[2]=np.clip(1-opening,0,1);mask[2]=True
         for j,key in [(3,'actual_base_path_m'),(4,'terminal_duration_s')]:

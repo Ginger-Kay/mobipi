@@ -1,0 +1,613 @@
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..e4f4ecb
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,4 @@
++# PI05-FFT-v1 task-owned checkout
++
++Created_at: 2026-10-08T07:16:30.585851+00:00
++Follow /share/personal/chensiyu/haokaijiang/MobiWAM/control/AGENTS.md and /share/personal/chensiyu/haokaijiang/MobiWAM/control/08-experiments/contracts/2026-10-08-obc-wam-pi05-full-ft-fsdp-anchor120.md. Single agent; preserve existing processes and historical evidence.
+diff --git a/scripts/pi05_fft_cpu_check.py b/scripts/pi05_fft_cpu_check.py
+new file mode 100644
+index 0000000..bdb24a1
+--- /dev/null
++++ b/scripts/pi05_fft_cpu_check.py
+@@ -0,0 +1,51 @@
++"""CPU semantic checks; no GPU forward, gradient update, or environment step."""
++import argparse
++from datetime import datetime,timezone
++import json
++from pathlib import Path
++import numpy as np
++import jax
++import jax.numpy as jnp
++from openpi.models.pi0 import action_velocity_loss
++from openpi.training import sharding
++from pi05_fft_train import recipe
++from pi05_fft_data import LocalDemoLoader,normalize_vector,unnormalize_vector
++import train as official
++
++
++def main():
++    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args()
++    assert all(d.platform=='cpu' for d in jax.devices())
++    key=jax.random.key(17);x=jax.random.normal(key,(2,10,32));y=x+.2
++    first=action_velocity_loss(x,y,8)
++    altered=y.at[...,8:].set(1e6)
++    assert np.array_equal(first,action_velocity_loss(x,altered,8))
++    gradient=jax.grad(lambda p:jnp.sum(action_velocity_loss(p,altered,8)))(x)
++    assert np.max(abs(np.asarray(gradient[...,8:])))==0
++    assert np.max(abs(np.asarray(gradient[...,:8])))>0
++    binding=json.loads((a.run/'inventory/dataset-binding.json').read_text())
++    loader=LocalDemoLoader(binding['dataset'],32)
++    batch=loader.next()
++    assert batch[1].shape==(32,10,32) and np.isfinite(batch[1]).all()
++    assert np.max(abs(batch[1][...,8:]))==0
++    physical=unnormalize_vector(batch[1],loader.stats['actions'])
++    check=normalize_vector(physical,loader.stats['actions'])
++    assert np.max(abs(check-batch[1]))<=1e-5
++    specs={}
++    for devices in (2,4):
++        cfg=recipe(a.run,'cpu-shape',devices,32,100)
++        mesh=sharding.make_mesh(devices)
++        shape,spec=official.init_train_state(cfg,jax.random.key(17),mesh,resume=True)
++        param_spec=[str(v.spec) for v in jax.tree.leaves(spec.params) if hasattr(v,'spec')]
++        opt_spec=[str(v.spec) for v in jax.tree.leaves(spec.opt_state) if hasattr(v,'spec')]
++        assert any('fsdp' in x for x in param_spec) and any('fsdp' in x for x in opt_spec)
++        specs[str(devices)]=dict(mesh_shape=dict(mesh.shape),parameter_shards=sum('fsdp' in x for x in param_spec),
++            optimizer_shards=sum('fsdp' in x for x in opt_spec),resource_semantics='CPU abstract shape only; actual GPU memory/communication unrun')
++    receipt=dict(at=datetime.now(timezone.utc).isoformat(),passed=True,padding_loss_and_gradient_invariant=True,
++        action_normalization_roundtrip_max=float(np.max(abs(check-batch[1]))),loader_global_batch_shape=[32,10,32],
++        cpu_abstract_FSDP=specs,GPU_training_updates=0,policy_forward_calls=0,env_step_calls=0)
++    (a.run/'preflight/cpu-executable-check.json').write_text(json.dumps(receipt,indent=2)+'\n')
++    print(json.dumps(receipt),flush=True)
++
++
++if __name__=='__main__':main()
+diff --git a/scripts/pi05_fft_data.py b/scripts/pi05_fft_data.py
+new file mode 100644
+index 0000000..e159f50
+--- /dev/null
++++ b/scripts/pi05_fft_data.py
+@@ -0,0 +1,81 @@
++"""Frozen local demo loader and explicit current-base nominal action format."""
++import json
++from pathlib import Path
++import numpy as np
++from scipy.spatial.transform import Rotation
++from openpi.models import tokenizer, model
++from openpi.shared import normalize
++from openpi.training.config import DataConfig
++
++CAMERAS=('base_0_rgb','left_wrist_0_rgb','right_wrist_0_rgb')
++
++
++def normalize_vector(x, stats):
++    low=np.asarray(stats['q01'],np.float32);high=np.asarray(stats['q99'],np.float32)
++    const=np.asarray(stats['constant']);scale=high-low
++    result=(x-low)*2/np.where(const,1,scale)-1
++    return np.where(const,0,result).astype(np.float32)
++
++
++def unnormalize_vector(x, stats):
++    low=np.asarray(stats['q01'],np.float32);high=np.asarray(stats['q99'],np.float32)
++    # A constant physical channel remains the training constant. Padding is
++    # ignored by the robot adapter and never counted as a real robot dimension.
++    return np.where(np.asarray(stats['constant']),low,(x+1)/2*(high-low)+low).astype(np.float32)
++
++
++class LocalDemoLoader:
++    def __init__(self, dataset, batch_size=8):
++        self.directory=Path(dataset)
++        self.manifest=json.loads((self.directory/'dataset.json').read_text())
++        self.stats=json.loads((self.directory/'norm-stats.json').read_text())
++        self.batch_size=batch_size;self.rng=np.random.default_rng(17)
++        self.tokenizer=tokenizer.PaligemmaTokenizer(max_len=200)
++        self.episodes=[];self.windows=[]
++        for e, rec in enumerate(self.manifest['episodes']):
++            d=Path(rec['derived']);commands=np.load(d/'commands.npz',allow_pickle=False)
++            self.episodes.append(dict(meta=rec,data=commands,images={k:np.load(d/(k+'.npy'),mmap_mode='r') for k in CAMERAS}))
++            self.windows.extend((e,t) for t in range(rec['frames']-9))
++        self.order=self.rng.permutation(len(self.windows));self.offset=0
++        self.balanced=self.manifest.get('sampling','').startswith('uniform Source')
++        self.parent_episodes={}
++        for i,ep in enumerate(self.episodes):self.parent_episodes.setdefault(ep['meta']['parent_group'],[]).append(i)
++        self.parents=sorted(self.parent_episodes)
++        self.exposure={ep['meta']['record_id']:0 for ep in self.episodes}
++
++    def next(self, samples=None):
++        if self.offset+self.batch_size>len(self.order):
++            self.order=self.rng.permutation(len(self.windows));self.offset=0
++        chosen=self.order[self.offset:self.offset+self.batch_size];self.offset+=self.batch_size
++        if samples is not None:
++            if len(samples)!=self.batch_size:raise ValueError('explicit train-only batch has wrong global size')
++        elif self.balanced:
++            samples=[]
++            for _ in range(self.batch_size):
++                parent=self.parents[int(self.rng.integers(len(self.parents)))]
++                pool=self.parent_episodes[parent];e=pool[int(self.rng.integers(len(pool)))];t=int(self.rng.integers(self.episodes[e]['meta']['windows']))
++                samples.append((e,t))
++        else:samples=[self.windows[w] for w in chosen]
++        inputs=[];actions=[]
++        for e,t in samples:
++            ep=self.episodes[e];self.exposure[ep['meta']['record_id']]+=1;data=ep['data'];R=data['base_R'][t];p=data['base_p'][t]
++            target=np.zeros((10,32),np.float32)
++            target[:,:3]=(data['target_world_p'][t:t+10]-p)@R
++            mats=np.einsum('ij,tjk->tik',R.T,data['target_world_R'][t:t+10])
++            target[:,3:6]=Rotation.from_matrix(mats).as_rotvec();target[:,6:8]=data['grip_torso'][t:t+10]
++            if self.manifest.get('action_representation')=='query_relative_eef':
++                target[:,:3]-=data['state'][t,:3]
++                initial_R=Rotation.from_rotvec(data['state'][t,3:6]).as_matrix()
++                target[:,3:6]=Rotation.from_matrix(mats@initial_R.T).as_rotvec()
++            state=normalize_vector(data['state'][t],self.stats['state'])
++            tokens,mask=self.tokenizer.tokenize(ep['meta']['prompt'],state)
++            inputs.append(dict(state=state,tokens=tokens,mask=mask,images={k:np.asarray(ep['images'][k][t]) for k in CAMERAS}))
++            actions.append(normalize_vector(target,self.stats['actions']))
++        obs=model.Observation(images={k:np.stack([x['images'][k] for x in inputs]).astype(np.float32)/255*2-1 for k in CAMERAS},
++            image_masks={k:np.ones(self.batch_size,bool) for k in CAMERAS},state=np.stack([x['state'] for x in inputs]),
++            tokenized_prompt=np.stack([x['tokens'] for x in inputs]),tokenized_prompt_mask=np.stack([x['mask'] for x in inputs]))
++        return obs,np.stack(actions)
++
++    def data_config(self):
++        norms={k:normalize.NormStats(mean=np.zeros(32),std=np.ones(32),q01=np.asarray(v['q01']),q99=np.asarray(v['q99'])) for k,v in self.stats.items()}
++        return DataConfig(asset_id='mobiwam-static-command-v1',norm_stats=norms)
+diff --git a/scripts/pi05_fft_prepare.py b/scripts/pi05_fft_prepare.py
+new file mode 100644
+index 0000000..fe38254
+--- /dev/null
++++ b/scripts/pi05_fft_prepare.py
+@@ -0,0 +1,100 @@
++"""CPU-only source, native target, mask and full-parameter shape checks."""
++import argparse
++from collections import Counter
++from datetime import datetime, timezone
++import hashlib
++import json
++from pathlib import Path
++import numpy as np
++from scipy.spatial.transform import Rotation
++import jax
++from flax import nnx
++from openpi.models import pi0_config
++from openpi.training import config
++
++
++def now(): return datetime.now(timezone.utc).isoformat()
++def write(p,d): p.write_text(json.dumps(d,indent=2)+'\n')
++
++
++def main():
++    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);a=ap.parse_args()
++    binding=json.loads((a.run/'inventory/dataset-binding.json').read_text())
++    directory=Path(binding['dataset']); manifest=json.loads((directory/'dataset.json').read_text())
++    split=json.loads((a.run/'inventory/source-split.json').read_text())
++    reserved=set(split['reserved_development_evaluation_ancestors'])
++    episodes=manifest['episodes'];parents={e['parent_group'] for e in episodes}
++    assert not reserved & parents
++    assert all(e['source_use'] in ('policy-fit','policy-fit-only') and not e['obc_outcome_label'] for e in episodes)
++    stats=json.loads((directory/'norm-stats.json').read_text())
++    rows=[];states=[];targets=[];state_weights=[];action_weights=[]
++    parent_counts=Counter(e['parent_group'] for e in episodes)
++    maxp=maxr=0.;N=0
++    for e in episodes:
++        root=Path(e['derived']);z=np.load(root/'commands.npz',allow_pickle=False)
++        frames=len(z['state']);windows=frames-9
++        assert windows==e['windows'] and frames==e['frames'] and windows>0
++        assert all(np.isfinite(z[k]).all() for k in z.files)
++        for cam in ('base_0_rgb','left_wrist_0_rgb','right_wrist_0_rgb'):
++            im=np.load(root/(cam+'.npy'),mmap_mode='r')
++            assert im.shape==(frames,224,224,3) and im.dtype==np.uint8,(e['record_id'],cam,im.shape,im.dtype)
++        pos=[];rot=[]
++        for offset in range(10):
++            R=z['base_R'][:windows];p=z['base_p'][:windows];state=z['state'][:windows]
++            relative_p=np.einsum('tij,tj->ti',R.transpose(0,2,1),z['target_world_p'][offset:offset+windows]-p)-state[:,:3]
++            initial=Rotation.from_rotvec(state[:,3:6]).as_matrix()
++            mats=R.transpose(0,2,1)@z['target_world_R'][offset:offset+windows]
++            relative_r=Rotation.from_matrix(mats@initial.transpose(0,2,1)).as_rotvec()
++            pos.append(relative_p);rot.append(relative_r)
++        physical=np.zeros((windows,10,32),np.float32)
++        physical[:,:,:3]=np.stack(pos,axis=1);physical[:,:,3:6]=np.stack(rot,axis=1)
++        physical[:,:,6:8]=np.stack([z['grip_torso'][o:o+windows] for o in range(10)],axis=1)
++        for t in sorted({0,windows//2,windows-1}):
++            R=z['base_R'][t];eef=z['base_p'][t]+R@z['state'][t,:3]
++            eef_R=R@Rotation.from_rotvec(z['state'][t,3:6]).as_matrix()
++            rp=eef+physical[t,:,:3]@R.T
++            rr=R@Rotation.from_rotvec(physical[t,:,3:6]).as_matrix()@R.T@eef_R
++            maxp=max(maxp,float(np.max(abs(rp-z['target_world_p'][t:t+10]))))
++            maxr=max(maxr,float(np.max(abs(rr-z['target_world_R'][t:t+10]))))
++        assert maxp<=1e-6 and maxr<=1e-6
++        weight=1/len(parents)/parent_counts[e['parent_group']]/windows
++        states.append(z['state'][:windows]);targets.append(physical.reshape(-1,32))
++        state_weights.append(np.full(windows,weight));action_weights.append(np.full(windows*10,weight/10))
++        rows.append(dict(record_id=e['record_id'],parent_group=e['parent_group'],task=e['task'],route=e['route'],frames=frames,windows=windows,
++            command_sha256=hashlib.sha256((root/'commands.npz').read_bytes()).hexdigest(),policy_input_current_frame_only=True,
++            no_cross_episode_chunks=True,action_valid_mask=[True]*8+[False]*24,state_valid_width=22))
++        N+=windows
++    # Quantiles follow the actual uniform parent -> episode -> window sampler.
++    def weighted_quantile(x,w,q):
++        order=np.argsort(x,kind='stable');v=x[order];c=np.cumsum(w[order]);c/=c[-1]
++        return float(np.interp(q,c,v))
++    for key,blocks,weights,width in [('state',states,state_weights,22),('actions',targets,action_weights,8)]:
++        x=np.concatenate(blocks);w=np.concatenate(weights)
++        low=[weighted_quantile(x[:,i],w,.01) for i in range(32)]
++        high=[weighted_quantile(x[:,i],w,.99) for i in range(32)]
++        stats[key]=dict(q01=low,q99=high,valid_width=width,constant=[abs(b-c)<1e-8 for b,c in zip(low,high)])
++    write(directory/'norm-stats.json',stats)
++    cfg=config.TrainConfig(name='mobiwam_pi05_full_ft_v1',model=pi0_config.Pi0Config(pi05=True,action_horizon=10,action_loss_dim=8),
++        freeze_filter=nnx.Nothing,ema_decay=None,seed=17,batch_size=32,fsdp_devices=4)
++    abstract=nnx.eval_shape(cfg.model.create,jax.random.key(17));allparams=nnx.state(abstract,nnx.Param)
++    trainable=allparams.filter(cfg.trainable_filter);frozen=allparams.filter(cfg.freeze_filter)
++    leaves=[dict(path='/'.join(map(str,k)),shape=list(v.value.shape),dtype=str(v.value.dtype),count=int(np.prod(v.value.shape)))
++        for k,v in trainable.flat_state().items()]
++    assert len(frozen.flat_state())==0 and not any('lora' in r['path'] for r in leaves)
++    assert any('img' in r['path'] for r in leaves) and any('llm' in r['path'] for r in leaves)
++    write(a.run/'preflight/cpu-model-config.json',dict(at=now(),total=sum(r['count'] for r in leaves),trainable=sum(r['count'] for r in leaves),
++        frozen=0,paths=leaves,bf16_compute=cfg.model.dtype,parameters='float32 per official initialization; verified abstractly',
++        real_updates='unrun; S2 manual FSDP diagnostic required',action_loss_dim=8,EMA=None,backbones=dict(vision='SigLIP',language='gemma_2b',action='gemma_300m')))
++    binding.update(valid_windows=N,independent_episodes=len(episodes),parent_groups=len(parents),created_at=now(),
++        norm_hierarchy='uniform parent -> original episode -> valid query window -> equally weighted10 target timesteps',
++        norm_train_only=True,action_valid_mask=[True]*8+[False]*24,norm_sha256=hashlib.sha256((directory/'norm-stats.json').read_bytes()).hexdigest())
++    write(a.run/'inventory/dataset-binding.json',binding)
++    write(a.run/'preflight/cpu-interface.json',dict(at=now(),passed=True,N=N,episodes=len(episodes),parents=len(parents),
++        heldout_parent_leakage=False,native_target_adapter_position_max_m=maxp,native_target_adapter_rotation_matrix_max=maxr,
++        effective_actions=8,padded_actions=32,no_padding_supervision=True,no_cross_episode_chunks=True,records=rows,
++        command_lineage='immutable native commanded goals; no achieved future EEF displacement substituted',
++        action_fit_and_task_capability='unrun; requires S2 and counted development slots',policy_forward_calls=0,env_step_calls=0))
++    print(json.dumps(dict(status='passed',episodes=len(episodes),parents=len(parents),N=N,total_trainable=sum(r['count'] for r in leaves),maxp=maxp,maxr=maxr)))
++
++
++if __name__=='__main__': main()
+diff --git a/scripts/pi05_fft_serve.py b/scripts/pi05_fft_serve.py
+new file mode 100644
+index 0000000..d30a91f
+--- /dev/null
++++ b/scripts/pi05_fft_serve.py
+@@ -0,0 +1,63 @@
++"""Task-owned loopback inference service; simulator stays in its own env."""
++import argparse
++from datetime import datetime, timezone
++from http.server import BaseHTTPRequestHandler, HTTPServer
++from io import BytesIO
++import json
++import os
++from pathlib import Path
++import time
++import jax
++import jax.numpy as jnp
++import numpy as np
++from openpi.models import model, pi0_config, tokenizer
++from openpi.shared import nnx_utils
++from pi05_fft_data import CAMERAS, normalize_vector, unnormalize_vector
++
++
++def main():
++    p=argparse.ArgumentParser();p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
++    p.add_argument('--lora',action='store_true');p.add_argument('--port',type=int,default=8865);p.add_argument('--max-seconds',type=int,default=7200);p.add_argument('--max-queries',type=int,default=4000);a=p.parse_args()
++    a.output.mkdir(exist_ok=False);started=datetime.now(timezone.utc).isoformat();deadline=time.monotonic()+a.max_seconds
++    cfg=pi0_config.Pi0Config(pi05=True,action_horizon=10,paligemma_variant='gemma_2b_lora' if a.lora else 'gemma_2b',action_expert_variant='gemma_300m_lora' if a.lora else 'gemma_300m')
++    net=cfg.load(model.restore_params(a.checkpoint/'params',dtype=jnp.bfloat16));net.eval();sample=nnx_utils.module_jit(net.sample_actions)
++    stats=json.loads((a.checkpoint/'custom-norm-stats.json').read_text());tok=tokenizer.PaligemmaTokenizer(max_len=200)
++    adapter=json.loads((a.checkpoint/'policy-adapter-config.json').read_text()) if (a.checkpoint/'policy-adapter-config.json').exists() else {'action_representation':'absolute_query_base'}
++    context=dict(checkpoint=str(a.checkpoint),queries=0,key=jax.random.key(20261008),stop=False)
++    binding=dict(started_at=started,pid=os.getpid(),port=a.port,host='127.0.0.1',checkpoint=str(a.checkpoint),python=__import__('sys').executable,
++        max_seconds=a.max_seconds,max_queries=a.max_queries,action_horizon=10,flow_steps=10,execute_prefix=5,action_width=8,padded_width=32,
++        normalizer='pi05_harness_data normalize_vector/unnormalize_vector frozen local quantiles and constant channel mapping',discrete_state_input=True,framework='JAX',status='loading',action_representation=adapter['action_representation'])
++    (a.output/'binding.json').write_text(json.dumps(binding,indent=2)+'\n')
++    class Handler(BaseHTTPRequestHandler):
++        def do_GET(self):
++            body=json.dumps(dict(binding,queries=context['queries'],status='ready')).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
++        def do_POST(self):
++            raw=self.rfile.read(int(self.headers['Content-Length']))
++            if self.path=='/reset':
++                seed=int(json.loads(raw)['policy_sampling_seed']);context['key']=jax.random.key(seed)
++                self.send_response(200);self.end_headers();self.wfile.write(b'{}');return
++            if self.path=='/finish-declared-units':
++                context['stop']=True;self.send_response(200);self.end_headers();self.wfile.write(b'{}');return
++            try:
++                z=np.load(BytesIO(raw),allow_pickle=False);state=normalize_vector(z['state'],stats['state'])
++                tokens,mask=tok.tokenize(str(z['prompt']),state)
++                obs=model.Observation(images={k:jnp.asarray(z[k])[None].astype(jnp.float32)/255*2-1 for k in CAMERAS},
++                    image_masks={k:jnp.ones((1,),bool) for k in CAMERAS},state=jnp.asarray(state)[None],
++                    tokenized_prompt=jnp.asarray(tokens)[None],tokenized_prompt_mask=jnp.asarray(mask)[None])
++                context['key'],key=jax.random.split(context['key']);t=time.monotonic()
++                normalized=np.asarray(sample(key,obs,num_steps=10))[0];duration=time.monotonic()-t
++                assert normalized.shape==(10,32) and np.isfinite(normalized).all()
++                actions=unnormalize_vector(normalized,stats['actions']);context['queries']+=1
++                response=BytesIO();np.savez(response,normalized=normalized,actions=actions,query_seconds=duration,query_id=context['queries'])
++                self.send_response(200);self.end_headers();self.wfile.write(response.getvalue())
++                print(json.dumps(dict(at=datetime.now(timezone.utc).isoformat(),query=context['queries'],seconds=duration)),flush=True)
++            except Exception as exc:
++                self.send_response(500);self.end_headers();self.wfile.write(str(exc).encode());raise
++    server=HTTPServer(('127.0.0.1',a.port),Handler);server.timeout=1
++    (a.output/'ready.json').write_text(json.dumps(dict(binding,status='ready',at=datetime.now(timezone.utc).isoformat()),indent=2)+'\n')
++    print('READY',a.port,a.checkpoint,flush=True)
++    while not context['stop'] and time.monotonic()<deadline and context['queries']<a.max_queries:server.handle_request()
++    server.server_close();(a.output/'completed.json').write_text(json.dumps(dict(ended_at=datetime.now(timezone.utc).isoformat(),queries=context['queries'],declared_units_finished=context['stop'],bounded_exit=True),indent=2)+'\n')
++
++
++if __name__=='__main__':main()
+diff --git a/scripts/pi05_fft_train.py b/scripts/pi05_fft_train.py
+new file mode 100644
+index 0000000..7314ea0
+--- /dev/null
++++ b/scripts/pi05_fft_train.py
+@@ -0,0 +1,228 @@
++"""Official JAX full-parameter FSDP with a local native action loader.
++
++All multi-GPU execution is reachable only through the researcher's launch card.
++"""
++import argparse
++import dataclasses
++from datetime import datetime, timezone
++import functools
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import signal
++import subprocess
++import time
++import traceback
++import threading
++import numpy as np
++import jax
++import jax.numpy as jnp
++from flax import nnx
++from openpi.models import pi0_config
++from openpi.shared import nnx_utils
++from openpi.training import config,optimizer,weight_loaders,sharding,checkpoints
++from pi05_fft_data import LocalDemoLoader,unnormalize_vector
++import train as official
++
++
++def now(): return datetime.now(timezone.utc).isoformat()
++def write(p,d): p.write_text(json.dumps(d,indent=2)+'\n')
++
++
++def recipe(run,fit_id,devices,batch,steps):
++    manifest=json.loads((run/'run-manifest.json').read_text())
++    return config.TrainConfig(name='mobiwam_pi05_full_ft_v1',exp_name=fit_id,
++        model=pi0_config.Pi0Config(pi05=True,action_horizon=10,action_loss_dim=8),freeze_filter=nnx.Nothing,
++        weight_loader=weight_loaders.CheckpointWeightLoader('/share/personal/chensiyu/haokaijiang/MobiWAM/checkpoints/pi05_origin/params'),
++        lr_schedule=optimizer.CosineDecaySchedule(warmup_steps=max(1,int(.05*steps)),peak_lr=2e-5,decay_steps=steps,decay_lr=2e-6),
++        optimizer=optimizer.AdamW(b1=.9,b2=.95,eps=1e-8,weight_decay=1e-10,clip_gradient_norm=1.),ema_decay=None,
++        batch_size=batch,seed=17,num_train_steps=steps,wandb_enabled=False,fsdp_devices=devices,
++        assets_base_dir=str(run/'policy/assets'),checkpoint_base_dir=manifest['approved_roots']['checkpoints'])
++
++
++def fingerprints(params):
++    return {'/'.join(map(str,k)):hashlib.sha256(np.asarray(jax.device_get(v.value)).tobytes()).hexdigest()
++        for k,v in params.flat_state().items()}
++
++
++def describe_sharding(tree):
++    rows=[]
++    for k,v in jax.tree_util.tree_flatten_with_path(tree)[0]:
++        if hasattr(v,'shape') and hasattr(v,'sharding'):
++            rows.append(dict(path=jax.tree_util.keystr(k),shape=list(v.shape),dtype=str(v.dtype),
++                spec=str(v.sharding.spec),device_count=len(v.sharding.device_set)))
++    return rows
++
++
++def main():
++    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True)
++    ap.add_argument('--fit-id',required=True);ap.add_argument('--fsdp-devices',type=int,choices=[2,4],required=True)
++    ap.add_argument('--batch',type=int,choices=[8,16,32],default=32);ap.add_argument('--steps',type=int,required=True)
++    ap.add_argument('--diagnostic',action='store_true');ap.add_argument('--candidate-steps',type=int,nargs='*',default=[])
++    ap.add_argument('--save-interval',type=int,default=1000);ap.add_argument('--deadline',default='2026-10-08T16:00:00+00:00')
++    a=ap.parse_args()
++    if a.diagnostic and a.steps>100: raise ValueError('diagnostic exceeds100 updates')
++    if not (a.run/'launch/manual-launch-receipt.json').exists():raise RuntimeError('researcher manual launch receipt required')
++    deadline=datetime.fromisoformat(a.deadline).timestamp()
++    if time.time()>=deadline: raise RuntimeError('stage deadline already expired')
++    out=a.run/'policy'/a.fit_id;out.mkdir(exist_ok=False)
++    binding=json.loads((a.run/'inventory/dataset-binding.json').read_text());loader=LocalDemoLoader(binding['dataset'],a.batch)
++    cfg=recipe(a.run,a.fit_id,a.fsdp_devices,a.batch,a.steps)
++    assert jax.device_count()==a.fsdp_devices
++    mesh=sharding.make_mesh(a.fsdp_devices)
++    data_sharding=jax.sharding.NamedSharding(mesh,jax.sharding.PartitionSpec(sharding.DATA_AXIS))
++    replicated=jax.sharding.NamedSharding(mesh,jax.sharding.PartitionSpec())
++    stop=False
++    def request_stop(*args):
++        nonlocal stop
++        stop=True
++    signal.signal(signal.SIGTERM,request_stop)
++    signal.signal(signal.SIGINT,request_stop)
++    deadline_watch=threading.Timer(max(0,deadline-time.time()),request_stop)
++    deadline_watch.daemon=True
++    deadline_watch.start()
++    started=now();manager=None
++    def event(stage,**kw):
++        item=dict(at=now(),stage=stage,pid=os.getpid(),fit_id=a.fit_id,**kw)
++        print(json.dumps(item),flush=True);write(out/'status.json',item)
++        phase_path=a.run/'phase-state.json'
++        phase=json.loads(phase_path.read_text())
++        phase.setdefault('training_jobs',{})[a.fit_id]=dict(status=stage,updated_at=item['at'],pid=os.getpid(),
++            updates=kw.get('step',kw.get('actual_updates',phase.get('training_jobs',{}).get(a.fit_id,{}).get('updates',0))),diagnostic=a.diagnostic)
++        phase['counters']['diagnostic_updates']=sum(x['updates'] for x in phase['training_jobs'].values() if x['diagnostic'])
++        phase['counters']['main_fit_updates']=sum(x['updates'] for x in phase['training_jobs'].values() if not x['diagnostic'])
++        phase['updated_at']=item['at'];write(phase_path,phase)
++    def device_batch(batch): return jax.tree.map(lambda x:jax.device_put(x,data_sharding),batch)
++    try:
++        write(out/'freeze.json',dict(at=started,diagnostic=a.diagnostic,official_base_reset=True,old_LoRA_loaded=False,
++            steps=a.steps,batch_global=a.batch,fsdp_devices=a.fsdp_devices,model=dataclasses.asdict(cfg.model),
++            freeze_filter='nnx.Nothing',lr_peak=2e-5,lr_end=2e-6,warmup=max(1,int(.05*a.steps)),EMA=None,
++            optimizer=dataclasses.asdict(cfg.optimizer),dataset=binding['dataset'],N=binding['valid_windows'],
++            candidate_steps=a.candidate_steps,save_interval=a.save_interval,deadline=a.deadline,training_seed=17))
++        event('initializing',python=__import__('sys').executable,devices=[str(d) for d in jax.devices()],mesh_shape=dict(mesh.shape))
++        with sharding.set_mesh(mesh):state,state_sharding=official.init_train_state(cfg,jax.random.key(17),mesh,resume=False)
++        jax.block_until_ready(state.step)
++        params=state.params.filter(cfg.trainable_filter)
++        assert len(state.params.filter(cfg.freeze_filter).flat_state())==0
++        paths=[dict(path='/'.join(map(str,k)),shape=list(v.value.shape),dtype=str(v.value.dtype),count=int(v.value.size))
++            for k,v in params.flat_state().items()]
++        assert not any('lora' in r['path'] for r in paths)
++        shards=describe_sharding(state)
++        assert any("fsdp" in r['spec'] and 'opt_state' in r['path'] for r in shards)
++        assert any("fsdp" in r['spec'] and 'params' in r['path'] for r in shards)
++        write(out/'trainable-and-fsdp.json',dict(at=now(),total_trainable=sum(r['count'] for r in paths),frozen=0,paths=paths,
++            actual_mesh=dict(mesh.shape),actual_array_sharding=shards,optimizer_dtypes=sorted({str(x.dtype) for x in jax.tree.leaves(state.opt_state) if hasattr(x,'dtype')})))
++        before=fingerprints(params) if a.diagnostic else None
++        manager,_=checkpoints.initialize_checkpoint_dir(cfg.checkpoint_dir,keep_period=None,overwrite=False,resume=False)
++        step_fn=jax.jit(functools.partial(official.train_step,cfg),in_shardings=(replicated,state_sharding,data_sharding),
++            out_shardings=(state_sharding,replicated),donate_argnums=(1,))
++        stage_samples=[];stage_binding=[]
++        if a.diagnostic:
++            for task in ('CloseDrawer','CloseSingleDoor'):
++                e=next(i for i,ep in enumerate(loader.episodes) if ep['meta']['task']==task)
++                meta=loader.episodes[e]['meta'];trace=Path(meta['raw_hdf5']).parent/'trace.jsonl'
++                rows=[json.loads(line)['before'] for line in trace.read_text().splitlines()]
++                def touching(row):
++                    return any('handle' in (c.get('geom1','')+c.get('geom2','')) and
++                        'finger' in (c.get('geom1','')+c.get('geom2','')) for c in row['contacts'])
++                bound=meta['windows']-1
++                first=next((t for t,row in enumerate(rows[:bound+1]) if touching(row)),None)
++                if first is None:raise ValueError('train stage diagnostic lacks native target/finger contact evidence')
++                opening=lambda row:abs(float(next(iter(row['target'].values()))))
++                closing=next((t for t in range(first+1,bound+1) if touching(rows[t]) and opening(rows[t])<opening(rows[first])-1e-6),None)
++                if closing is None:raise ValueError('train stage diagnostic lacks native contact closing evidence')
++                points=[('approach',max(0,first//2)),('contact',first),('closing',closing)]
++                for label,t in points:
++                    stage_samples.append((e,t));stage_binding.append(dict(task=task,stage=label,record_id=meta['record_id'],window=t,
++                        raw_trace=str(trace),native_target_finger_contact=touching(rows[t]),native_opening=opening(rows[t])))
++            samples=[stage_samples[i%len(stage_samples)] for i in range(a.batch)]
++            fixed_host=loader.next(samples=samples)
++            write(out/'train-stage-binding.json',dict(at=now(),samples=stage_binding,train_only=True,selection_uses_native_reference_evidence=True,
++                reference_outcomes_not_new_policy_labels=True))
++        else:fixed_host=None
++        fixed_batch=device_batch(fixed_host) if a.diagnostic else None
++        data_probe=[]
++        if a.diagnostic:
++            for _ in range(3):
++                t=time.monotonic();loader.next();data_probe.append(time.monotonic()-t)
++        def predict(s):
++            net=nnx.merge(s.model_def,s.params);net.eval()
++            obs=jax.tree.map(lambda x:x[:6],fixed_host[0])
++            return np.asarray(nnx_utils.module_jit(net.sample_actions)(jax.random.key(20261008),obs,num_steps=10))
++        baseline=predict(state) if a.diagnostic else None
++        timings=[];last_save=0;saves=set(a.candidate_steps);save_times=[]
++        def save(step):
++            nonlocal last_save
++            t=time.monotonic();checkpoints.save_state(manager,state,loader,step);manager.wait_until_finished()
++            shutil.copy2(Path(binding['dataset'])/'norm-stats.json',cfg.checkpoint_dir/str(step)/'custom-norm-stats.json')
++            write(cfg.checkpoint_dir/str(step)/'policy-adapter-config.json',dict(action_representation='query_relative_eef',
++                dataset=binding['dataset'],model='full_parameters',action_horizon=10,execute_prefix=5,flow_steps=10,policy_sampling_seed=20261008))
++            elapsed=time.monotonic()-t;save_times.append(elapsed)
++            last_save=step;event('checkpoint_saved',step=step,path=str(cfg.checkpoint_dir/str(step)),save_seconds=elapsed)
++        with (out/'metrics.jsonl').open('x') as log,sharding.set_mesh(mesh):
++            for step in range(1,a.steps+1):
++                if time.time()>=deadline or stop:break
++                t=time.monotonic();batch=fixed_batch if a.diagnostic else device_batch(loader.next())
++                data_seconds=time.monotonic()-t;t=time.monotonic()
++                state,info=step_fn(jax.random.key(17),state,batch);info=jax.device_get(info);dt=time.monotonic()-t
++                if not np.isfinite(float(info['loss'])) or not np.isfinite(float(info['grad_norm'])): raise FloatingPointError(str(info))
++                if step>1:timings.append(dt)
++                item=dict(at=now(),step=step,loss=float(info['loss']),grad_norm=float(info['grad_norm']),
++                    lr=float(cfg.lr_schedule.create()(step-1)),synchronized_step_seconds=dt,data_seconds=data_seconds,
++                    average_main_exposure=0 if a.diagnostic else step*a.batch/binding['valid_windows'])
++                log.write(json.dumps(item)+'\n');log.flush()
++                if step==1 or step%5==0:event('training',**{k:v for k,v in item.items() if k!='at'})
++                if step==1 or step%25==0:
++                    with (out/'gpu-memory-samples.jsonl').open('a') as gpu_log:
++                        gpu_log.write(json.dumps(dict(at=now(),step=step,samples=subprocess.check_output(['nvidia-smi',
++                            '--query-gpu=index,uuid,memory.used,memory.free,utilization.gpu','--format=csv,noheader'],text=True)))+'\n')
++                if step in saves or step%a.save_interval==0 or step==a.steps or stop or time.time()>=deadline:save(step)
++        actual=int(jax.device_get(state.step))
++        if actual and last_save!=actual:save(actual)
++        diagnostic={}
++        if a.diagnostic and actual:
++            after=fingerprints(state.params.filter(cfg.trainable_filter))
++            changed={k:before[k]!=after[k] for k in before}
++            components={name:any(changed[k] for k in changed if test(k)) for name,test in {
++                'vision':lambda p:'/img/' in p,'language':lambda p:'/llm/' in p and '_1' not in p,
++                'action_expert':lambda p:'/llm/' in p and '_1' in p,'action_in':lambda p:p.startswith('action_in_proj'),
++                'action_out':lambda p:p.startswith('action_out_proj'),'time_in':lambda p:p.startswith('time_mlp_in'),
++                'time_out':lambda p:p.startswith('time_mlp_out')}.items()}
++            assert all(components.values()),components
++            prediction=predict(state); repeated=predict(state)
++            restored=checkpoints.restore_state(manager,state,loader,step=last_save);recovered=predict(restored)
++            error=float(np.max(abs(prediction-recovered)));assert error<=1e-6
++            target=unnormalize_vector(fixed_host[1][:6],loader.stats['actions'])
++            pre=unnormalize_vector(baseline,loader.stats['actions']);post=unnormalize_vector(prediction,loader.stats['actions'])
++            pre_error=np.mean(abs(pre-target),axis=(0,1))[:8];post_error=np.mean(abs(post-target),axis=(0,1))[:8]
++            noise=float(np.max(abs(prediction-repeated)))
++            improved=bool(np.mean(post_error)<np.mean(pre_error)-max(noise,1e-6) and post_error[6]<=pre_error[6]+max(noise,1e-6))
++            diagnostic=dict(component_updates=components,changed_parameter_leaves=changed,finite_loss_grad=True,
++                restore_inference_max_abs_error=error,fixed_noise_repeat_max=noise,physical_action_mae_before=pre_error.tolist(),
++                physical_action_mae_after=post_error.tolist(),learning_status='training_sample_improved' if improved else 'learning_inconclusive',
++                stage_samples=stage_binding,fitting_scope='train-only native approach/contact/closing six windows; not a task capability or generalization result',
++                stage_channel_mae_before=np.mean(abs(pre-target),axis=1)[:,:8].tolist(),
++                stage_channel_mae_after=np.mean(abs(post-target),axis=1)[:,:8].tolist())
++            write(out/'diagnostic-receipt.json',dict(at=now(),**diagnostic))
++        write(out/'source-exposure.json',dict(at=now(),episode_draws=loader.exposure,total_windows_drawn=sum(loader.exposure.values()),
++            diagnostic_draws_only=a.diagnostic,sampling='uniform canonical parent then episode then window'))
++        write(out/'result.json',dict(started_at=started,ended_at=now(),status='passed' if actual==a.steps else 'deadline_prefix_saved',
++            actual_updates=actual,planned_updates=a.steps,checkpoint=str(cfg.checkpoint_dir/str(last_save)),batch_global=a.batch,
++            diagnostic=a.diagnostic,median_step_seconds=float(np.median(timings)) if timings else None,
++            p95_step_seconds=float(np.quantile(timings,.95)) if timings else None,
++            p95_loader_seconds=float(np.quantile(data_probe,.95)) if data_probe else None,
++            checkpoint_save_seconds=save_times,**diagnostic))
++        event('completed',actual_updates=actual)
++    except BaseException:
++        try: actual=int(jax.device_get(state.step))
++        except Exception: actual=0
++        write(out/'failure.json',dict(at=now(),traceback=traceback.format_exc(),owned_pid=os.getpid(),actual_updates=actual))
++        traceback.print_exc();raise
++    finally:
++        deadline_watch.cancel()
++        if manager is not None:manager.close()
++
++
++if __name__=='__main__': main()
+diff --git a/src/openpi/models/pi0.py b/src/openpi/models/pi0.py
+index ae7c459..5b83e50 100644
+--- a/src/openpi/models/pi0.py
++++ b/src/openpi/models/pi0.py
+@@ -16,6 +16,14 @@ from openpi.shared import array_typing as at
+ logger = logging.getLogger("openpi")
+ 
+ 
++def action_velocity_loss(prediction, target, valid_width=None):
++    """Reduce flow velocity error over valid robot channels only."""
++    error = jnp.square(prediction - target)
++    if valid_width is not None:
++        error = error[..., :valid_width]
++    return jnp.mean(error, axis=-1)
++
++
+ def make_attn_mask(input_mask, mask_ar):
+     """Adapted from big_vision.
+ 
+@@ -67,6 +75,7 @@ class Pi0(_model.BaseModel):
+     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
+         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
+         self.pi05 = config.pi05
++        self.action_loss_dim = config.action_loss_dim
+         paligemma_config = _gemma.get_config(config.paligemma_variant)
+         action_expert_config = _gemma.get_config(config.action_expert_variant)
+         # TODO: rewrite gemma in NNX. For now, use bridge.
+@@ -211,7 +220,7 @@ class Pi0(_model.BaseModel):
+         )
+         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+ 
+-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
++        return action_velocity_loss(v_t, u_t, self.action_loss_dim)
+ 
+     @override
+     def sample_actions(
+diff --git a/src/openpi/models/pi0_config.py b/src/openpi/models/pi0_config.py
+index 584d83f..252b4cb 100644
+--- a/src/openpi/models/pi0_config.py
++++ b/src/openpi/models/pi0_config.py
+@@ -32,6 +32,9 @@ class Pi0Config(_model.BaseModelConfig):
+     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
+     discrete_state_input: bool = None  # type: ignore
+ 
++    # Task-local valid action width; padding must never contribute to loss.
++    action_loss_dim: int | None = None
++
+     pytorch_compile_mode: str | None = "max-autotune"
+ 
+     def __post_init__(self):

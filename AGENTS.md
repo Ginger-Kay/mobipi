@@ -1,5 +1,4 @@
-# PI05-SIM-v2 isolated runtime
+# PI05-FFT-v1 task-owned checkout
 
-Current authorization: /share/personal/chensiyu/haokaijiang/MobiWAM/artifacts/MMWAM-OBC-002-PI05-SIM/v2/20261007T030221Z-natural-a-mw300/runtime/control/08-experiments/contracts/2026-10-07-obc-wam-pi05-simulation-relaxation-and-visible-a.md
-
-Read current contract/prompt and phase on recovery. Fixed policy; no training/subagents. Physics, original protections/constraints/tolerances unchanged. Only private natural A gate changes, logging, horizon300s and evidenced bounded solver repair. Old artifacts read-only.
+Created_at: 2026-10-08T07:16:30.585851+00:00
+Follow /share/personal/chensiyu/haokaijiang/MobiWAM/control/AGENTS.md and /share/personal/chensiyu/haokaijiang/MobiWAM/control/08-experiments/contracts/2026-10-08-obc-wam-pi05-full-ft-fsdp-anchor120.md. Single agent; preserve existing processes and historical evidence.

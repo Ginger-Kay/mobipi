@@ -1,0 +1,8 @@
+{
+  "upstream": "https://github.com/Physical-Intelligence/openpi.git",
+  "official_base": "215abfb217dbac7d5f1273282331b9b1866c0479",
+  "local_tip": "57e60749606b5c0fe454480b9fb2ee4c4ffc842b",
+  "patch": "patches/pi05-fft-openpi.patch",
+  "sha256": "75786bd8cb1d9745a2690824864cc5a287bfd37047f2d96f915cdf097b5ee1b5",
+  "official_upstream_write": false
+}

@@ -1,0 +1,98 @@
+"""Execute one predeclared, isolated worker queue; no selection by outcomes."""
+import argparse
+from datetime import datetime,timezone
+import http.client
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+def now():return datetime.now(timezone.utc).isoformat()
+def write(p,x):
+    p=Path(p);tmp=p.with_name(p.name+'.tmp-'+str(os.getpid()));tmp.write_text(json.dumps(x,indent=2)+'\n');tmp.replace(p)
+def main():
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--queue',type=Path,required=True);ap.add_argument('--port',type=int,required=True);ap.add_argument('--checkpoint-step',type=int,required=True);ap.add_argument('--status-name',required=True);a=ap.parse_args()
+    plan=json.loads(a.queue.read_text());out=a.run/'policy'/a.status_name;out.mkdir(exist_ok=False)
+    ready_deadline=time.monotonic()+600
+    while True:
+        try:
+            c=http.client.HTTPConnection('127.0.0.1',a.port,timeout=5);c.request('GET','/status');response=c.getresponse();binding=json.loads(response.read());c.close()
+            if response.status==200:break
+        except (OSError,ValueError):pass
+        if time.monotonic()>ready_deadline:raise RuntimeError('own declared service failed to become ready in600s')
+        time.sleep(5)
+    write(out/'process.json',dict(at=now(),pid=os.getpid(),argv=sys.argv,queue=str(a.queue),policy_binding=binding))
+    if plan.get('expected_checkpoint') and Path(binding['checkpoint']).resolve()!=Path(plan['expected_checkpoint']).resolve():
+        raise ValueError('declared policy checkpoint differs from own service binding')
+    results=[]
+    for job in plan['jobs']:
+        if job['purpose']!='policy-dev':
+            freeze=json.loads((a.run/'policy/main-component-freeze.json').read_text())
+            code=Path(__file__).resolve().parents[1]
+            for name,digest in freeze['behavioral_components'].items():
+                assert hashlib.sha256((code/name).read_bytes()).hexdigest()==digest,'frozen behavior changed; pause own queue'
+            for relative,digest in freeze['native_controller_components'].items():
+                assert hashlib.sha256((a.run.parents[3]/'env'/relative).read_bytes()).hexdigest()==digest,'installed native controller changed'
+            for path,digest in freeze['task_checker_components'].items():
+                assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,'native task checker or opening definition changed'
+            for path,digest in freeze['frozen_source_manifests'].items():
+                assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,'frozen source/roster manifest changed'
+            if not job.get('predeclared_X'):
+                source=Path(json.loads(Path(plan['roster']).read_text())['slots'][job['slot']-1]['source'])
+                for path,digest in freeze['static_source_integrity'].items():
+                    p=Path(path)
+                    if p.parent==source or p in [source.parent/'initial-state-controller.json',source.parent/'env_config.json']:
+                        assert hashlib.sha256(p.read_bytes()).hexdigest()==digest,'frozen actual initial state changed'
+                for relative,digest in freeze['static_input_integrity'].items():
+                    if Path(relative).parent.name==job['config_id']:
+                        assert hashlib.sha256((a.run/relative).read_bytes()).hexdigest()==digest,'frozen input for this config changed'
+        stop=datetime.fromisoformat(plan['stop_starting_at'])
+        cap=a.run/'design/capacity-plan.json'
+        if job['purpose']=='paired' and '-evaluation-' not in job['evaluation_tag'] and cap.exists():
+            capacity=json.loads(cap.read_text())
+            if capacity['first6_task_route_buckets_available']:stop=min(stop,datetime.fromisoformat(capacity['train_dev_stop_starting_at']))
+        if datetime.now(timezone.utc)>=stop:
+            results.append(dict(job=job,status='unrun_deadline'));continue
+        old=a.run/'episodes'/job['evaluation_tag']/f'slot-{job["slot"]:02d}-{job["config_id"]}'/'engineering-attempt-0'
+        if old.exists():raise ValueError('predeclared slot already exists; no unmodified repeat')
+        if job.get('predeclared_X'):
+            result=dict(job=job,status=job['predeclared_X'],started_at=now(),ended_at=now(),policy_queries=0,env_step_calls=0,
+                task_success=None,collision=None,label_masks=[False]*5,static_rejection_receipt=job.get('static_rejection_receipt'),scientific_outcome_executed=False)
+            results.append(result);write(out/'results.json',results);print(json.dumps(result),flush=True);continue
+        cmd=[sys.executable,'-u',str(Path(__file__).parent/'pi05_harness_episode.py'),'--run',str(a.run),'--slot',str(job['slot']),'--route',job['route'],
+            '--checkpoint-step',str(a.checkpoint_step),'--port',str(a.port),'--adapter-version','v6','--evaluation-tag',job['evaluation_tag'],
+            '--roster',plan['roster'],'--purpose',job['purpose'],'--A-private-version','A3N' if job['route']=='A' else 'A1','--sim-seconds','120','--wall-seconds','2700','--diagnostic-logging']
+        started=now();log=a.run/'logs'/f'{job["evaluation_tag"]}-slot-{job["slot"]:03d}-{job["route"]}.log'
+        with log.open('x') as f:
+            p=subprocess.Popen(cmd,stdout=f,stderr=subprocess.STDOUT)
+            write(out/'status.json',dict(at=now(),started_at=started,pid=p.pid,job=job,command=cmd,log=str(log),status='running'))
+            code=p.wait()
+        result=dict(job=job,exit_code=code,started_at=started,ended_at=now(),command=cmd,log=str(log),completed_receipt=str(old/'completed.json'))
+        results.append(result);write(out/'results.json',results);print(json.dumps(result),flush=True)
+        if code==0 and (old/'completed.json').exists():
+            receipt=json.loads((old/'completed.json').read_text())
+            phase=json.loads((a.run/'phase-state.json').read_text())
+            phase['counters']['development']=sum(1 for p in (a.run/'episodes').glob('*/slot-*/engineering-attempt-*/completed.json')
+                if not json.loads(p.read_text())['status'].startswith('X_'))
+            phase['updated_at']=now();write(a.run/'phase-state.json',phase)
+            first=a.run/'evidence/first-native-success.json'
+            if receipt['native_success'] and not first.exists():
+                write(first,dict(at=now(),receipt=str(old/'completed.json'),task=receipt['task'],route=receipt['route'],
+                    parent=receipt['parent_group'],raw_target_video=str(Path(receipt['attempt'])/'original.mp4'),
+                    raw_panoramic_video=str(Path(receipt['attempt'])/'panoramic.mp4'),safety_status='pending actual native audit',
+                    candidate_tag=job['evaluation_tag'],human_review='pending'))
+        if code!=0:
+            pending=plan['jobs'][len(results):]
+            results.extend(dict(job=x,status='unrun_after_mechanical_failure',failed_unit=result['completed_receipt']) for x in pending)
+            write(out/'results.json',results)
+            break
+        # Pure mechanical failures remain in place. This scheduler never retries
+        # or changes code, policy, source, roster or result labels on its own.
+    write(out/'completed.json',dict(at=now(),planned=len(plan['jobs']),results=results,all_declared_jobs_closed=True))
+    if plan.get('finish_own_service',True):
+        c=http.client.HTTPConnection('127.0.0.1',a.port,timeout=5);c.request('POST','/finish-declared-units',body=b'{}');c.getresponse().read();c.close()
+
+if __name__=='__main__':main()
