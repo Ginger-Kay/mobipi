@@ -101,23 +101,54 @@ def media(r,job,q):
     except Exception:result=dict(at=now(),receipt=job['receipt'],status='failed',passed=False,checks=checks,files=files,reason=traceback.format_exc())
     write(p,result)
 
+def owned_pid(record):
+    """Reject PID reuse by exact argv, kernel start time and the registered command."""
+    pid=record.get('pid');proc=Path(f'/proc/{pid}')
+    if not proc.exists():return None
+    try:
+        argv=[x.decode() for x in (proc/'cmdline').read_bytes().split(b'\0') if x]
+        if argv!=record['command']:return None
+        ticks=int((proc/'stat').read_text().split()[21])
+        if record.get('starttime_ticks') is not None and ticks!=int(record['starttime_ticks']):return None
+        boot=int(next(x.split()[1] for x in Path('/proc/stat').read_text().splitlines() if x.startswith('btime ')))
+        if abs(boot+ticks/os.sysconf('SC_CLK_TCK')-datetime.fromisoformat(record['at']).timestamp())>15:return None
+        return pid
+    except (OSError,ValueError,KeyError):return None
+
 def audit(r,job):
     receipt=Path(job['receipt'])
     if not receipt.exists():return
     q=read(receipt);attempt=Path(q['attempt']);key=job['key'].replace('/','-');cache=r/'audits'/('physical-'+key+'.json')
-    if not cache.exists():
-        write(cache,dict(at=now(),status='running',receipt=str(receipt)))
-        if (attempt/'sprint-safety-audit.json').exists():rc=0
+    af=attempt/'sprint-safety-audit.json';prior=read(cache) if cache.exists() else None
+    if af.exists():
+        write(cache,dict(at=now(),status='passed',exit_code=0,receipt=str(receipt),native_audit=str(af),safety_pass=read(af).get('all_safety_pass'),completed_receipt_reused=True))
+    elif prior and prior.get('status')=='failed':
+        event(r,'failed_audit_retained_without_repeat',key=job['key'])
+    else:
+        process_file=r/'launch'/('audit-'+key+'-process.json')
+        record=read(process_file) if process_file.exists() else {}
+        existing=owned_pid(record)
+        if existing:
+            event(r,'existing_owned_audit_followed',key=job['key'],pid=existing)
+            while owned_pid(record) and not af.exists() and seconds_until(r,'audit_freeze')>0:time.sleep(5)
+            if owned_pid(record) and not af.exists():os.kill(existing,15)
+            rc=0 if af.exists() else -15
         elif (attempt/'formal-native-substeps.npz').exists():
+            if prior:
+                # Only an incomplete interrupted audit can resume; never repeat a passed/failed audit.
+                if prior.get('resume_attempt',0)>=1:
+                    event(r,'audit_resume_budget_exhausted',key=job['key']);return
+                write(cache.with_name(cache.stem+'-interrupted-supervisor.json'),prior)
+            write(cache,dict(at=now(),status='running',receipt=str(receipt),resume_attempt=1 if prior else 0))
             cmd=[str(R/'env/bin/python'),'-u',str(r/'runtime/mobipi/scripts/sim_sprint_safety.py'),'--receipt',str(receipt)]
             with (r/'logs'/('audit-'+key+'.log')).open('a') as f:
                 proc=subprocess.Popen(cmd,env=simenv(r,0),stdout=f,stderr=subprocess.STDOUT)
-                write(r/'launch'/('audit-'+key+'-process.json'),dict(at=now(),pid=proc.pid,command=cmd,run_id=r.name,deadline_config=str(r/'deadline-config.json')))
-                try:rc=proc.wait(timeout=max(1,min(900,seconds_until(r,'audit_freeze'))))
+                write(process_file,dict(at=now(),pid=proc.pid,command=cmd,run_id=r.name,deadline_config=str(r/'deadline-config.json'),starttime_ticks=Path(f'/proc/{proc.pid}/stat').read_text().split()[21]))
+                try:rc=proc.wait(timeout=max(1,seconds_until(r,'audit_freeze')))
                 except subprocess.TimeoutExpired:
                     proc.terminate();proc.wait(timeout=30);rc=-15
         else:rc=-1
-        af=attempt/'sprint-safety-audit.json';write(cache,dict(at=now(),status='passed' if rc==0 and af.exists() else 'pending' if rc==-15 else 'failed',exit_code=rc,receipt=str(receipt),native_audit=str(af),safety_pass=read(af).get('all_safety_pass') if af.exists() else None))
+        write(cache,dict(at=now(),status='passed' if rc==0 and af.exists() else 'pending' if rc==-15 else 'failed',exit_code=rc,receipt=str(receipt),native_audit=str(af),safety_pass=read(af).get('all_safety_pass') if af.exists() else None,resume_attempt=1 if prior and not existing else 0))
     if seconds_until(r,'audit_freeze')>180:media(r,job,q)
     with lock:tables(r)
     event(r,'audit_complete',key=job['key'])
@@ -162,10 +193,21 @@ def estimate(r,jobs):
     # Keep the full 120-s failure reserve even when observed outcomes are quick.
     slot=min(2700.,max(300.,max(observations)*120+90)) if observations else 2700.
     work=[sum(j['hard_valid'] is True for j in jobs if j['slot']==slotid) for slotid in sorted({j['slot'] for j in jobs})]
-    pending=sum(not f.done() for f in audit_futures)
+    pending=sum(not f.done() for f in audit_futures);audit_rates=[]
+    for j in read(r/'design/selected-plan.json')['jobs']:
+        p=Path(j['receipt'])
+        if not p.exists():continue
+        q=read(p);af=Path(q['attempt'])/'sprint-safety-audit.json'
+        if af.exists() and q.get('terminal_duration_s',0)>1:
+            audit_rates.append(read(af)['elapsed_seconds']/q['terminal_duration_s'])
+    # Full 120-s risk is reserved for both scientific execution and native audit.
+    audit_slot=max(audit_rates)*120+90 if audit_rates else 3600.
+    new_count=sum(j['hard_valid'] is True and not Path(j['receipt']).exists() for j in jobs)
+    audit_eta=(new_count+pending)*audit_slot/2*1.20+300
     return dict(slot_cap_s=slot,concurrency_discount_factor=1.20,execution_eta_s=max(work,default=0)*slot*1.20+120,
                 latest_launch_eta_s=max(0,max(work,default=0)-1)*slot*1.20+120,
-                audit_eta_s=(sum(work)+pending)*90+300,audit_backlog=pending,observed_full_horizon_scaled=True,
+                audit_eta_s=audit_eta,audit_slot_full120_s=audit_slot,audit_workers=2,audit_concurrency_discount=1.20,
+                audit_backlog=pending,observed_full_horizon_scaled=True,
                 outcome_scores_used=False,unknown_eta_uses2700=not observations)
 
 def heartbeats(r,stop):
@@ -206,8 +248,14 @@ def main(r,v):
             while not (r/'policy'/f'service{w}/ready.json').exists() or read(r/'policy'/f'service{w}/ready.json').get('pid')!=services[w].pid:
                 if services[w].poll() is not None or time.monotonic()-began>600:raise RuntimeError(f'isolated service{w} unavailable')
                 time.sleep(5)
-        with ThreadPoolExecutor(max_workers=2) as workers,ThreadPoolExecutor(max_workers=1) as audits:
-            plan=read(r/'design/selected-plan.json');initial=estimate(r,plan['jobs'][:12]);write(r/'design/resource-freeze.json',dict(at=now(),initial_estimate=initial,core36_eta_s=initial['execution_eta_s']*3,main72_eta_s=initial['execution_eta_s']*6,remaining_execution_s=seconds_until(r,'execution_deadline'),core36_not_hard_start_gate=True))
+        with ThreadPoolExecutor(max_workers=2) as workers,ThreadPoolExecutor(max_workers=2) as audits:
+            plan=read(r/'design/selected-plan.json')
+            for j in plan['jobs']:
+                if Path(j['receipt']).exists() and read(j['receipt']).get('usable_scientific_outcome'):
+                    patch_job(r,j['key'],status='completed',recovered_existing_outcome=True)
+            initial=estimate(r,plan['jobs'][:12])
+            if not (r/'design/resource-freeze.json').exists():write(r/'design/resource-freeze.json',dict(at=now(),initial_estimate=initial,core36_eta_s=initial['execution_eta_s']*3,main72_eta_s=initial['execution_eta_s']*6,remaining_execution_s=seconds_until(r,'execution_deadline'),core36_not_hard_start_gate=True))
+            else:event(r,'resource_estimate_repaired_after_observed_audit_cost',estimate=initial,original_freeze_preserved=True)
             with lock:q=read(r/'phase-state.json');q.update(phase='executing_blocks',status='running');write(r/'phase-state.json',q)
             for block in range(12):
                 plan=read(r/'design/selected-plan.json');jobs=[x for x in plan['jobs'] if x['block']==block]
@@ -216,8 +264,10 @@ def main(r,v):
                         if Path(j['receipt']).exists():audit_futures.append(audits.submit(audit,r,j))
                     continue
                 eta=estimate(r,jobs);remain=seconds_until(r,'execution_deadline');delivery=seconds_until(r,'audit_freeze')
-                allowed=eta['execution_eta_s']<=remain and eta['execution_eta_s']+eta['audit_eta_s']<=delivery and seconds_until(r,'last_episode_launch')>=eta['latest_launch_eta_s'] and os.statvfs(r).f_bavail*os.statvfs(r).f_frsize>20*1024**3
-                event(r,'block_resource_decision',block=block,admitted=allowed,remaining_execution_s=remain,remaining_audit_s=delivery,eta=eta)
+                # Recovery completes already admitted comparison slots; it never resets admission/attempts.
+                already_admitted=all(x['admitted'] for x in jobs)
+                allowed=already_admitted or (eta['execution_eta_s']<=remain and eta['execution_eta_s']+eta['audit_eta_s']<=delivery and seconds_until(r,'last_episode_launch')>=eta['latest_launch_eta_s'] and os.statvfs(r).f_bavail*os.statvfs(r).f_frsize>20*1024**3)
+                event(r,'block_resource_decision',block=block,admitted=allowed,remaining_execution_s=remain,remaining_audit_s=delivery,eta=eta,recovery_of_already_admitted_block=already_admitted)
                 if not allowed:break
                 for j in jobs:patch_job(r,j['key'],admitted=True,admitted_at=now())
                 if not any(j['hard_valid'] is True for j in jobs):continue
