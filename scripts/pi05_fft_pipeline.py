@@ -43,7 +43,7 @@ def main():
         XDG_CACHE_HOME=str(cache/'xdg'),HF_HOME=str(cache/'huggingface'),TORCH_HOME=str(cache/'torch'),
         OPENPI_DATA_HOME=str(cache/'assets'),TMPDIR=str(cache/'tmp'))
     envop=dict(common,PYTHONPATH=f'{op}/src:{op}/packages/openpi-client/src',CUDA_VISIBLE_DEVICES=','.join(GPUS[:a.fsdp_devices]),
-        XLA_PYTHON_CLIENT_PREALLOCATE='false',JAX_COMPILATION_CACHE_DIR=str(cache/'jax'))
+        JAX_PLATFORMS='cuda',XLA_PYTHON_CLIENT_PREALLOCATE='false',JAX_COMPILATION_CACHE_DIR=str(cache/'jax'))
     envsim=dict(common,PYTHONPATH=f'{sim}/src:{sim}/scripts:{sim}:{R}/Mobipi/external/robocasa:{R}/Mobipi/external/robomimic:{R}/Mobipi/external/mimicgen',
         MUJOCO_GL='egl',LD_LIBRARY_PATH=str(R/'env/lib'))
     jobs=[]
