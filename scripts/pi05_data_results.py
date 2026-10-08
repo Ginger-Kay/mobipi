@@ -87,7 +87,7 @@ def main():
     x,z=base[cid],other[cid];costs.append(dict(comparison=comparison,comparator=method,parent_group=x['parent_group'],config_id=cid,MLP_path_m=x['base_path_m'],comparator_path_m=z['base_path_m'],path_difference_m=x['base_path_m']-z['base_path_m'],MLP_terminal_seconds=x['terminal_duration_s'],comparator_terminal_seconds=z['terminal_duration_s'],time_difference_seconds=x['terminal_duration_s']-z['terminal_duration_s']))
  csvwrite(out/'common-safe-success-costs.csv',costs,['comparison','comparator','parent_group','config_id','MLP_path_m','comparator_path_m','path_difference_m','MLP_terminal_seconds','comparator_terminal_seconds','time_difference_seconds'])
  failures=[x for x in primary+online if x['executed'] and x['task_success']==0];csvwrite(out/'all-failure-outcomes.csv',failures)
- csvwrite(out/'all-unknown-or-interrupted-outcomes.csv',[x for x in primary+online if x['task_success'] is None],list(primary[0]))
+ csvwrite(out/'all-unknown-or-interrupted-outcomes.csv',[x for x in primary+online if x['task_success'] is None],list(dict.fromkeys(k for x in primary+online for k in x)))
  flow=[]
  for role in ['train','development','evaluation']:
   for route in 'EDA':
