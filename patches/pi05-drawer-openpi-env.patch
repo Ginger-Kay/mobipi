@@ -1,0 +1,15 @@
+diff --git a/scripts/pi05_fft_serve.py b/scripts/pi05_fft_serve.py
+index d30a91f..5bc6b86 100644
+--- a/scripts/pi05_fft_serve.py
++++ b/scripts/pi05_fft_serve.py
+@@ -5,6 +5,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
+ from io import BytesIO
+ import json
+ import os
++# Task-owned environment repair: reuse approved existing tokenizer/cache.
++_PROJECT_CACHE = "/share/personal/chensiyu/haokaijiang/MobiWAM/cache/openpi"
++for _key, _suffix in [("OPENPI_DATA_HOME", "assets"), ("HF_HOME", "huggingface"), ("TORCH_HOME", "torch"), ("XDG_CACHE_HOME", "xdg"), ("TMPDIR", "tmp")]:
++    os.environ[_key] = _PROJECT_CACHE + "/" + _suffix
+ from pathlib import Path
+ import time
+ import jax
