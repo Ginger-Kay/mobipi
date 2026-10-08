@@ -13,8 +13,9 @@ lock=threading.RLock()
 def now(): return datetime.now(timezone.utc).isoformat()
 def read(p): return json.loads(Path(p).read_text())
 def write(p,d):
-    p=Path(p);p.parent.mkdir(parents=True,exist_ok=True);t=p.with_name(p.name+'.tmp-'+str(threading.get_ident()));t.write_text(json.dumps(d,indent=2,allow_nan=False)+'\n');t.replace(p)
+    p=Path(p);p.parent.mkdir(parents=True,exist_ok=True);t=p.with_name(p.name+'.tmp-'+str(threading.get_ident()));t.write_text(json.dumps(clean_json(d),indent=2,allow_nan=False)+'\n');t.replace(p)
 def clean_json(d):
+    if isinstance(d,Path):return str(d)
     if isinstance(d,dict): return {k:clean_json(v) for k,v in d.items()}
     if isinstance(d,(list,tuple)):return [clean_json(x) for x in d]
     if isinstance(d,np.generic):return clean_json(d.item())
@@ -60,6 +61,8 @@ def ledger(r):
     rows=[outcome(j) for j in all_jobs(r)];write(r/'evidence/slot-ledger.json',dict(at=now(),rows=rows));return rows
 
 def freeze_resource(r):
+    assert read(r/'preflight/checkpoint-content-verification.json')['passed']
+    assert read(r/'preflight/label-unit-mask-selection-check.json')['passed']
     design=read(r/'design/start-design.json');features=read(r/'design/features-freeze.json');byid={x['config_id']:x for x in features['records']}
     configs=design['selected']
     for c in configs:
@@ -206,7 +209,7 @@ def main():
             if datetime.now(timezone.utc)>=DEV-timedelta(seconds=3600):raise RuntimeError('static qualification not complete before dev cutoff')
             time.sleep(10)
         phase(r,'S0_features',status='running')
-        rc=run_command(r,'static-features',[R/'env/bin/python','-u',r/'runtime/mobipi/scripts/pi05_drawer_features.py','--run',r],simenv(r,0),r/'runtime/mobipi');assert rc==0,'static features mechanically failed; no science launched'
+        rc=run_command(r,'static-features-metadatarepair1',[R/'env/bin/python','-u',r/'runtime/mobipi/scripts/pi05_drawer_features.py','--run',r],simenv(r,0),r/'runtime/mobipi');assert rc==0,'static features mechanically failed; no science launched'
         configs=freeze_resource(r);write(r/'launch/science-launch-receipt.json',dict(at=now(),pid=os.getpid(),contract_revision=2,GPUs=GPUS,EGL_devices=EGL,ports=PORTS,policy_training=False,resource_freeze=str(r/'design/resource-freeze.json')))
         phase(r,'S1_train_dev',status='running')
         op=r/'runtime/openpi'
@@ -246,6 +249,9 @@ def main():
                     if datetime.now(timezone.utc)>=OBC-timedelta(seconds=300):break
                     rc=run_command(r,'obc-'+kind,[R/'env/bin/python','-u',r/'runtime/mobipi/scripts/pi05_data_obc_train.py','--run',r,'--tier','1','--model',kind,'--device','cpu'],simenv(r,0),r/'runtime/mobipi')
                     if rc:print('OBC model unavailable',kind,rc,flush=True)
+                    elif kind in ('MLP','Linear'):
+                        with lock:
+                            q=read(r/'phase-state.json');q['counters'][kind+'_updates']=read(r/'training/tier-1'/kind/'completed.json')['steps'];write(r/'phase-state.json',q)
             plan=predictions(r);phase(r,'S3_evaluation',status='running')
             for layer in range(plan['k']):
                 states=[c for c in plan['configurations'] if c['role']=='evaluation' and c['start_index']==layer]
