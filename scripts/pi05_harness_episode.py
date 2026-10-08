@@ -62,7 +62,7 @@ def main():
         source_worktree_clean=not bool(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'status','--porcelain'],text=True).strip()),
         purpose=a.purpose,roster=str(a.roster or a.run/'policy/policy-dev-roster.json'),
         source_module_sha256={n:hashlib.sha256((Path(__file__).resolve().parents[1]/n).read_bytes()).hexdigest() for n in ('scripts/pi05_harness_episode.py','src/mobiwam/pi05_adapter.py','src/mobiwam/pi05_motion.py','src/mobiwam/pi05_route.py','scripts/reference_executor.py')},
-        task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261007,evaluation_seed=20261007,environment_seed=slot['environment_seed']))
+        task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],policy_sampling_seed=20261008,evaluation_seed=20261008,environment_seed=slot['environment_seed']))
     ref=None;attempt=None;guard=None;margin=None;diagnostics=None;queries=0;steps=0;query_seconds=0.;status='engineering_unknown'
     try:
         connection=http.client.HTTPConnection('127.0.0.1',a.port,timeout=20);connection.request('GET','/status');response=connection.getresponse();binding=json.loads(response.read());connection.close()
@@ -80,7 +80,7 @@ def main():
         first=ref.frame(primary).copy();second=ref.frame(panorama).copy();assert not np.array_equal(first,second)
         Image.fromarray(first).save(out/'target-preview.jpg');Image.fromarray(second).save(out/'panorama-preview.jpg')
         write_json(out/'camera-plan.json',dict(primary=primary,panorama=panorama,distinct_zero_action_rgb=True,main_readability='predeclared task-specific side/front plan; exact per Source preview kept; human review pending'))
-        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label='PI05-DATA-v1 autonomous frozen pi05 '+a.route;reset(a.port)
+        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label='PI05-DRAWER-v1 autonomous frozen pi05 '+a.route;reset(a.port)
         base=ref.robot.part_controllers['base'];base_target=d.qpos[base.qpos_index].copy();arm=ref.robot.part_controllers['right']
         joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
         margin=JointMarginMonitor(arm.qpos_index,m.jnt_range[joints],[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) for j in joints])
@@ -181,7 +181,7 @@ def main():
         result=json.loads((attempt/'result.json').read_text())
         if not (out/'horizon-120s.json').exists():write_json(out/'horizon-120s.json',dict(ended_before_120s=True,elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native=observe_native(ref,ref.identity_expected),terminal_status=status))
         write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False,protocol='MMWAM-OBC-002-PI05-FFT-v1',declared_sim_horizon_seconds=a.sim_seconds,declared_wall_limit_seconds=a.wall_seconds,A_private_version=a.A_private_version))
-        completed=json.loads((out/'completed.json').read_text());completed.update(protocol='PI05-DATA-v1',experiment_id='MMWAM-OBC-002-PI05-DATA-v1',
+        completed=json.loads((out/'completed.json').read_text());completed.update(protocol='PI05-DRAWER-v1',experiment_id='MMWAM-OBC-002-PI05-DRAWER-v1',
             initial_native_opening=initial_opening,terminal_native_opening=native_opening(ref),native_progress=float(np.clip(1-native_opening(ref),0,1)),
             terminal_duration_s=float(d.time)-start_time,observation_horizon_s=a.sim_seconds,censored=status.startswith('policy_budget_stop_') or status=='compute-timeout')
         write_json(out/'completed.json',completed)
