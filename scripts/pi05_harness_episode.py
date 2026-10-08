@@ -43,8 +43,17 @@ def finish_zero(ref,status):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
     p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag')
-    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2','A3','A3N'],default='A1');p.add_argument('--sim-seconds',type=float,default=120.);p.add_argument('--wall-seconds',type=int,default=1200);p.add_argument('--diagnostic-logging',action='store_true');a=p.parse_args()
+    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2','A3','A3N'],default='A1');p.add_argument('--sim-seconds',type=float,default=120.);p.add_argument('--wall-seconds',type=int,default=1200);p.add_argument('--diagnostic-logging',action='store_true');p.add_argument('--deadline-config',type=Path);p.add_argument('--experiment-id',default='MMWAM-OBC-002-PI05-DRAWER-v1');a=p.parse_args()
     if a.A_private_version!='A1' and a.route!='A':raise ValueError('private A revisions only apply to route A')
+    absolute_deadline=None
+    if a.deadline_config:
+        from datetime import datetime, timezone
+        deadlines=json.loads(a.deadline_config.read_text())
+        assert datetime.now(timezone.utc)<datetime.fromisoformat(deadlines['last_episode_launch'])
+        assert deadlines['wall_seconds']==a.wall_seconds and deadlines['simulation_seconds']==a.sim_seconds
+        absolute_deadline=datetime.fromisoformat(deadlines['execution_deadline'])
+    # Task-owned metadata/deadline interface; frozen policy/control math is unchanged.
+    # The optional interface preserves all legacy scientific argument defaults.
     roster=json.loads((a.roster or a.run/'policy/policy-dev-roster.json').read_text());slot=roster['slots'][a.slot-1]
     version_suffix='' if a.adapter_version=='v1' else '-adapter-'+a.adapter_version
     evaluation=a.evaluation_tag or f'policy-dev-step-{a.checkpoint_step}{version_suffix}'
@@ -80,7 +89,7 @@ def main():
         first=ref.frame(primary).copy();second=ref.frame(panorama).copy();assert not np.array_equal(first,second)
         Image.fromarray(first).save(out/'target-preview.jpg');Image.fromarray(second).save(out/'panorama-preview.jpg')
         write_json(out/'camera-plan.json',dict(primary=primary,panorama=panorama,distinct_zero_action_rgb=True,main_readability='predeclared task-specific side/front plan; exact per Source preview kept; human review pending'))
-        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label='PI05-DRAWER-v1 autonomous frozen pi05 '+a.route;reset(a.port)
+        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label=a.experiment_id+' autonomous frozen pi05 '+a.route;reset(a.port)
         base=ref.robot.part_controllers['base'];base_target=d.qpos[base.qpos_index].copy();arm=ref.robot.part_controllers['right']
         joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
         margin=JointMarginMonitor(arm.qpos_index,m.jnt_range[joints],[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) for j in joints])
@@ -101,7 +110,9 @@ def main():
         if a.diagnostic_logging:
             from mobiwam.pi05_sim_diagnostics import SimDiagnostics
             diagnostics=SimDiagnostics(ref,attempt);ref.sim_diagnostics=diagnostics
-        deadline=wall_start+a.wall_seconds;start_time=float(d.time);max_drift=0.;raw=None
+        deadline=wall_start+a.wall_seconds
+        if absolute_deadline is not None:deadline=min(deadline,time.monotonic()+(absolute_deadline-datetime.now(timezone.utc)).total_seconds())
+        start_time=float(d.time);max_drift=0.;raw=None
         manip_step=0;base_path=0.;previous_base=d.qpos[base.qpos_index].copy()
         with (out/'query-action-feedback.jsonl').open('x') as log:
             for step in range(int(round(a.sim_seconds*ref.env.control_freq))):
@@ -181,7 +192,7 @@ def main():
         result=json.loads((attempt/'result.json').read_text())
         if not (out/'horizon-120s.json').exists():write_json(out/'horizon-120s.json',dict(ended_before_120s=True,elapsed_sim_seconds=float(d.time)-start_time,steps=steps,native=observe_native(ref,ref.identity_expected),terminal_status=status))
         write_json(out/'completed.json',dict(started_at=started,ended_at=now(),slot=a.slot,checkpoint_step=a.checkpoint_step,adapter_version=a.adapter_version,purpose=a.purpose,task=slot['task'],route=a.route,parent_group=slot['parent_group'],config_id=slot['config_id'],family_id=slot['family_id'],status=status,attempt=str(attempt),native_success=result['checker_success'],steps=result['steps'],policy_queries=queries,query_seconds=query_seconds,base_drift_max_generalized=max_drift,actual_base_path_m=base_path,route_semantics_pass=semantic_pass,usable_scientific_outcome=bool(steps or (attempt/'partial-control-step.npz').exists() or status in ('qp_protective_stop','X_no_legal_candidate')),safety_status='pending_actual_sweep',reference_actions_used=False,human_intervention=False,world_target_source='pi05 only for manipulation; geometric stow/navigation for D prefix',state_injection_during_episode=False,formal_train_ready=False,protocol='MMWAM-OBC-002-PI05-FFT-v1',declared_sim_horizon_seconds=a.sim_seconds,declared_wall_limit_seconds=a.wall_seconds,A_private_version=a.A_private_version))
-        completed=json.loads((out/'completed.json').read_text());completed.update(protocol='PI05-DRAWER-v1',experiment_id='MMWAM-OBC-002-PI05-DRAWER-v1',
+        completed=json.loads((out/'completed.json').read_text());completed.update(protocol=a.experiment_id,experiment_id=a.experiment_id,deadline_config=str(a.deadline_config) if a.deadline_config else None,
             initial_native_opening=initial_opening,terminal_native_opening=native_opening(ref),native_progress=float(np.clip(1-native_opening(ref),0,1)),
             terminal_duration_s=float(d.time)-start_time,observation_horizon_s=a.sim_seconds,censored=status.startswith('policy_budget_stop_') or status=='compute-timeout')
         write_json(out/'completed.json',completed)

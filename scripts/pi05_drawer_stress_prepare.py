@@ -14,7 +14,15 @@ from mobiwam.reference_feature_interface import PROPRIO_KEYS, source_context
 from mobiwam.scene004 import build_minimal_input, candidate_feature_vector, geometry_rule_select
 from mobiwam.pi05_data_learning import Head, scale, decode, choose, SCALES
 from pi05_candidate_features import feature_record
-from pi05_drawer_pipeline import write, read, now, clean_json
+from pi05_drawer_pipeline import write as atomic_write, read, now, clean_json
+
+def write(path,value):
+    def arrays(x):
+        if isinstance(x,np.ndarray):return arrays(x.tolist())
+        if isinstance(x,dict):return {k:arrays(v) for k,v in x.items()}
+        if isinstance(x,(list,tuple)):return [arrays(v) for v in x]
+        return x
+    atomic_write(path,arrays(value))
 
 R=Path('/share/personal/chensiyu/haokaijiang/MobiWAM')
 NAMES=('model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json')
