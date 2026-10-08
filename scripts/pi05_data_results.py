@@ -34,7 +34,7 @@ def aggregate(rows):
  for row in rows:groups.setdefault(row['parent_group'],[]).append(row)
  parents=[]
  for parent,records in sorted(groups.items()):
-  denom=len(records);native_known=[x for x in records if x['task_success'] is not None];safe=sum(x['safe_success'] is True for x in records);uncertain=sum(x['safe_success'] is None and not x['status'].startswith('X_') for x in records)
+  denom=len(records);native_known=[x for x in records if x['task_success'] is not None];safe=sum(x['safe_success'] is True for x in records);uncertain=sum((x['safe_success'] is None and not x['status'].startswith('X_')) or (x.get('oracle_missing_valid_routes',False) and x['safe_success'] is not True) for x in records)
   parents.append(dict(parent_group=parent,planned_configurations=denom,executed=sum(x['executed'] for x in records),native_valid=len(native_known),native_success=sum(x['task_success']==1 for x in records),safe_success=safe,
    safe_opportunity_lower=safe/denom,safe_opportunity_upper=(safe+uncertain)/denom,X=sum(x['status'].startswith('X_') for x in records),unrun=sum(x['status']=='unrun' for x in records),unknown_or_pending=uncertain))
  return dict(parent_count=len(parents),planned=len(rows),executed=sum(x['executed'] for x in rows),native_valid=sum(x['task_success'] is not None for x in rows),native_success=sum(x['task_success']==1 for x in rows),
@@ -62,7 +62,10 @@ def main():
   for method,route in choices.items():
    if route in 'EDA' and len(route)==1:row=lookup[(cid,route)].copy()
    else:row=outcome(r,c,'X','unexecuted-choice');row.update(status='X_no_executable_choice',hard_valid=False)
-   row.update(method=method,comparison='paired_lookup',at_least_two_hard_valid=item['at_least_two_hard_valid'],oracle_full_route_coverage=all(lookup[(cid,rr)]['task_success'] is not None or not item['valid_routes'].get(rr,False) for rr in 'EDA') if method=='observed-oracle' else None);paired.append(row)
+   oracle_missing=method=='observed-oracle' and any(item['valid_routes'].get(rr,False) and lookup[(cid,rr)]['task_success'] is None for rr in 'EDA')
+   if method=='observed-oracle' and not observed and any(item['valid_routes'].values()):row.update(status='unrun',hard_valid=True)
+   row.update(method=method,comparison='paired_lookup',at_least_two_hard_valid=item['at_least_two_hard_valid'],oracle_missing_valid_routes=oracle_missing,
+    oracle_full_route_coverage=not oracle_missing if method=='observed-oracle' else None);paired.append(row)
   for method in final['online_methods']:
    route=item['choices'][method];row=outcome(r,c,route,f'online-tier{tier}-{method}');row.update(method=method,comparison='real_online',at_least_two_hard_valid=item['at_least_two_hard_valid']);online.append(row)
  csvwrite(out/'paired-lookup.csv',paired);csvwrite(out/'real-online.csv',online)
