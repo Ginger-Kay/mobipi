@@ -7,8 +7,8 @@ from mobiwam.pi05_data_learning import labels
 
 def read(p):return json.loads(Path(p).read_text())
 def dump(p,x):Path(p).write_text(json.dumps(x,indent=2)+'\n')
-def csvwrite(p,rows):
- fields=list(dict.fromkeys(k for row in rows for k in row))
+def csvwrite(p,rows,fieldnames=None):
+ fields=fieldnames or list(dict.fromkeys(k for row in rows for k in row))
  with Path(p).open('w',newline='') as f:
   w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
 def outcome(r,c,route,tag):
@@ -81,7 +81,7 @@ def main():
    other={x['config_id']:x for x in rows if x['method']==method};common=[cid for cid in base if base[cid]['safe_success'] is True and other[cid]['safe_success'] is True]
    for cid in common:
     x,z=base[cid],other[cid];costs.append(dict(comparison=comparison,comparator=method,parent_group=x['parent_group'],config_id=cid,MLP_path_m=x['base_path_m'],comparator_path_m=z['base_path_m'],path_difference_m=x['base_path_m']-z['base_path_m'],MLP_terminal_seconds=x['terminal_duration_s'],comparator_terminal_seconds=z['terminal_duration_s'],time_difference_seconds=x['terminal_duration_s']-z['terminal_duration_s']))
- csvwrite(out/'common-safe-success-costs.csv',costs)
+ csvwrite(out/'common-safe-success-costs.csv',costs,['comparison','comparator','parent_group','config_id','MLP_path_m','comparator_path_m','path_difference_m','MLP_terminal_seconds','comparator_terminal_seconds','time_difference_seconds'])
  failures=[x for x in primary+online if x['executed'] and x['task_success']!=1];csvwrite(out/'all-failure-outcomes.csv',failures)
  flow=[]
  for role in ['train','development','evaluation']:
