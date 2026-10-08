@@ -12,7 +12,7 @@ def csvwrite(p,rows,fieldnames=None):
  with Path(p).open('w',newline='') as f:
   w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
 def outcome(r,c,route,tag):
- folder=r/'episodes'/tag/f'slot-{c["global_config_index"]+1:02d}-{c["config_id"]}'/'engineering-attempt-0';p=folder/'completed.json';q=read(p) if p.exists() else {};audit={}
+ folder=r/'episodes'/tag/f'slot-{c["global_config_index"]+1:02d}-{c["config_id"]}'/'engineering-attempt-0';p=folder/'completed.json';q=read(p) if p.exists() else {};audit={};prefix=read(folder/'user-stop-prefix.json') if (folder/'user-stop-prefix.json').exists() else {}
  if q:
   attempt=Path(q['attempt']);af=attempt/'sprint-safety-audit.json'
   if af.exists():audit=read(af)
@@ -20,13 +20,14 @@ def outcome(r,c,route,tag):
    native=attempt/'formal-native-substeps-receipt.json'
    if native.exists():audit=dict(native_collision=read(native).get('forbidden_contact') is not None,all_safety_pass=None)
  inputs=r/'design/repaired-inputs-v1'/c['config_id']/'features.json';feat=read(inputs) if inputs.exists() else {'routes':[]};valid=bool(next((x['hard_valid'] for x in feat['routes'] if x['route_family']==route),False)) and c['static_config_legal']
- status=q.get('status','engineering_unknown' if (folder/'failure.json').exists() else 'X_static_or_route_invalid' if not valid else 'unrun')
+ status=q.get('status','user_interrupted' if prefix else 'engineering_unknown' if (folder/'failure.json').exists() else 'X_static_or_route_invalid' if not valid else 'unrun')
  y,mask=labels(q,audit);safe=(bool(q['native_success'] and audit['all_safety_pass']) if q and audit.get('all_safety_pass') is not None else False if mask[0] and not q['native_success'] else None)
  row=dict(parent_group=c['parent_group'],config_id=c['config_id'],family_id=c['family_id'],task=c['task'],role=c['role'],start_slot=c['slot'],tier=c['tier'],route=route,tag=tag,planned=True,hard_valid=valid,
-  executed=bool(q and not q['status'].startswith('X_') and (q['steps']>0 or q.get('policy_queries',0)>0)),physics_complete_steps=q.get('steps',0),status=status,task_success=float(y[0]) if mask[0] else None,collision=float(y[1]) if mask[1] else None,progress=float(y[2]) if mask[2] else None,
+  executed=bool(prefix or (q and not q['status'].startswith('X_') and (q['steps']>0 or q.get('policy_queries',0)>0))),physics_complete_steps=prefix.get('physics_complete_steps',q.get('steps',0)),status=status,task_success=float(y[0]) if mask[0] else None,collision=float(y[1]) if mask[1] else None,progress=float(y[2]) if mask[2] else None,
   base_path_m=float(y[3]) if mask[3] else None,terminal_duration_s=float(y[4]) if mask[4] else None,safety_pass=audit.get('all_safety_pass'),safe_success=safe,
-  masks=mask.tolist(),censored=q.get('censored'),receipt=str(p) if q else None,unknown_prefix=str(folder/'failure.json') if (folder/'failure.json').exists() else None,
-  route_semantics=q.get('route_semantics_pass'),initial_opening=q.get('initial_native_opening'),terminal_opening=q.get('terminal_native_opening'),policy_queries=q.get('policy_queries',0),steps=q.get('steps',0))
+  masks=mask.tolist(),censored=q.get('censored'),receipt=str(p) if q else str(folder/'user-stop-prefix.json') if prefix else None,unknown_prefix=str(folder/'failure.json') if (folder/'failure.json').exists() else None,
+  interrupted_prefix_seconds=prefix.get('recorded_prefix_sim_seconds'),user_requested_stop=bool(prefix or (r/'delivery/scientific-stop-closure.json').exists() and status=='unrun'),
+  route_semantics=q.get('route_semantics_pass'),initial_opening=q.get('initial_native_opening'),terminal_opening=q.get('terminal_native_opening'),policy_queries=prefix.get('saved_policy_queries',q.get('policy_queries',0)),steps=prefix.get('physics_complete_steps',q.get('steps',0)))
  return row
 
 def aggregate(rows):
@@ -85,7 +86,8 @@ def main():
    for cid in common:
     x,z=base[cid],other[cid];costs.append(dict(comparison=comparison,comparator=method,parent_group=x['parent_group'],config_id=cid,MLP_path_m=x['base_path_m'],comparator_path_m=z['base_path_m'],path_difference_m=x['base_path_m']-z['base_path_m'],MLP_terminal_seconds=x['terminal_duration_s'],comparator_terminal_seconds=z['terminal_duration_s'],time_difference_seconds=x['terminal_duration_s']-z['terminal_duration_s']))
  csvwrite(out/'common-safe-success-costs.csv',costs,['comparison','comparator','parent_group','config_id','MLP_path_m','comparator_path_m','path_difference_m','MLP_terminal_seconds','comparator_terminal_seconds','time_difference_seconds'])
- failures=[x for x in primary+online if x['executed'] and x['task_success']!=1];csvwrite(out/'all-failure-outcomes.csv',failures)
+ failures=[x for x in primary+online if x['executed'] and x['task_success']==0];csvwrite(out/'all-failure-outcomes.csv',failures)
+ csvwrite(out/'all-unknown-or-interrupted-outcomes.csv',[x for x in primary+online if x['task_success'] is None],list(primary[0]))
  flow=[]
  for role in ['train','development','evaluation']:
   for route in 'EDA':
