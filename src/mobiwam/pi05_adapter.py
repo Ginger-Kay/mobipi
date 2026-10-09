@@ -44,7 +44,7 @@ def query(port,inputs):
     with np.load(BytesIO(data),allow_pickle=False) as z:return {k:z[k].copy() for k in z.files}
 
 
-def reset(port):call(port,'/reset',json.dumps({'policy_sampling_seed':20261008}).encode())
+def reset(port):return json.loads(call(port,'/reset',json.dumps({'policy_sampling_seed':20261008}).encode()))
 
 
 def world_intent(action,anchor):

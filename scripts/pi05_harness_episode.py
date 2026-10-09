@@ -43,7 +43,7 @@ def finish_zero(ref,status):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--slot',type=int,required=True);p.add_argument('--route',choices=['E','D','A'],default='E')
     p.add_argument('--checkpoint-step',type=int,required=True);p.add_argument('--port',type=int,default=8865);p.add_argument('--attempt',type=int,default=0);p.add_argument('--adapter-version',choices=['v1','v2','v3','v4','v5','v6'],default='v1');p.add_argument('--evaluation-tag')
-    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2','A3','A3N'],default='A1');p.add_argument('--sim-seconds',type=float,default=120.);p.add_argument('--wall-seconds',type=int,default=1200);p.add_argument('--diagnostic-logging',action='store_true');p.add_argument('--deadline-config',type=Path);p.add_argument('--experiment-id',default='MMWAM-OBC-002-PI05-DRAWER-v1');a=p.parse_args()
+    p.add_argument('--roster',type=Path);p.add_argument('--purpose',choices=['policy-dev','paired','online'],default='policy-dev');p.add_argument('--A-private-version',choices=['A1','A2','A3','A3N'],default='A1');p.add_argument('--sim-seconds',type=float,default=120.);p.add_argument('--wall-seconds',type=int,default=1200);p.add_argument('--diagnostic-logging',action='store_true');p.add_argument('--deadline-config',type=Path);p.add_argument('--mechanical-repair-receipt',type=Path);p.add_argument('--experiment-id',default='MMWAM-OBC-002-PI05-DRAWER-v1');a=p.parse_args()
     if a.A_private_version!='A1' and a.route!='A':raise ValueError('private A revisions only apply to route A')
     absolute_deadline=None
     if a.deadline_config:
@@ -63,7 +63,9 @@ def main():
         for old in out.parent.glob('engineering-attempt-*/completed.json'):
             if json.loads(old.read_text()).get('usable_scientific_outcome'):raise ValueError('slot already has a usable outcome; retry prohibited')
         for old in out.parent.glob('engineering-attempt-*/failure.json'):
-            if json.loads(old.read_text()).get('usable_outcome'):raise ValueError('slot has an executed prefix; retain unknown, no blind same-version repeat')
+            if json.loads(old.read_text()).get('usable_outcome'):
+                if not a.mechanical_repair_receipt:raise ValueError('unknown prefix retry requires concrete mechanical repair receipt')
+                repair=json.loads(a.mechanical_repair_receipt.read_text());assert repair.get('actual_repair_commit') and repair.get('issue_signature') and repair.get('description')
     out.mkdir(parents=True,exist_ok=False);started=now();wall_start=time.monotonic();src=Path(slot['source']);source=out/src.name;source.mkdir()
     for name in ('model.xml','integration.npy','ep_meta.json','rng.json','source.json','target-binding.json'):shutil.copy2(src/name,source/name)
     shutil.copy2(src.parent/'env_config.json',out/'env_config.json')
@@ -78,7 +80,10 @@ def main():
         assert response.status==200 and Path(binding['checkpoint']).name==str(a.checkpoint_step)
         write_json(out/'policy-binding.json',dict(binding,adapter_version=a.adapter_version,camera_slot_mapping=CAMERAS,reference_actions_used=False))
         ref=Reference(argparse.Namespace(output=str(out),task=slot['task'],layout=1,style=0,seed=slot['environment_seed'],self_test=True,source=str(source),replay_attempt=None,resume_attempt=None,width=960,height=540))
-        restore_saved_integration(ref);m,d=ref.model_data();expected=json.loads((source/'target-binding.json').read_text())
+        restore_saved_integration(ref);m,d=ref.model_data()
+        saved=json.loads((src.parent/'initial-state-controller.json').read_text())
+        assert np.max(abs(d.qpos-np.asarray(saved['qpos'])))<=1e-6 and np.max(abs(d.qvel-np.asarray(saved['qvel'])))<=1e-6
+        expected=json.loads((source/'target-binding.json').read_text())
         ref.identity_expected=dict(task=slot['task'],fixture_name=expected['fixture_name'],fixture_class=expected['fixture_class'],model_sha256=hashlib.sha256((source/'model.xml').read_bytes()).hexdigest())
         ref.identity_context=dict(run_id=a.run.name,group_id=slot['config_id']);native=observe_native(ref,ref.identity_expected)
         assert not ref.env._check_success();initial_opening=native_opening(ref);before=ref.integration().copy();inputs,anchor=observation(ref)
@@ -89,7 +94,10 @@ def main():
         first=ref.frame(primary).copy();second=ref.frame(panorama).copy();assert not np.array_equal(first,second)
         Image.fromarray(first).save(out/'target-preview.jpg');Image.fromarray(second).save(out/'panorama-preview.jpg')
         write_json(out/'camera-plan.json',dict(primary=primary,panorama=panorama,distinct_zero_action_rgb=True,main_readability='predeclared task-specific side/front plan; exact per Source preview kept; human review pending'))
-        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label=a.experiment_id+' autonomous frozen pi05 '+a.route;reset(a.port)
+        ref.apply_camera(primary);ref.panoramic_camera=panorama;ref.route=a.route;ref.label=a.experiment_id+' autonomous frozen pi05 '+a.route
+        reset_receipt=reset(a.port)
+        assert reset_receipt['policy_sampling_seed']==20261008 and reset_receipt['history_cleared'] and reset_receipt['action_chunk_cache_cleared']
+        write_json(out/'policy-reset-receipt.json',dict(at=now(),**reset_receipt))
         base=ref.robot.part_controllers['base'];base_target=d.qpos[base.qpos_index].copy();arm=ref.robot.part_controllers['right']
         joints=[int(np.flatnonzero(m.jnt_qposadr==i)[0]) for i in arm.qpos_index]
         margin=JointMarginMonitor(arm.qpos_index,m.jnt_range[joints],[mujoco.mj_id2name(m,mujoco.mjtObj.mjOBJ_JOINT,j) for j in joints])
