@@ -4,7 +4,14 @@ from pathlib import Path
 from datetime import datetime,timezone
 from pi05_drawer_pipeline import R,simenv,read,write,now
 from pi05_drawer_data_v2 import launch,owned
-from pi05_drawer_obc_report_v2 import generate,STEM
+from pi05_drawer_obc_report_v2 import STEM
+
+def generate(r,final=False):
+    manifest=read(r/'run-manifest.json');manifest['code_commit']=subprocess.check_output(['git','-C',str(r/'runtime/mobipi'),'rev-parse','HEAD'],text=True).strip();write(r/'run-manifest.json',manifest)
+    cmd=[R/'env/bin/python','-B','-u',r/'runtime/mobipi/scripts/pi05_drawer_obc_report_v2.py','--run',r]
+    if final:cmd.append('--final')
+    subprocess.run(list(map(str,cmd)),env=simenv(r,0),check=True,timeout=180)
+
 
 
 def event(r,name,**kw):
