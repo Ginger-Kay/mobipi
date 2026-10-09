@@ -1,0 +1,13 @@
+diff --git a/scripts/pi05_fft_serve.py b/scripts/pi05_fft_serve.py
+index 5bc6b86..2679690 100644
+--- a/scripts/pi05_fft_serve.py
++++ b/scripts/pi05_fft_serve.py
+@@ -39,7 +39,7 @@ def main():
+             raw=self.rfile.read(int(self.headers['Content-Length']))
+             if self.path=='/reset':
+                 seed=int(json.loads(raw)['policy_sampling_seed']);context['key']=jax.random.key(seed)
+-                self.send_response(200);self.end_headers();self.wfile.write(b'{}');return
++                self.send_response(200);self.end_headers();self.wfile.write(json.dumps(dict(policy_sampling_seed=seed,history_cleared=True,action_chunk_cache_cleared=True,stateless_network=True)).encode());return
+             if self.path=='/finish-declared-units':
+                 context['stop']=True;self.send_response(200);self.end_headers();self.wfile.write(b'{}');return
+             try:
