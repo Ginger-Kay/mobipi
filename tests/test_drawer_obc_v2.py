@@ -26,3 +26,17 @@ def test_selector_success_window_sequential_cost_and_collision_unsupported():
     result=select(p,dict.fromkeys('EDA',True),heads)
     assert result['route']=='E' and result['selector_fallback']
     assert select(p,dict.fromkeys('EDA',False),heads)['route'] is None
+
+
+def test_atomic_resume_keeps_worker_ownership_and_scientific_records(tmp_path):
+    import json
+    from pi05_drawer_obc_v2 import claim
+    original=dict(states=[dict(state_order=1,status='disposed',claimed_by=0),dict(state_order=2,status='claimed',claimed_by=0,claimed_at='original0'),dict(state_order=3,status='claimed',claimed_by=1,claimed_at='original1'),dict(state_order=4,status='unrun',claimed_by=None)],slots=[dict(status='completed',success=1,attempt=0)],issue_repairs={})
+    (tmp_path/'slot-ledger.json').write_text(json.dumps(original))
+    assert claim(tmp_path,0)['state_order']==2
+    assert claim(tmp_path,1)['state_order']==3
+    after=json.loads((tmp_path/'slot-ledger.json').read_text())
+    assert after['slots']==original['slots']
+    assert after['states'][1]['claimed_at']=='original0'
+    assert after['states'][2]['claimed_at']=='original1'
+    assert after['states'][3]['status']=='unrun'

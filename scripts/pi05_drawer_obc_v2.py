@@ -74,8 +74,8 @@ def claim(r,w):
                         used=d['issue_repairs'].get(q['issue_signature'],0)
                         if used<10:
                             d['issue_repairs'][q['issue_signature']]=used+1;s.update(status='unrun',claimed_by=None,repair_applied=str(repair))
-            if s['status']=='unrun':
-                s.update(status='claimed',claimed_by=w,claimed_at=now());write(r/'slot-ledger.json',d);event(r,'atomic_state_claim',state_order=s['state_order'],worker=w);return dict(s)
+            if s['status']=='unrun' or (s['status']=='claimed' and s.get('claimed_by')==w):
+                resuming=s['status']=='claimed';s.update(status='claimed',claimed_by=w,claimed_at=s.get('claimed_at',now()));write(r/'slot-ledger.json',d);event(r,'atomic_state_resume' if resuming else 'atomic_state_claim',state_order=s['state_order'],worker=w);return dict(s)
         return None
 
 
@@ -102,8 +102,35 @@ def prepare_state(r,s,w):
     return s,freeze_state(r,s)
 
 
+def ensure_service(r,w):
+    """Rotate a deadline-bound resident network only between episodes."""
+    deadline=read(r/'deadline-config.json')['execution_deadline'];path=r/'launch'/f'service{w}-process.json';rec=read(path) if path.exists() else None;marker=r/'policy'/f'service{w}-effective-deadline.json'
+    if rec and owned(rec) and marker.exists() and read(marker)['execution_deadline']==deadline:return rec
+    if rec and owned(rec):
+        # No active episode may lose its RNG/action stream during rotation.
+        for f in (r/'launch').glob('episode-*-process.json'):
+            q=read(f)
+            if owned(q) and '--port' in q['command'] and q['command'][q['command'].index('--port')+1]==str(PORTS[w]):raise RuntimeError('healthy episode owns service; defer deadline rotation')
+        conn=http.client.HTTPConnection('127.0.0.1',PORTS[w],timeout=10);conn.request('POST','/finish-declared-units',body=b'{}');conn.getresponse().read();conn.close();start=time.monotonic()
+        while owned(rec) and time.monotonic()-start<30:time.sleep(1)
+        if owned(rec):raise RuntimeError('service didnot close cleanly; preserve it')
+        saved=r/'launch'/f'service{w}-before-user-extension-process.json'
+        if not saved.exists():write(saved,rec)
+    op=r/'runtime/openpi';out=r/'policy'/f'service{w}-deadline-extension';out=out if not out.exists() else r/'policy'/f'service{w}-deadline-extension-{int(time.time())}'
+    env=dict(os.environ,PYTHONNOUSERSITE='1',PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=f'{op}/src:{op}/scripts:{op}/packages/openpi-client/src',CUDA_VISIBLE_DEVICES=GPUS[w],JAX_PLATFORMS='cuda',XLA_PYTHON_CLIENT_PREALLOCATE='false',JAX_COMPILATION_CACHE_DIR=str(r/'policy'/f'jax-cache{w}'),OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1')
+    remaining=int((datetime.fromisoformat(deadline)-datetime.now(timezone.utc)).total_seconds())
+    cmd=[R/'env/openpi/bin/python','-B','-u',op/'scripts/pi05_fft_serve.py','--lora','--checkpoint',CP,'--output',out,'--port',PORTS[w],'--max-seconds',remaining,'--max-queries',100000]
+    proc,rec,log=launch(r,f'service{w}',cmd,env);start=time.monotonic()
+    while not (out/'ready.json').exists():
+        if not owned(rec) or time.monotonic()-start>600:raise RuntimeError('extended service unavailable; actual mechanical fix required')
+        time.sleep(2)
+    if log:log.close()
+    write(marker,dict(at=now(),execution_deadline=deadline,canonical_config=str(r/'deadline-config.json'),process=rec['pid'],network_checkpoint=str(CP),only_between_episodes=True));event(r,'resident_service_deadline_refreshed',worker=w,pid=rec['pid'],execution_deadline=deadline);return rec
+
+
 def execute(r,s,j,pred,w):
     if j['status'] in ['completed','unknown','X','unavailable']:return True
+    if j['status']!='running':ensure_service(r,w)
     route=pred['choices']['MLP']['route'] if j['method']=='OBC-MLP' else j['route']
     fallback=pred['choices']['MLP'].get('selector_fallback',False) if j['method']=='OBC-MLP' else False
     if route not in ('E','D','A') or not pred['valid_routes'].get(route,False):
@@ -115,11 +142,16 @@ def execute(r,s,j,pred,w):
         if reason:
             event(r,'ordered_slot_admission_closed',next_slot=j['slot_order'],method=j['method'],decision_time=now(),ETA_s=estimate,remaining_s=remaining,save_margin_s=margin,free_bytes=free,reserved_bytes=reserved,episode_peak_bytes=peak,reason=reason);stop.set();return False
         storage_reservations[w]=peak
-    attempt=j['attempt'];tag='obc-v2-'+j['method'];out=r/'episodes'/tag/f"slot-{s['state_order']:02d}-{s['config_id']}"/f'engineering-attempt-{attempt}';receipt=out/'completed.json';cap=min(2700,int(remaining-margin));dp=r/'launch'/f"deadline-slot-{j['slot_order']}-attempt-{attempt}.json";write(dp,dict(deadline,wall_seconds=cap,canonical_config=str(r/'deadline-config.json')))
+    attempt=j['attempt'];tag='obc-v2-'+j['method'];out=r/'episodes'/tag/f"slot-{s['state_order']:02d}-{s['config_id']}"/f'engineering-attempt-{attempt}';receipt=out/'completed.json';cap=min(2700,int(remaining-margin));dp=r/'launch'/f"deadline-slot-{j['slot_order']}-attempt-{attempt}.json"
+    if not dp.exists():write(dp,dict(deadline,wall_seconds=cap,canonical_config=str(r/'deadline-config.json')))
     cmd=[R/'env/bin/python','-B','-u',r/'runtime/mobipi/scripts/pi05_harness_episode.py','--run',r,'--slot',s['state_order'],'--route',route,'--checkpoint-step',2000,'--port',PORTS[w],'--adapter-version','v6','--evaluation-tag',tag,'--roster',r/'design/episode-roster.json','--purpose','online' if j['method']=='OBC-MLP' else 'paired','--A-private-version','A3N' if route=='A' else 'A1','--sim-seconds',120,'--wall-seconds',cap,'--attempt',attempt,'--deadline-config',dp,'--experiment-id','MMWAM-OBC-002-PI05-DRAWER-OBC-v2']
     try:
         if not receipt.exists():
-            p,rec,f=launch(r,f"episode-{j['slot_order']}-attempt-{attempt}",cmd,simenv(r,w));running[w]=rec;update(r,slot=j['slot_order'],status='running',worker=w,pid=rec['pid'],started_at=now(),route=route,selector_fallback=fallback,receipt=str(receipt),initial_state=s['initial_state'],initial_RGB=s['initial_RGB'],prediction_freeze=str(r/'design/predictions'/s['config_id']/'freeze.json'));event(r,'slot_start',slot=j['slot_order'],method=j['method'],route=route,ETA_s=estimate,wall_cap_s=cap,worker=w);rc=await_process(p,rec,f);running.pop(w,None);event(r,'slot_process_closed',slot=j['slot_order'],exit_code=rc)
+            p,rec,f=launch(r,f"episode-{j['slot_order']}-attempt-{attempt}",cmd,simenv(r,w));running[w]=rec
+            if p is not None:
+                update(r,slot=j['slot_order'],status='running',worker=w,pid=rec['pid'],started_at=now(),route=route,selector_fallback=fallback,receipt=str(receipt),initial_state=s['initial_state'],initial_RGB=s['initial_RGB'],prediction_freeze=str(r/'design/predictions'/s['config_id']/'freeze.json'));event(r,'slot_start',slot=j['slot_order'],method=j['method'],route=route,ETA_s=estimate,wall_cap_s=cap,worker=w)
+            else:event(r,'healthy_episode_adopted_without_restart',slot=j['slot_order'],pid=rec['pid'],worker=w)
+            rc=await_process(p,rec,f);running.pop(w,None);event(r,'slot_process_closed',slot=j['slot_order'],exit_code=rc)
         q=read(receipt) if receipt.exists() else {};status,label=terminal(q)
         if status=='unknown':
             results=list(out.glob('*/'+route+'/attempt-*/result.json'))
@@ -183,6 +215,9 @@ def main(r):
     services=[];thread=threading.Thread(target=heartbeat,args=(r,),daemon=True);thread.start()
     try:
         for w in range(2):
+            old=r/'launch'/f'service{w}-process.json'
+            if old.exists() and owned(read(old)):
+                services.append((None,read(old),None));continue
             op=r/'runtime/openpi';env=dict(os.environ,PYTHONNOUSERSITE='1',PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=f'{op}/src:{op}/scripts:{op}/packages/openpi-client/src',CUDA_VISIBLE_DEVICES=GPUS[w],JAX_PLATFORMS='cuda',XLA_PYTHON_CLIENT_PREALLOCATE='false',JAX_COMPILATION_CACHE_DIR=str(r/'policy'/f'jax-cache{w}'),OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1');remaining=int((datetime.fromisoformat(read(r/'deadline-config.json')['execution_deadline'])-datetime.now(timezone.utc)).total_seconds())
             with socket.socket() as sock:sock.bind(('127.0.0.1',PORTS[w]))
             cmd=[R/'env/openpi/bin/python','-B','-u',op/'scripts/pi05_fft_serve.py','--lora','--checkpoint',CP,'--output',r/'policy'/f'service{w}','--port',PORTS[w],'--max-seconds',remaining,'--max-queries',100000];services.append(launch(r,f'service{w}',cmd,env))
@@ -199,6 +234,8 @@ def main(r):
         if running:event(r,'healthy_workers_preserved',workers=list(running))
         else:
             for w,(p,rec,f) in enumerate(services):
+                current=r/'launch'/f'service{w}-process.json'
+                rec=read(current) if current.exists() else rec
                 if owned(rec):
                     try:
                         conn=http.client.HTTPConnection('127.0.0.1',PORTS[w],timeout=10);conn.request('POST','/finish-declared-units',body=b'{}');conn.getresponse().read();conn.close()
