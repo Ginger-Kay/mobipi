@@ -16,10 +16,10 @@ from pi05_candidate_features import feature_record
 
 def now():return datetime.now(timezone.utc).isoformat()
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--output-root',default='design/inputs');ap.add_argument('--freeze-output',default='design/features-freeze.json');a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--run',type=Path,required=True);ap.add_argument('--roster',type=Path);ap.add_argument('--output-root',default='design/inputs');ap.add_argument('--freeze-output',default='design/features-freeze.json');a=ap.parse_args()
     model=Path('/share/personal/chensiyu/haokaijiang/MobiWAM/cache/huggingface/hub/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41')
     encoder=FrozenCLIPVisionEncoder(model,device='cuda:0',batch_size=3)
-    design=json.loads((a.run/'design/start-design.json').read_text());completed=[]
+    design=json.loads((a.roster or a.run/'design/start-design.json').read_text());completed=[]
     # Config order is static parent/task/split; no outcome is opened.
     for index,g in enumerate(design['selected']):
         if g['status']=='X':continue
